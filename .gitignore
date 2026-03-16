@@ -1,0 +1,55 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Go
+backend/bin/
+backend/vendor/
+
+# Uploads (user-generated content)
+backend/uploads/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# iOS
+ios/DriveBai/DriveBai.xcodeproj/project.xcworkspace/xcuserdata/
+ios/DriveBai/DriveBai.xcodeproj/xcuserdata/
+ios/DriveBai/*.xcworkspace/xcuserdata/
+ios/DriveBai/build/
+ios/DriveBai/DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+Pods/
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Secrets (extra caution)
+*.pem
+*.key
+credentials.json
+secrets.json

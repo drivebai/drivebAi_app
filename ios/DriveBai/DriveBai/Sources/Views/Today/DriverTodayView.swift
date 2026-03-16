@@ -1,0 +1,153 @@
+import SwiftUI
+
+/// Today tab view for Drivers
+/// Displays active rentals, quick actions/reminders, and notifications bell
+struct DriverTodayView: View {
+    @StateObject private var viewModel = DriverTodayViewModel()
+    @EnvironmentObject private var authStore: AuthStore
+    @State private var showNotifications = false
+    @State private var navigateToChatTask: OnboardingTask?
+    @State private var showChat = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: TodayLayout.sectionSpacing) {
+                    // Custom header
+                    TodayHeaderView(
+                        title: "Today",
+                        unreadCount: viewModel.unreadNotificationCount,
+                        onBellTap: { showNotifications = true }
+                    )
+
+                    // Section 1: Active Listings (rentals for driver)
+                    activeListingsSection
+
+                    // Section 2: Quick Actions and Reminders
+                    actionsSection
+                }
+                .padding(.vertical, TodayLayout.horizontalPadding)
+            }
+            .background(TodayLayout.pageBackground.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $showNotifications) {
+                NotificationsView(notifications: viewModel.notifications)
+            }
+            .navigationDestination(isPresented: $showChat) {
+                if let task = navigateToChatTask,
+                   let chatId = task.chatId,
+                   let userId = authStore.state.user?.id {
+                    ChatView(
+                        chatId: chatId,
+                        currentUserId: userId,
+                        counterpartyId: task.counterpartyId ?? UUID(),
+                        counterpartyName: task.counterpartyName ?? task.requestedBy
+                    )
+                }
+            }
+            .task {
+                await viewModel.fetchActions()
+                viewModel.markActionsSeen()
+            }
+            .refreshable {
+                await viewModel.refresh()
+            }
+        }
+    }
+
+    // MARK: - Your Rental Section
+
+    private var activeListingsSection: some View {
+        VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
+            // Section header
+            Text("Your rental")
+                .font(TodayLayout.sectionTitleFont)
+                .foregroundColor(.primary)
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+
+            // Listings content
+            if viewModel.hasListings && !viewModel.listings.isEmpty {
+                // Horizontally scrollable listing cards
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: TodayLayout.cardSpacing) {
+                        ForEach(viewModel.listings) { listing in
+                            ListingCard(
+                                listing: listing,
+                                onChatTap: {
+                                    print("Chat tapped for: \(listing.title)")
+                                },
+                                onOptionSelect: { index in
+                                    print("Option \(index) selected for: \(listing.title)")
+                                }
+                            )
+                            .frame(width: 280)
+                        }
+                    }
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+                }
+            } else {
+                // Empty state for driver
+                EmptyListingCard(isOwner: false) {
+                    print("Discover rental tapped - navigate to discover flow")
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+            }
+        }
+    }
+
+    // MARK: - Actions Section
+
+    private var actionsSection: some View {
+        VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
+            // Section header
+            Text("Quick actions and reminders")
+                .font(TodayLayout.sectionTitleFont)
+                .foregroundColor(.primary)
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+
+            // Helper text
+            Text("Here you will see important notifications when you have active listings")
+                .font(TodayLayout.helperTextFont)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+
+            // Task cards or empty state
+            if viewModel.tasks.isEmpty {
+                AllDoneView()
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+            } else {
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    ForEach(viewModel.tasks) { task in
+                        TaskCard(
+                            task: task,
+                            currentTime: viewModel.currentTime,
+                            onOpenTap: {
+                                if task.isBackendAction {
+                                    navigateToChatTask = task
+                                    showChat = true
+                                }
+                            },
+                            onOptionSelect: { index in
+                                if task.isBackendAction {
+                                    let action = index == 0 ? "accept" : "decline"
+                                    viewModel.respondToAction(task: task, action: action)
+                                } else {
+                                    viewModel.selectOption(for: task.id, optionIndex: index)
+                                }
+                            }
+                        )
+                    }
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+            }
+        }
+    }
+}
+
+#Preview("Empty Listings") {
+    DriverTodayView()
+}
+
+#Preview("With Active Rental") {
+    DriverTodayView()
+}

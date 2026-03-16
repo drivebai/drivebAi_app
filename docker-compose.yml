@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: drivebai-postgres
+    environment:
+      POSTGRES_USER: drivebai
+      POSTGRES_PASSWORD: drivebai_secret
+      POSTGRES_DB: drivebai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drivebai -d drivebai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: drivebai-api
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - ENV=${ENV:-development}
+      - DATABASE_URL=postgres://drivebai:drivebai_secret@postgres:5432/drivebai?sslmode=disable
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-production}
+      # Email configuration (SendGrid)
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY:-}
+      - SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL:-noreply@drivebai.com}
+      - SENDGRID_FROM_NAME=${SENDGRID_FROM_NAME:-DriveBai}
+      # App configuration
+      - APP_DEEPLINK_SCHEME=${APP_DEEPLINK_SCHEME:-drivebai}
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:8080}
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  uploads_data:
