@@ -281,8 +281,10 @@ struct OTPCodeInputView: View {
             }
         }
         .fullScreenCover(isPresented: $showSignupFlow) {
-            OTPSignupFlowView()
-                .environmentObject(authStore)
+            if let regData = authStore.pendingRegistrationTokenData {
+                SignupFlowView(mode: .otp(registrationToken: regData.registrationToken, email: regData.email))
+                    .environmentObject(authStore)
+            }
         }
     }
 
@@ -419,161 +421,6 @@ struct OTPErrorBanner: View {
         .padding(.vertical, 10)
         .background(Color.red.opacity(0.08))
         .cornerRadius(10)
-    }
-}
-
-// MARK: - OTP Signup Flow View
-
-struct OTPSignupFlowView: View {
-    @EnvironmentObject private var authStore: AuthStore
-
-    var body: some View {
-        NavigationStack {
-            OTPRegistrationStepsView()
-                .environmentObject(authStore)
-        }
-    }
-}
-
-// MARK: - OTP Registration Steps View
-
-/// Collects name, password and role after the email OTP verifies a new user.
-struct OTPRegistrationStepsView: View {
-    @EnvironmentObject private var authStore: AuthStore
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var firstName = ""
-    @State private var lastName = ""
-    @State private var password = ""
-    @State private var selectedRole: UserRole = .driver
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                // ── Header ─────────────────────────────────────────────────
-                VStack(spacing: 10) {
-                    Image(systemName: "person.crop.circle.badge.checkmark.fill")
-                        .font(.system(size: 44))
-                        .foregroundColor(.driveBaiPrimary)
-                        .padding(.top, 28)
-
-                    Text("Create your account")
-                        .font(.title2)
-                        .fontWeight(.bold)
-
-                    if let email = authStore.pendingEmail {
-                        HStack(spacing: 5) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.footnote)
-                                .foregroundColor(.driveBaiPrimary)
-                            Text(email)
-                                .font(.footnote)
-                                .fontWeight(.medium)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // ── Form ───────────────────────────────────────────────────
-                VStack(spacing: 16) {
-                    labeledField("First name") {
-                        TextField("First name", text: $firstName)
-                            .textFieldStyle(DriveBaiTextFieldStyle())
-                            .textContentType(.givenName)
-                    }
-                    labeledField("Last name") {
-                        TextField("Last name", text: $lastName)
-                            .textFieldStyle(DriveBaiTextFieldStyle())
-                            .textContentType(.familyName)
-                    }
-                    labeledField("Password") {
-                        SecureField("Min. 8 characters", text: $password)
-                            .textFieldStyle(DriveBaiTextFieldStyle())
-                            .textContentType(.newPassword)
-                    }
-                    labeledField("I am a…") {
-                        Picker("Role", selection: $selectedRole) {
-                            Text("Driver").tag(UserRole.driver)
-                            Text("Car Owner").tag(UserRole.carOwner)
-                        }
-                        .pickerStyle(.segmented)
-                    }
-                }
-                .padding(.horizontal, 24)
-
-                // ── Error ──────────────────────────────────────────────────
-                if let err = authStore.error {
-                    OTPErrorBanner(message: err)
-                        .padding(.horizontal, 24)
-                }
-
-                // ── CTA ────────────────────────────────────────────────────
-                Button(action: createAccount) {
-                    if authStore.isLoading {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text("Create Account")
-                    }
-                }
-                .buttonStyle(DriveBaiButtonStyle())
-                .disabled(authStore.isLoading || !isFormValid)
-                .padding(.horizontal, 24)
-
-                Text("By continuing you agree to our Terms of Service and Privacy Policy.")
-                    .font(.caption)
-                    .foregroundColor(Color(.tertiaryLabel))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                    .padding(.bottom, 32)
-            }
-        }
-        .navigationTitle("Complete Sign Up")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("Cancel") { dismiss() }
-                    .foregroundColor(.secondary)
-            }
-        }
-        .onAppear { authStore.clearError() }
-    }
-
-    // Helper for consistent field label + input layout
-    @ViewBuilder
-    private func labeledField<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.footnote)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-                .padding(.leading, 2)
-            content()
-        }
-    }
-
-    private var isFormValid: Bool {
-        !firstName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !lastName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        password.count >= 8
-    }
-
-    private func createAccount() {
-        Task {
-            do {
-                try await authStore.completeOTPRegistration(
-                    firstName: firstName.trimmingCharacters(in: .whitespaces),
-                    lastName: lastName.trimmingCharacters(in: .whitespaces),
-                    password: password,
-                    role: selectedRole,
-                    phone: nil
-                )
-                #if DEBUG
-                print("[OTP] Registration complete for: \(authStore.pendingEmail ?? "?")")
-                #endif
-            } catch {
-                // authStore.error shown inline
-            }
-        }
     }
 }
 

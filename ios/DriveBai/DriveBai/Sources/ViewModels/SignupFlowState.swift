@@ -46,6 +46,15 @@ enum SignupStep: Int, CaseIterable, Equatable {
     }
 }
 
+// MARK: - Signup Mode
+
+enum SignupMode: Equatable {
+    /// Standard email/password registration
+    case normal
+    /// OTP-verified registration — email is pre-filled and locked, uses /auth/otp/complete-registration
+    case otp(registrationToken: String, email: String)
+}
+
 // MARK: - Signup Flow State
 
 @MainActor
@@ -62,6 +71,9 @@ final class SignupFlowState: ObservableObject {
     @Published var password: String = ""
     @Published var confirmPassword: String = ""
     @Published var acceptedTerms: Bool = false
+
+    // Signup mode — controls which backend endpoint is called and whether email is editable
+    var mode: SignupMode = .normal
 
     // Role Selection (Step 2)
     @Published var selectedRole: UserRole?
@@ -80,12 +92,27 @@ final class SignupFlowState: ObservableObject {
     // Track navigation direction for smooth transitions
     @Published var isNavigatingForward: Bool = true
 
+    // MARK: - Init
+
+    init(mode: SignupMode = .normal) {
+        self.mode = mode
+        if case .otp(_, let prefilledEmail) = mode {
+            self.email = prefilledEmail
+        }
+    }
+
     // MARK: - Computed Properties
 
     var isUserInfoValid: Bool {
-        !firstName.isEmpty &&
+        let emailOK: Bool
+        if case .otp = mode {
+            emailOK = true // already verified via OTP
+        } else {
+            emailOK = isValidEmail
+        }
+        return !firstName.isEmpty &&
         !lastName.isEmpty &&
-        isValidEmail &&
+        emailOK &&
         password.count >= 8 &&
         password == confirmPassword &&
         acceptedTerms

@@ -4,9 +4,13 @@ import SwiftUI
 /// Single entry point for the entire signup process
 struct SignupFlowView: View {
     @EnvironmentObject private var authStore: AuthStore
-    @StateObject private var signupFlow = SignupFlowState()
+    @StateObject private var signupFlow: SignupFlowState
 
     @Environment(\.dismiss) private var dismiss
+
+    init(mode: SignupMode = .normal) {
+        _signupFlow = StateObject(wrappedValue: SignupFlowState(mode: mode))
+    }
 
     /// Direction-aware transition for step navigation
     private var stepTransition: AnyTransition {
@@ -66,15 +70,26 @@ struct SignupFlowView: View {
 
         defer { signupFlow.isLoading = false }
 
-        // Call register API
-        try await authStore.register(
-            email: signupFlow.email,
-            password: signupFlow.password,
-            firstName: signupFlow.firstName,
-            lastName: signupFlow.lastName,
-            phone: signupFlow.phone.isEmpty ? nil : signupFlow.phone,
-            role: role
-        )
+        switch signupFlow.mode {
+        case .normal:
+            try await authStore.register(
+                email: signupFlow.email,
+                password: signupFlow.password,
+                firstName: signupFlow.firstName,
+                lastName: signupFlow.lastName,
+                phone: signupFlow.phone.isEmpty ? nil : signupFlow.phone,
+                role: role
+            )
+        case .otp:
+            // Email is already verified; use the OTP registration token stored in AuthStore
+            try await authStore.completeOTPRegistration(
+                firstName: signupFlow.firstName,
+                lastName: signupFlow.lastName,
+                password: signupFlow.password,
+                role: role,
+                phone: signupFlow.phone.isEmpty ? nil : signupFlow.phone
+            )
+        }
 
         // Mark as registered and proceed to profile photo
         signupFlow.isRegistered = true
@@ -164,24 +179,41 @@ struct SignupUserInfoStepView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
 
-                    TextField("Email", text: $signupFlow.email)
-                        .textFieldStyle(DriveBaiTextFieldStyle())
-                        .textContentType(.emailAddress)
-                        .autocapitalization(.none)
-                        .keyboardType(.emailAddress)
-
-                    if !signupFlow.email.isEmpty && !signupFlow.isValidEmail {
-                        Text("This email is not valid. Please check the spelling.")
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    } else if signupFlow.isValidEmail && !signupFlow.email.isEmpty {
+                    if case .otp = signupFlow.mode {
+                        // Email pre-verified via OTP — show locked
                         HStack {
+                            Text(signupFlow.email)
+                                .foregroundColor(.primary)
+                            Spacer()
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundColor(.green)
-                            Text("The email is valid")
                         }
-                        .font(.caption)
-                        .foregroundColor(.green)
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .cornerRadius(10)
+                        Text("Verified via email code")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        TextField("Email", text: $signupFlow.email)
+                            .textFieldStyle(DriveBaiTextFieldStyle())
+                            .textContentType(.emailAddress)
+                            .autocapitalization(.none)
+                            .keyboardType(.emailAddress)
+
+                        if !signupFlow.email.isEmpty && !signupFlow.isValidEmail {
+                            Text("This email is not valid. Please check the spelling.")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        } else if signupFlow.isValidEmail && !signupFlow.email.isEmpty {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("The email is valid")
+                            }
+                            .font(.caption)
+                            .foregroundColor(.green)
+                        }
                     }
                 }
 
