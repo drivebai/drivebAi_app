@@ -47,9 +47,7 @@ struct AuthenticatedProfileView: View {
         guard let photoPath = user.profilePhotoURL, !photoPath.isEmpty else {
             return nil
         }
-        // Build full URL from base API URL and photo path
-        let baseURL = "http://localhost:8080"
-        return URL(string: baseURL + photoPath)
+        return URL(string: AppConfig.serverBaseURL.absoluteString + photoPath)
     }
 
     var body: some View {

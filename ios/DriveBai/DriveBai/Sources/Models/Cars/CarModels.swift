@@ -227,8 +227,7 @@ struct CarPhotoSlot: Identifiable, Equatable {
 /// Helper to construct full URLs from relative paths returned by the backend
 enum ImageURLHelper {
     /// Base server URL (not the API base, but the server root)
-//    static let serverBaseURL = URL(string: "https://drivebai-api.fly.dev")!
-    static let serverBaseURL = URL(string: "http://localhost:8080")!
+    static var serverBaseURL: URL { AppConfig.serverBaseURL }
 
 
     /// Construct full URL from relative path (e.g., "/uploads/cars/...")

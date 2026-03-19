@@ -148,6 +148,84 @@ struct ResendOTPRequest: Codable {
     let purpose: String
 }
 
+// MARK: - OTP Login
+
+struct OTPLoginRequestBody: Codable {
+    let email: String
+}
+
+struct OTPVerifyRequestBody: Codable {
+    let email: String
+    let code: String
+}
+
+/// Decoded from POST /auth/otp/verify.
+/// The `kind` field discriminates between the two cases:
+///   "login"    → existing user, full tokens included
+///   "register" → new user, registration_token + email included
+struct OTPVerifyResponse: Codable {
+    let kind: String
+
+    // login fields
+    let accessToken: String?
+    let refreshToken: String?
+    let expiresAt: Date?
+    let user: UserProfile?
+
+    // register fields
+    let registrationToken: String?
+    let email: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
+        case user
+        case registrationToken = "registration_token"
+        case email
+    }
+
+    var asAuthTokens: AuthTokens? {
+        guard kind == "login",
+              let at = accessToken,
+              let rt = refreshToken,
+              let exp = expiresAt,
+              let u = user else { return nil }
+        return AuthTokens(accessToken: at, refreshToken: rt, expiresAt: exp, user: u)
+    }
+
+    var asRegistrationData: RegistrationTokenData? {
+        guard kind == "register",
+              let tok = registrationToken,
+              let em = email else { return nil }
+        return RegistrationTokenData(registrationToken: tok, email: em)
+    }
+}
+
+/// Carries the short-lived registration token + verified email from OTP verify.
+struct RegistrationTokenData {
+    let registrationToken: String
+    let email: String
+}
+
+/// Request body for POST /auth/otp/complete-registration.
+struct CompleteRegistrationRequest: Codable {
+    let registrationToken: String
+    let firstName: String
+    let lastName: String
+    let password: String
+    let phone: String?
+    let role: UserRole
+
+    enum CodingKeys: String, CodingKey {
+        case registrationToken = "registration_token"
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case password, phone, role
+    }
+}
+
 struct UpdateProfileRequest: Codable {
     let role: UserRole?
     let firstName: String?

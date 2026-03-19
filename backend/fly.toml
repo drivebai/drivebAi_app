@@ -3,10 +3,13 @@
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'drivebai-api'
+app = 'drivebai-api-team'
 primary_region = 'ewr'
 
 [build]
+
+[env]
+  UPLOAD_DIR = "/data/uploads"
 
 [mounts]
   source = "drivebai_uploads"

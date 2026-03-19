@@ -82,6 +82,8 @@
 		E000000100000000000000FA /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F8 /* LocationManager.swift */; };
 		E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F9 /* CarPickupLocationPickerView.swift */; };
 		E000000100000000000000FD /* TodayActionsAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FC /* TodayActionsAPIModels.swift */; };
+		E000000100000000000000FF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FE /* AppConfig.swift */; };
+		E00000010000000000000101 /* OTPLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000100 /* OTPLoginView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -161,6 +163,8 @@
 		E000000100000000000000F8 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		E000000100000000000000F9 /* CarPickupLocationPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPickupLocationPickerView.swift; sourceTree = "<group>"; };
 		E000000100000000000000FC /* TodayActionsAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayActionsAPIModels.swift; sourceTree = "<group>"; };
+		E000000100000000000000FE /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		E00000010000000000000100 /* OTPLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTPLoginView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -288,6 +292,7 @@
 			isa = PBXGroup;
 			children = (
 				E0000001000000000000000F /* Styles.swift */,
+				E000000100000000000000FE /* AppConfig.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -298,6 +303,7 @@
 				E00000010000000000000010 /* LoginView.swift */,
 				E00000010000000000000014 /* ForgotPasswordView.swift */,
 				E00000010000000000000044 /* SignupFlowView.swift */,
+				E00000010000000000000100 /* OTPLoginView.swift */,
 			);
 			path = Auth;
 			sourceTree = "<group>";
@@ -610,6 +616,8 @@
 				E000000100000000000000FA /* LocationManager.swift in Sources */,
 				E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */,
 				E000000100000000000000FD /* TodayActionsAPIModels.swift in Sources */,
+				E000000100000000000000FF /* AppConfig.swift in Sources */,
+				E00000010000000000000101 /* OTPLoginView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

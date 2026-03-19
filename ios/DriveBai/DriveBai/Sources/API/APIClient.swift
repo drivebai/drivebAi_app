@@ -106,6 +106,12 @@ protocol APIClientProtocol {
     func resetPassword(request: ResetPasswordRequest) async throws -> MessageResponse
     func logout(request: RefreshTokenRequest) async throws -> MessageResponse
     func resendOTP(request: ResendOTPRequest) async throws -> MessageResponse
+
+    // OTP passwordless login
+    func requestLoginOTP(email: String) async throws -> MessageResponse
+    func verifyLoginOTP(email: String, code: String) async throws -> OTPVerifyResponse
+    func completeRegistrationWithToken(_ request: CompleteRegistrationRequest) async throws -> AuthTokens
+
     func getCurrentUser() async throws -> UserProfile
     func updateProfile(request: UpdateProfileRequest) async throws -> UpdateProfileResponse
 
@@ -199,8 +205,7 @@ final class APIClient: APIClientProtocol {
     private var refreshContinuations: [CheckedContinuation<Void, Error>] = []
 
     init(
-//        baseURL: URL = URL(string: "https://drivebai-api.fly.dev/api/v1/")!,
-        baseURL: URL = URL(string: "http://localhost:8080/api/v1/")!,
+        baseURL: URL = AppConfig.apiBaseURL,
         session: URLSession = .shared,
         keychain: KeychainService = .shared
     ) {
@@ -257,6 +262,18 @@ final class APIClient: APIClientProtocol {
 
     func resendOTP(request: ResendOTPRequest) async throws -> MessageResponse {
         try await post(path: "auth/resend-otp", body: request)
+    }
+
+    func requestLoginOTP(email: String) async throws -> MessageResponse {
+        try await post(path: "auth/otp/request", body: OTPLoginRequestBody(email: email))
+    }
+
+    func verifyLoginOTP(email: String, code: String) async throws -> OTPVerifyResponse {
+        try await post(path: "auth/otp/verify", body: OTPVerifyRequestBody(email: email, code: code))
+    }
+
+    func completeRegistrationWithToken(_ request: CompleteRegistrationRequest) async throws -> AuthTokens {
+        try await post(path: "auth/otp/complete-registration", body: request)
     }
 
     func getCurrentUser() async throws -> UserProfile {

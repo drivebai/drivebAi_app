@@ -133,3 +133,57 @@ func HashPasswordResetToken(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])
 }
+
+// RegistrationClaims are embedded in a short-lived registration token.
+// It proves that the given email address was OTP-verified and allows the
+// iOS client to complete account creation without re-verifying.
+type RegistrationClaims struct {
+	Email   string `json:"email"`
+	Purpose string `json:"purpose"` // always "otp_registration"
+	jwt.RegisteredClaims
+}
+
+const registrationTokenTTL = 15 * time.Minute
+const registrationPurpose = "otp_registration"
+
+// GenerateRegistrationToken issues a short-lived JWT proving email OTP was verified.
+func (s *JWTService) GenerateRegistrationToken(email string) (string, error) {
+	expiresAt := time.Now().Add(registrationTokenTTL)
+
+	claims := RegistrationClaims{
+		Email:   email,
+		Purpose: registrationPurpose,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "drivebai",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(s.secret)
+}
+
+// ValidateRegistrationToken validates a registration token and returns the verified email.
+func (s *JWTService) ValidateRegistrationToken(tokenString string) (string, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &RegistrationClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return s.secret, nil
+	})
+
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return "", models.ErrTokenExpired
+		}
+		return "", models.ErrTokenInvalid
+	}
+
+	claims, ok := token.Claims.(*RegistrationClaims)
+	if !ok || !token.Valid || claims.Purpose != registrationPurpose {
+		return "", models.ErrTokenInvalid
+	}
+
+	return claims.Email, nil
+}

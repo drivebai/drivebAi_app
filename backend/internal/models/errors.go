@@ -7,19 +7,21 @@ import (
 
 // Error codes for API responses
 const (
-	ErrCodeEmailTaken        = "EMAIL_TAKEN"
-	ErrCodeInvalidCredentials = "INVALID_CREDENTIALS"
-	ErrCodeOTPInvalid        = "OTP_INVALID"
-	ErrCodeOTPExpired        = "OTP_EXPIRED"
-	ErrCodeEmailNotVerified  = "EMAIL_NOT_VERIFIED"
-	ErrCodeRateLimited       = "RATE_LIMITED"
-	ErrCodeUserNotFound      = "USER_NOT_FOUND"
-	ErrCodeInvalidRole       = "INVALID_ROLE"
-	ErrCodeInvalidInput      = "INVALID_INPUT"
-	ErrCodeUnauthorized      = "UNAUTHORIZED"
-	ErrCodeTokenExpired      = "TOKEN_EXPIRED"
-	ErrCodeTokenInvalid      = "TOKEN_INVALID"
-	ErrCodeInternalError     = "INTERNAL_ERROR"
+	ErrCodeEmailTaken            = "EMAIL_TAKEN"
+	ErrCodeInvalidCredentials    = "INVALID_CREDENTIALS"
+	ErrCodeOTPInvalid            = "OTP_INVALID"
+	ErrCodeOTPExpired            = "OTP_EXPIRED"
+	ErrCodeOTPAttemptsExceeded   = "OTP_ATTEMPTS_EXCEEDED"
+	ErrCodeEmailNotVerified      = "EMAIL_NOT_VERIFIED"
+	ErrCodeRateLimited           = "RATE_LIMITED"
+	ErrCodeUserNotFound          = "USER_NOT_FOUND"
+	ErrCodeInvalidRole           = "INVALID_ROLE"
+	ErrCodeInvalidInput          = "INVALID_INPUT"
+	ErrCodeUnauthorized          = "UNAUTHORIZED"
+	ErrCodeTokenExpired          = "TOKEN_EXPIRED"
+	ErrCodeTokenInvalid          = "TOKEN_INVALID"
+	ErrCodeInternalError         = "INTERNAL_ERROR"
+	ErrCodeRegistrationTokenRequired = "REGISTRATION_TOKEN_REQUIRED"
 )
 
 // APIError represents a structured API error
@@ -34,18 +36,20 @@ func (e *APIError) Error() string {
 
 // Predefined errors
 var (
-	ErrEmailTaken         = &APIError{Code: ErrCodeEmailTaken, Message: "This email is already registered"}
-	ErrInvalidCredentials = &APIError{Code: ErrCodeInvalidCredentials, Message: "Invalid email or password"}
-	ErrOTPInvalid         = &APIError{Code: ErrCodeOTPInvalid, Message: "Invalid verification code"}
-	ErrOTPExpired         = &APIError{Code: ErrCodeOTPExpired, Message: "Verification code has expired"}
-	ErrEmailNotVerified   = &APIError{Code: ErrCodeEmailNotVerified, Message: "Please verify your email first"}
-	ErrRateLimited        = &APIError{Code: ErrCodeRateLimited, Message: "Too many requests. Please try again later"}
-	ErrUserNotFound       = &APIError{Code: ErrCodeUserNotFound, Message: "User not found"}
-	ErrInvalidRole        = &APIError{Code: ErrCodeInvalidRole, Message: "Invalid role specified"}
-	ErrUnauthorized       = &APIError{Code: ErrCodeUnauthorized, Message: "Authentication required"}
-	ErrTokenExpired       = &APIError{Code: ErrCodeTokenExpired, Message: "Token has expired"}
-	ErrTokenInvalid       = &APIError{Code: ErrCodeTokenInvalid, Message: "Invalid token"}
-	ErrInternalError      = &APIError{Code: ErrCodeInternalError, Message: "An internal error occurred"}
+	ErrEmailTaken                = &APIError{Code: ErrCodeEmailTaken, Message: "This email is already registered"}
+	ErrInvalidCredentials        = &APIError{Code: ErrCodeInvalidCredentials, Message: "Invalid email or password"}
+	ErrOTPInvalid                = &APIError{Code: ErrCodeOTPInvalid, Message: "Invalid verification code"}
+	ErrOTPExpired                = &APIError{Code: ErrCodeOTPExpired, Message: "Verification code has expired"}
+	ErrOTPAttemptsExceeded       = &APIError{Code: ErrCodeOTPAttemptsExceeded, Message: "Too many incorrect attempts. Please request a new code"}
+	ErrEmailNotVerified          = &APIError{Code: ErrCodeEmailNotVerified, Message: "Please verify your email first"}
+	ErrRateLimited               = &APIError{Code: ErrCodeRateLimited, Message: "Too many requests. Please try again later"}
+	ErrUserNotFound              = &APIError{Code: ErrCodeUserNotFound, Message: "User not found"}
+	ErrInvalidRole               = &APIError{Code: ErrCodeInvalidRole, Message: "Invalid role specified"}
+	ErrUnauthorized              = &APIError{Code: ErrCodeUnauthorized, Message: "Authentication required"}
+	ErrTokenExpired              = &APIError{Code: ErrCodeTokenExpired, Message: "Token has expired"}
+	ErrTokenInvalid              = &APIError{Code: ErrCodeTokenInvalid, Message: "Invalid token"}
+	ErrInternalError             = &APIError{Code: ErrCodeInternalError, Message: "An internal error occurred"}
+	ErrRegistrationTokenRequired = &APIError{Code: ErrCodeRegistrationTokenRequired, Message: "A valid registration token is required"}
 )
 
 func NewAPIError(code, message string) *APIError {

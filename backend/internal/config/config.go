@@ -17,10 +17,15 @@ type Config struct {
 	JWTAccessTokenTTL  time.Duration
 	JWTRefreshTokenTTL time.Duration
 
-	// Email configuration
+	// Email configuration (SendGrid - existing flows)
 	SendGridAPIKey    string
 	SendGridFromEmail string
 	SendGridFromName  string
+
+	// MailerSend configuration (OTP login emails)
+	MailerSendAPIKey string
+	MailerFromEmail  string
+	MailerFromName   string
 
 	// App configuration
 	AppDeeplinkScheme string
@@ -51,6 +56,10 @@ func Load() (*Config, error) {
 		SendGridAPIKey:    getEnv("SENDGRID_API_KEY", ""),
 		SendGridFromEmail: getEnv("SENDGRID_FROM_EMAIL", "noreply@drivebai.com"),
 		SendGridFromName:  getEnv("SENDGRID_FROM_NAME", "DriveBai"),
+
+		MailerSendAPIKey: getEnv("MAILERSEND_API_KEY", ""),
+		MailerFromEmail:  getEnv("MAIL_FROM_EMAIL", "noreply@drivebai.com"),
+		MailerFromName:   getEnv("MAIL_FROM_NAME", "DrivaBai"),
 
 		AppDeeplinkScheme: getEnv("APP_DEEPLINK_SCHEME", "drivebai"),
 		AppBaseURL:        getEnv("APP_BASE_URL", "http://localhost:8080"),

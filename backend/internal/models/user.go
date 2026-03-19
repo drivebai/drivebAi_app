@@ -215,3 +215,32 @@ func (r *RefreshToken) IsExpired() bool {
 func (r *RefreshToken) IsRevoked() bool {
 	return r.RevokedAt != nil
 }
+
+// LoginOTP represents a one-time password record for email-based passwordless login.
+// Note: not linked to a user — the email may or may not exist in the users table.
+const LoginOTPMaxAttempts = 5
+
+type LoginOTP struct {
+	ID         uuid.UUID  `json:"id"`
+	Email      string     `json:"email"`
+	CodeHash   string     `json:"-"` // SHA-256 of the raw code; never exposed
+	ExpiresAt  time.Time  `json:"expires_at"`
+	Attempts   int        `json:"attempts"`
+	ConsumedAt *time.Time `json:"consumed_at,omitempty"`
+	IPAddress  *string    `json:"-"`
+	UserAgent  *string    `json:"-"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+func (o *LoginOTP) IsExpired() bool {
+	return time.Now().After(o.ExpiresAt)
+}
+
+func (o *LoginOTP) IsConsumed() bool {
+	return o.ConsumedAt != nil
+}
+
+// IsLocked returns true when the OTP has hit the max attempt ceiling.
+func (o *LoginOTP) IsLocked() bool {
+	return o.Attempts >= LoginOTPMaxAttempts
+}

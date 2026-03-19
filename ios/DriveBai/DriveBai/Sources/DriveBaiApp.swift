@@ -74,8 +74,8 @@ struct ContentView: View {
                 }
 
             case .unauthenticated:
-                // Show auth flow immediately when not logged in
-                LoginView(showDismissButton: false)
+                // OTP is the primary auth flow; password login is secondary
+                EnterEmailOTPView(showDismissButton: false)
                     .environmentObject(deepLinkRouter)
 
             case .authenticated(let user):

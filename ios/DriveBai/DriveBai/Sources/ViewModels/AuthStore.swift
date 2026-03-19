@@ -199,6 +199,7 @@ final class AuthStore: ObservableObject {
         state = .unauthenticated
         pendingEmail = nil
         pendingRole = nil
+        pendingRegistrationTokenData = nil
         error = nil
         documents = []
 
@@ -368,5 +369,105 @@ final class AuthStore: ObservableObject {
     func clearPendingState() {
         pendingEmail = nil
         pendingRole = nil
+    }
+
+    // MARK: - OTP Passwordless Login
+
+    /// Holds the registration token returned when OTP verify finds no existing user.
+    /// The OTPLoginView passes this to SignupFlowView to complete registration.
+    @Published var pendingRegistrationTokenData: RegistrationTokenData?
+
+    /// Step 1 — request a 6-digit OTP for the given email.
+    func requestLoginOTP(email: String) async throws {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            _ = try await apiClient.requestLoginOTP(email: email)
+            pendingEmail = email
+        } catch let apiError as APIError {
+            error = apiError.errorDescription
+            throw apiError
+        }
+    }
+
+    /// Step 2 — submit the OTP code.
+    /// Returns `true` when the result is a login (tokens saved, state set to authenticated).
+    /// Returns `false` when the result is a registration prompt (pendingRegistrationTokenData set).
+    @discardableResult
+    func verifyLoginOTP(email: String, code: String) async throws -> Bool {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            let response = try await apiClient.verifyLoginOTP(email: email, code: code)
+
+            if let tokens = response.asAuthTokens {
+                // Existing user — save tokens and transition to authenticated
+                try keychain.saveTokens(
+                    accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken,
+                    expiresAt: tokens.expiresAt
+                )
+                state = .authenticated(tokens.user)
+                pendingEmail = nil
+                return true
+            }
+
+            if let regData = response.asRegistrationData {
+                // New user — store registration token data for the signup flow
+                pendingRegistrationTokenData = regData
+                pendingEmail = regData.email
+                return false
+            }
+
+            throw APIError.unknown
+        } catch let apiError as APIError {
+            error = apiError.errorDescription
+            throw apiError
+        }
+    }
+
+    /// Step 3 (new user path) — complete registration using the registration token.
+    func completeOTPRegistration(
+        firstName: String,
+        lastName: String,
+        password: String,
+        role: UserRole,
+        phone: String?
+    ) async throws {
+        guard let regData = pendingRegistrationTokenData else {
+            throw APIError.serverError(code: "REGISTRATION_TOKEN_REQUIRED", message: "No registration token found. Please restart the OTP flow.")
+        }
+
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        let request = CompleteRegistrationRequest(
+            registrationToken: regData.registrationToken,
+            firstName: firstName,
+            lastName: lastName,
+            password: password,
+            phone: phone,
+            role: role
+        )
+
+        do {
+            let tokens = try await apiClient.completeRegistrationWithToken(request)
+            try keychain.saveTokens(
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                expiresAt: tokens.expiresAt
+            )
+            state = .authenticated(tokens.user)
+            pendingEmail = nil
+            pendingRegistrationTokenData = nil
+        } catch let apiError as APIError {
+            error = apiError.errorDescription
+            throw apiError
+        }
     }
 }

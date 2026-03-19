@@ -60,10 +60,12 @@ func main() {
 	// Initialize services
 	jwtSvc := auth.NewJWTService(cfg.JWTSecret, cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL)
 	emailSvc := email.NewSender(cfg.SendGridAPIKey, cfg.SendGridFromEmail, cfg.SendGridFromName, cfg.AppDeeplinkScheme, cfg.AppBaseURL, logger)
+	otpEmailSvc := email.NewOTPSender(cfg.MailerSendAPIKey, cfg.MailerFromEmail, cfg.MailerFromName, logger)
 
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(db)
 	tokenRepo := repository.NewTokenRepository(db)
+	loginOTPRepo := repository.NewLoginOTPRepository(db)
 	docRepo := repository.NewDocumentRepository(db)
 	carRepo := repository.NewCarRepository(db)
 	carPhotoRepo := repository.NewCarPhotoRepository(db)
@@ -102,6 +104,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, jwtSvc, emailSvc, cfg, logger)
+	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, uploadDir, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
@@ -152,6 +155,11 @@ func main() {
 			r.Post("/password/reset", authHandler.ResetPassword)
 			r.Post("/logout", authHandler.Logout)
 			r.Post("/resend-otp", authHandler.ResendOTP)
+
+			// OTP email login (passwordless)
+			r.Post("/otp/request", otpAuthHandler.RequestOTP)
+			r.Post("/otp/verify", otpAuthHandler.VerifyOTP)
+			r.Post("/otp/complete-registration", otpAuthHandler.CompleteRegistration)
 		})
 
 		// WebSocket endpoint (auth via query param, not middleware)

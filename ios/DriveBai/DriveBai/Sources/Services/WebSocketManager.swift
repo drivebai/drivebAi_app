@@ -36,7 +36,7 @@ final class WebSocketManager: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var usePollingFallback = false
 
-    private let wsBaseURL = "wss://drivebai-api.fly.dev/api/v1/ws"
+    private let wsBaseURL = AppConfig.wsBaseURL
 
     private let decoder: JSONDecoder = {
         let d = JSONDecoder()
