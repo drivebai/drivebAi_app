@@ -144,7 +144,7 @@ struct SignupUserInfoStepView: View {
 
     var body: some View {
         SignupStepContainer(
-            title: "Finish signing up",
+            title: signupFlow.mode == .normal ? "Create your account" : "Finish signing up",
             currentStep: signupFlow.currentStepIndex,
             totalSteps: signupFlow.totalSteps,
             showBackButton: true,
@@ -238,6 +238,12 @@ struct SignupUserInfoStepView: View {
                     Text("Password")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+
+                    if case .otp = signupFlow.mode {
+                        Text("Set a password so you can also sign in without a code.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
 
                     SecureField("Password", text: $signupFlow.password)
                         .textFieldStyle(DriveBaiTextFieldStyle())

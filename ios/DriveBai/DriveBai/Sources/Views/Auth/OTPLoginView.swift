@@ -1,5 +1,13 @@
 import SwiftUI
 
+// MARK: - Keyboard Dismiss Helper
+
+private extension View {
+    func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+}
+
 // MARK: - Enter Email OTP View
 
 /// Primary authentication entry point. User enters their email, then gets a 6-digit
@@ -268,6 +276,10 @@ struct OTPCodeInputView: View {
                 isInputFocused = true
             }
         }
+        .onDisappear {
+            isInputFocused = false
+            dismissKeyboard()
+        }
         .onChange(of: code) { _, newValue in
             // Clamp to 6 numeric digits
             let filtered = String(newValue.filter { $0.isNumber }.prefix(6))
@@ -289,6 +301,8 @@ struct OTPCodeInputView: View {
     }
 
     private func verify() {
+        isInputFocused = false
+        dismissKeyboard()
         Task {
             do {
                 let isLogin = try await authStore.verifyLoginOTP(email: email, code: code)

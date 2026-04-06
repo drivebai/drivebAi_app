@@ -639,17 +639,15 @@ struct CreateListingPricingStep: View {
 
                 if state.isForRent {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Weekly Rent Price")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(Money(amount: state.weeklyRentPrice).formatted)
-                                .fontWeight(.semibold)
-                        }
+                        Text("Weekly Rent Price")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
 
-                        Slider(value: $state.weeklyRentPrice, in: 50...2000, step: 25)
-                            .tint(Color.driveBaiPrimary)
+                        CurrencyTextField(value: $state.weeklyRentPrice, placeholder: "350")
+
+                        Text("Minimum $50")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -671,17 +669,15 @@ struct CreateListingPricingStep: View {
 
                 if state.isForSale {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Sale Price")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Text(Money(amount: state.salePrice).formatted)
-                                .fontWeight(.semibold)
-                        }
+                        Text("Sale Price")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
 
-                        Slider(value: $state.salePrice, in: 1000...200000, step: 500)
-                            .tint(Color.driveBaiPrimary)
+                        CurrencyTextField(value: $state.salePrice, placeholder: "25000")
+
+                        Text("Minimum $1,000")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -733,17 +729,11 @@ struct CreateListingRequirementsStep: View {
 
                 // Deposit amount
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Security Deposit")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(Money(amount: state.depositAmount).formatted)
-                            .fontWeight(.semibold)
-                    }
+                    Text("Security Deposit")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
 
-                    Slider(value: $state.depositAmount, in: 0...5000, step: 50)
-                        .tint(Color.driveBaiPrimary)
+                    CurrencyTextField(value: $state.depositAmount, placeholder: "0")
                 }
 
                 // Insurance coverage
@@ -1140,6 +1130,47 @@ struct ReviewRow: View {
             Text(value)
                 .font(.subheadline)
                 .fontWeight(.medium)
+        }
+    }
+}
+
+// MARK: - Currency Text Field
+
+/// A text field that binds to a Double and accepts only numeric input.
+private struct CurrencyTextField: View {
+    @Binding var value: Double
+    let placeholder: String
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("$")
+                .font(.body)
+                .foregroundColor(.secondary)
+            TextField(placeholder, text: $text)
+                .keyboardType(.numberPad)
+                .focused($isFocused)
+                .onChange(of: text) { _, newValue in
+                    let filtered = newValue.filter { $0.isNumber }
+                    if filtered != newValue { text = filtered }
+                    if let parsed = Double(filtered) {
+                        value = parsed
+                    } else if filtered.isEmpty {
+                        value = 0
+                    }
+                }
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isFocused ? Color.driveBaiPrimary : Color.gray.opacity(0.3), lineWidth: 1)
+        )
+        .onAppear {
+            text = value > 0 ? String(Int(value)) : ""
         }
     }
 }
