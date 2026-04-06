@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import UniformTypeIdentifiers
 
 /// Car detail edit mode with collapsible sections - Figma accurate
@@ -482,12 +483,15 @@ private struct RequirementsContent: View {
 private struct DocumentsContent: View {
     @Binding var documents: [CarDocument]
 
-    @State private var showingDocumentPicker = false
+    @State private var showingSourceChooser = false
+    @State private var showingFilePicker = false
+    @State private var showingPhotoPicker = false
     @State private var showingAddDocumentSheet = false
     @State private var selectedDocumentType: CarDocumentType?
     @State private var documentToReplace: CarDocument?
     @State private var showDeleteConfirmation = false
     @State private var documentToDelete: CarDocument?
+    @State private var pickerItem: PhotosPickerItem?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -497,7 +501,7 @@ private struct DocumentsContent: View {
                     onReplace: {
                         documentToReplace = doc
                         selectedDocumentType = doc.documentType
-                        showingDocumentPicker = true
+                        showingSourceChooser = true
                     },
                     onDelete: {
                         documentToDelete = doc
@@ -525,13 +529,37 @@ private struct DocumentsContent: View {
                     selectedDocumentType = type
                     documentToReplace = nil
                     showingAddDocumentSheet = false
-                    showingDocumentPicker = true
+                    showingSourceChooser = true
                 }
             )
         }
+        .confirmationDialog("Upload Document", isPresented: $showingSourceChooser, titleVisibility: .visible) {
+            Button("Photo Library") { showingPhotoPicker = true }
+            Button("Files") { showingFilePicker = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $pickerItem, matching: .images)
+        .onChange(of: pickerItem) { _, newItem in
+            guard let item = newItem else { return }
+            pickerItem = nil
+            Task {
+                guard let type = selectedDocumentType else { return }
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                let ext: String
+                if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
+                    ext = "png"
+                } else {
+                    ext = "jpg"
+                }
+                let filename = "\(type.rawValue).\(ext)"
+                await MainActor.run {
+                    addOrReplaceDocument(type: type, filename: filename, fileSize: data.count)
+                }
+            }
+        }
         .fileImporter(
-            isPresented: $showingDocumentPicker,
-            allowedContentTypes: [.pdf, .image],
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.pdf, .jpeg, .png, .image],
             allowsMultipleSelection: false
         ) { result in
             handleDocumentImport(result: result)
@@ -560,8 +588,9 @@ private struct DocumentsContent: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
 
-            // Get file info
             let filename = url.lastPathComponent
             let fileSize: Int
             if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -571,25 +600,28 @@ private struct DocumentsContent: View {
                 fileSize = 0
             }
 
-            let newDocument = CarDocument(
-                documentType: type,
-                filename: filename,
-                fileSize: fileSize,
-                uploadedAt: Date()
-            )
-
-            if let replaceDoc = documentToReplace {
-                // Replace existing document
-                if let index = documents.firstIndex(where: { $0.id == replaceDoc.id }) {
-                    documents[index] = newDocument
-                }
-            } else {
-                // Add new document
-                documents.append(newDocument)
-            }
+            addOrReplaceDocument(type: type, filename: filename, fileSize: fileSize)
 
         case .failure(let error):
-            print("Document import failed: \(error)")
+            #if DEBUG
+            print("[DocumentsContent] Document import failed: \(error)")
+            #endif
+        }
+    }
+
+    private func addOrReplaceDocument(type: CarDocumentType, filename: String, fileSize: Int) {
+        let newDocument = CarDocument(
+            documentType: type,
+            filename: filename,
+            fileSize: fileSize,
+            uploadedAt: Date()
+        )
+
+        if let replaceDoc = documentToReplace,
+           let index = documents.firstIndex(where: { $0.id == replaceDoc.id }) {
+            documents[index] = newDocument
+        } else {
+            documents.append(newDocument)
         }
 
         // Reset state

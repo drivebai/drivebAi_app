@@ -1,15 +1,22 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 
 // MARK: - Document Upload Card
 
-/// Reusable card for uploading a document with status display
+/// Reusable card for uploading a document with status display.
+/// Supports both Photo Library and Files as upload sources.
 struct DocumentUploadCard: View {
     let type: DocumentType
     let document: Document?
     let isUploading: Bool
-    @Binding var selectedItem: PhotosPickerItem?
+    let onFileSelected: (Data, String, String) -> Void // (data, filename, mimeType)
     let onDelete: () -> Void
+
+    @State private var showSourceChooser = false
+    @State private var showPhotoPicker = false
+    @State private var showFilePicker = false
+    @State private var pickerItem: PhotosPickerItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -81,7 +88,7 @@ struct DocumentUploadCard: View {
 
                     // Action buttons
                     HStack(spacing: 12) {
-                        PhotosPicker(selection: $selectedItem, matching: .images) {
+                        Button(action: { showSourceChooser = true }) {
                             Label("Replace", systemImage: "arrow.triangle.2.circlepath")
                                 .font(.subheadline)
                         }
@@ -98,7 +105,7 @@ struct DocumentUploadCard: View {
                 }
             } else {
                 // Upload prompt
-                PhotosPicker(selection: $selectedItem, matching: .images) {
+                Button(action: { showSourceChooser = true }) {
                     HStack {
                         Spacer()
                         VStack(spacing: 8) {
@@ -108,6 +115,9 @@ struct DocumentUploadCard: View {
                             Text("Tap to upload")
                                 .font(.subheadline)
                                 .foregroundColor(.driveBaiPrimary)
+                            Text("Photo Library or Files")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                         Spacer()
                     }
@@ -124,16 +134,50 @@ struct DocumentUploadCard: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
+        .confirmationDialog("Upload Document", isPresented: $showSourceChooser, titleVisibility: .visible) {
+            Button("Photo Library") { showPhotoPicker = true }
+            Button("Files") { showFilePicker = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItem, matching: .images)
+        .onChange(of: pickerItem) { _, newItem in
+            guard let item = newItem else { return }
+            pickerItem = nil
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                let mimeType: String
+                let ext: String
+                if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
+                    mimeType = "image/png"
+                    ext = "png"
+                } else {
+                    mimeType = "image/jpeg"
+                    ext = "jpg"
+                }
+                let filename = "\(type.rawValue).\(ext)"
+                await MainActor.run { onFileSelected(data, filename, mimeType) }
+            }
+        }
+        .fileImporter(
+            isPresented: $showFilePicker,
+            allowedContentTypes: [.pdf, .jpeg, .png, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            guard let data = try? Data(contentsOf: url) else { return }
+            let filename = url.lastPathComponent
+            let mimeType = mimeTypeForURL(url)
+            onFileSelected(data, filename, mimeType)
+        }
     }
 
     private func statusColor(_ status: DocumentStatus) -> Color {
         switch status {
-        case .uploaded:
-            return .orange
-        case .verified:
-            return .green
-        case .rejected:
-            return .red
+        case .uploaded: return .orange
+        case .verified: return .green
+        case .rejected: return .red
         }
     }
 
@@ -141,6 +185,15 @@ struct DocumentUploadCard: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+
+    private func mimeTypeForURL(_ url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "application/pdf"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        default: return "application/octet-stream"
+        }
     }
 }
 
@@ -150,7 +203,7 @@ struct DocumentUploadCard: View {
             type: .driversLicense,
             document: nil,
             isUploading: false,
-            selectedItem: .constant(nil),
+            onFileSelected: { _, _, _ in },
             onDelete: {}
         )
 
@@ -158,7 +211,7 @@ struct DocumentUploadCard: View {
             type: .registration,
             document: nil,
             isUploading: true,
-            selectedItem: .constant(nil),
+            onFileSelected: { _, _, _ in },
             onDelete: {}
         )
     }

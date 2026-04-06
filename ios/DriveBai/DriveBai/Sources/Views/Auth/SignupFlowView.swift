@@ -684,8 +684,6 @@ struct EmbeddedDocumentUploadContent: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var signupFlow: SignupFlowState
 
-    @State private var selectedLicenseItem: PhotosPickerItem?
-    @State private var selectedRegistrationItem: PhotosPickerItem?
     @State private var isUploadingLicense = false
     @State private var isUploadingRegistration = false
 
@@ -703,38 +701,26 @@ struct EmbeddedDocumentUploadContent: View {
                 type: .driversLicense,
                 document: licenseDocument,
                 isUploading: isUploadingLicense,
-                selectedItem: $selectedLicenseItem,
+                onFileSelected: { data, filename, mimeType in
+                    Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: .driversLicense) }
+                },
                 onDelete: { deleteLicense() }
             )
-            .onChange(of: selectedLicenseItem) { _, newItem in
-                if let item = newItem {
-                    Task {
-                        await uploadDocument(item: item, type: .driversLicense)
-                        selectedLicenseItem = nil
-                    }
-                }
-            }
 
             DocumentUploadCard(
                 type: .registration,
                 document: registrationDocument,
                 isUploading: isUploadingRegistration,
-                selectedItem: $selectedRegistrationItem,
+                onFileSelected: { data, filename, mimeType in
+                    Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: .registration) }
+                },
                 onDelete: { deleteRegistration() }
             )
-            .onChange(of: selectedRegistrationItem) { _, newItem in
-                if let item = newItem {
-                    Task {
-                        await uploadDocument(item: item, type: .registration)
-                        selectedRegistrationItem = nil
-                    }
-                }
-            }
         }
         .padding(.horizontal)
     }
 
-    private func uploadDocument(item: PhotosPickerItem, type: DocumentType) async {
+    private func uploadDocument(data: Data, filename: String, mimeType: String, type: DocumentType) async {
         if type == .driversLicense {
             isUploadingLicense = true
         } else {
@@ -752,33 +738,15 @@ struct EmbeddedDocumentUploadContent: View {
         signupFlow.clearError()
 
         do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                signupFlow.error = "Failed to load selected file"
-                return
-            }
-
-            let mimeType: String
-            let filename: String
-
-            if let contentType = item.supportedContentTypes.first {
-                if contentType.conforms(to: .png) {
-                    mimeType = "image/png"
-                    filename = "\(type.rawValue).png"
-                } else {
-                    mimeType = "image/jpeg"
-                    filename = "\(type.rawValue).jpg"
-                }
-            } else {
-                mimeType = "image/jpeg"
-                filename = "\(type.rawValue).jpg"
-            }
-
             try await authStore.uploadDocument(
                 type: type,
                 fileData: data,
                 filename: filename,
                 mimeType: mimeType
             )
+            #if DEBUG
+            print("[EmbeddedDocumentUpload] Uploaded \(type.rawValue): \(filename) (\(mimeType))")
+            #endif
         } catch {
             signupFlow.error = authStore.error ?? "Failed to upload document"
         }
