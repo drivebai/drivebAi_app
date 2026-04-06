@@ -63,7 +63,7 @@ func (r *LoginOTPRepository) Create(
 // Returns nil, nil when none exists.
 func (r *LoginOTPRepository) GetLatestUnconsumed(ctx context.Context, email string) (*models.LoginOTP, error) {
 	query := `
-		SELECT id, email, code_hash, expires_at, attempts, consumed_at, ip_address, user_agent, created_at
+		SELECT id, email, code_hash, expires_at, attempts, consumed_at, ip_address, user_agent, message_id, created_at
 		FROM login_otps
 		WHERE email = $1 AND consumed_at IS NULL
 		ORDER BY created_at DESC
@@ -79,6 +79,7 @@ func (r *LoginOTPRepository) GetLatestUnconsumed(ctx context.Context, email stri
 		&otp.ConsumedAt,
 		&otp.IPAddress,
 		&otp.UserAgent,
+		&otp.MessageID,
 		&otp.CreatedAt,
 	)
 	if err != nil {
@@ -128,4 +129,43 @@ func (r *LoginOTPRepository) CountRecentByEmail(ctx context.Context, email strin
 		strings.ToLower(email), since,
 	).Scan(&count)
 	return count, err
+}
+
+// SetMessageID stores the MailerSend message ID on an OTP record for delivery tracking.
+func (r *LoginOTPRepository) SetMessageID(ctx context.Context, id uuid.UUID, messageID string) error {
+	_, err := r.db.Pool.Exec(ctx,
+		`UPDATE login_otps SET message_id = $1 WHERE id = $2`,
+		messageID, id,
+	)
+	return err
+}
+
+// GetByMessageID looks up an OTP record by its MailerSend message ID.
+func (r *LoginOTPRepository) GetByMessageID(ctx context.Context, messageID string) (*models.LoginOTP, error) {
+	query := `
+		SELECT id, email, code_hash, expires_at, attempts, consumed_at, ip_address, user_agent, message_id, created_at
+		FROM login_otps
+		WHERE message_id = $1
+		LIMIT 1
+	`
+	otp := &models.LoginOTP{}
+	err := r.db.Pool.QueryRow(ctx, query, messageID).Scan(
+		&otp.ID,
+		&otp.Email,
+		&otp.CodeHash,
+		&otp.ExpiresAt,
+		&otp.Attempts,
+		&otp.ConsumedAt,
+		&otp.IPAddress,
+		&otp.UserAgent,
+		&otp.MessageID,
+		&otp.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return otp, nil
 }

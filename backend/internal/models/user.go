@@ -229,6 +229,7 @@ type LoginOTP struct {
 	ConsumedAt *time.Time `json:"consumed_at,omitempty"`
 	IPAddress  *string    `json:"-"`
 	UserAgent  *string    `json:"-"`
+	MessageID  *string    `json:"message_id,omitempty"` // MailerSend X-Message-Id for delivery tracking
 	CreatedAt  time.Time  `json:"created_at"`
 }
 

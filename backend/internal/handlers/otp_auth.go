@@ -157,7 +157,8 @@ func (h *OTPAuthHandler) RequestOTP(w http.ResponseWriter, r *http.Request) {
 	expiresAt := time.Now().Add(otpExpiry)
 	userAgent := r.UserAgent()
 
-	if _, err := h.otpRepo.Create(ctx, req.Email, codeHash, expiresAt, ip, userAgent); err != nil {
+	otpRecord, err := h.otpRepo.Create(ctx, req.Email, codeHash, expiresAt, ip, userAgent)
+	if err != nil {
 		h.logger.Error("otp/request: failed to store OTP", "error", err)
 		WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
@@ -171,8 +172,22 @@ func (h *OTPAuthHandler) RequestOTP(w http.ResponseWriter, r *http.Request) {
 
 	// Fire and forget: email failures must NOT reveal user enumeration info
 	// via a different response shape. We log the error and return success.
-	if err := h.otpSender.SendLoginOTP(req.Email, rawCode); err != nil {
-		h.logger.Error("otp/request: failed to send OTP email", "error", err, "email", req.Email)
+	result, sendErr := h.otpSender.SendLoginOTP(req.Email, rawCode)
+	if sendErr != nil {
+		h.logger.Error("otp/request: failed to send OTP email",
+			"error", sendErr,
+			"email", req.Email,
+			"otp_id", otpRecord.ID,
+		)
+	} else if result != nil && result.MessageID != "" {
+		// Persist MailerSend message ID for delivery tracking
+		if dbErr := h.otpRepo.SetMessageID(ctx, otpRecord.ID, result.MessageID); dbErr != nil {
+			h.logger.Error("otp/request: failed to store message_id",
+				"error", dbErr,
+				"otp_id", otpRecord.ID,
+				"message_id", result.MessageID,
+			)
+		}
 	}
 
 	// Always respond generically
