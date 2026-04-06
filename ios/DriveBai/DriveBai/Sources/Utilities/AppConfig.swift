@@ -8,7 +8,7 @@ enum AppConfig {
     }
 
     #if DEBUG
-    static var current: BackendEnvironment = .local
+    static var current: BackendEnvironment = .flyTeam
     #else
     static let current: BackendEnvironment = .flyTeam
     #endif
