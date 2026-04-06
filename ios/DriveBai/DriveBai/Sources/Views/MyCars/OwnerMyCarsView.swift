@@ -131,8 +131,8 @@ enum CarListTab: String, CaseIterable {
 
     func title(count: Int) -> String {
         switch self {
-        case .forRent: return "For rent \(count)"
-        case .forSale: return "For sale \(count)"
+        case .forRent: return "For rent (\(count))"
+        case .forSale: return "For sale (\(count))"
         }
     }
 }

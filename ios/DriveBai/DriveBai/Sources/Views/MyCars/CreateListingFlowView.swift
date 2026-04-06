@@ -818,6 +818,11 @@ struct CreateListingRequirementsStep: View {
 struct CreateListingPhotosStep: View {
     @EnvironmentObject private var state: CreateListingState
 
+    // Multi-select picker state
+    @State private var selectedItems: [PhotosPickerItem] = []
+    @State private var isLoadingBatch: Bool = false
+    @State private var batchMessage: String?
+
     // Grid configuration for consistent photo tiles
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -825,6 +830,10 @@ struct CreateListingPhotosStep: View {
     ]
     private let tileCornerRadius: CGFloat = 16
     private let tileAspectRatio: CGFloat = 1.4
+
+    private var emptySlotCount: Int {
+        state.photoSlots.filter { !$0.hasImage }.count
+    }
 
     var body: some View {
         CreateListingStepContainer(
@@ -837,24 +846,133 @@ struct CreateListingPhotosStep: View {
             onBack: { state.goToPreviousStep() },
             onContinue: { state.goToNextStep() }
         ) {
-            LazyVGrid(columns: columns, spacing: 12) {
-                // BUG FIX: Each slot now has its own independent PhotosPicker.
-                // Previously, a single shared @State PhotosPickerItem caused:
-                // 1. Selecting same photo twice didn't trigger onChange
-                // 2. Race condition where slotIndex could become stale
-                // 3. All slots sharing same selection state
-                ForEach(Array(state.photoSlots.enumerated()), id: \.element.id) { index, slot in
-                    IndependentPhotoSlotPicker(
-                        slot: slot,
-                        cornerRadius: tileCornerRadius,
-                        aspectRatio: tileAspectRatio,
-                        onPhotoSelected: { imageData in
-                            #if DEBUG
-                            print("[CreateListingPhotosStep] Photo selected for slot: \(slot.slotType.rawValue), data size: \(imageData.count) bytes")
-                            #endif
-                            state.photoSlots[index].localImageData = imageData
+            VStack(spacing: 16) {
+                // Multi-select picker button
+                if emptySlotCount > 0 {
+                    PhotosPicker(
+                        selection: $selectedItems,
+                        maxSelectionCount: emptySlotCount,
+                        matching: .images
+                    ) {
+                        HStack(spacing: 8) {
+                            if isLoadingBatch {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "photo.on.rectangle.angled")
+                                    .font(.system(size: 16, weight: .semibold))
+                            }
+                            Text(isLoadingBatch ? "Loading photos..." : "Select Multiple Photos")
+                                .fontWeight(.semibold)
                         }
-                    )
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.driveBaiPrimary)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                    }
+                    .disabled(isLoadingBatch)
+                    .onChange(of: selectedItems) { _, newItems in
+                        guard !newItems.isEmpty else { return }
+                        handleBatchSelection(newItems)
+                    }
+                } else {
+                    Text("All photo slots are filled. Tap a photo to replace it.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.vertical, 8)
+                }
+
+                // Batch message (auto-dismiss)
+                if let message = batchMessage {
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.subheadline)
+                            .foregroundColor(.driveBaiPrimary)
+                        Text(message)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.driveBaiPrimary.opacity(0.08))
+                    .cornerRadius(8)
+                }
+
+                // Photo slots grid — each slot still has its own picker for individual replacement
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(Array(state.photoSlots.enumerated()), id: \.element.id) { index, slot in
+                        IndependentPhotoSlotPicker(
+                            slot: slot,
+                            cornerRadius: tileCornerRadius,
+                            aspectRatio: tileAspectRatio,
+                            onPhotoSelected: { imageData in
+                                #if DEBUG
+                                print("[CreateListingPhotosStep] Photo selected for slot: \(slot.slotType.rawValue), data size: \(imageData.count) bytes")
+                                #endif
+                                state.photoSlots[index].localImageData = imageData
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleBatchSelection(_ items: [PhotosPickerItem]) {
+        isLoadingBatch = true
+        batchMessage = nil
+
+        Task {
+            var loadedImages: [Data] = []
+            for item in items {
+                do {
+                    if let data = try await item.loadTransferable(type: Data.self) {
+                        loadedImages.append(data)
+                    }
+                } catch {
+                    #if DEBUG
+                    print("[CreateListingPhotosStep] Failed to load image from picker: \(error)")
+                    #endif
+                }
+            }
+
+            await MainActor.run {
+                // Find empty slot indices in sort order
+                let emptyIndices = state.photoSlots.enumerated()
+                    .filter { !$0.element.hasImage }
+                    .map { $0.offset }
+
+                let assignCount = min(loadedImages.count, emptyIndices.count)
+                for i in 0..<assignCount {
+                    state.photoSlots[emptyIndices[i]].localImageData = loadedImages[i]
+                }
+
+                #if DEBUG
+                print("[CreateListingPhotosStep] Batch: \(items.count) selected, \(loadedImages.count) loaded, \(assignCount) assigned")
+                #endif
+
+                if loadedImages.count > emptyIndices.count {
+                    let extras = loadedImages.count - emptyIndices.count
+                    batchMessage = "\(assignCount) photos added. \(extras) skipped — no empty slots."
+                } else if assignCount > 0 {
+                    batchMessage = "\(assignCount) photo\(assignCount == 1 ? "" : "s") added."
+                } else if loadedImages.isEmpty {
+                    batchMessage = "Could not load the selected photos."
+                }
+
+                isLoadingBatch = false
+                selectedItems = [] // Reset so picker can be used again
+
+                // Auto-dismiss message after 4 seconds
+                if batchMessage != nil {
+                    Task {
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        await MainActor.run {
+                            batchMessage = nil
+                        }
+                    }
                 }
             }
         }
