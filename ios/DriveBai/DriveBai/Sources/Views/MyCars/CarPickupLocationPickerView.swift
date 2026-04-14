@@ -45,6 +45,18 @@ struct CarPickupLocationPickerView: View {
     @State private var geocodeTask: Task<Void, Never>?
     @State private var hasSetInitialPosition = false
 
+    // Tracks the coordinate of the most recent successful reverse-geocode so we
+    // can skip re-geocoding when the camera settles within a small distance of
+    // the previous result.
+    @State private var lastGeocodedCoordinate: CLLocationCoordinate2D?
+
+    // Monotonically increasing request ID so only the latest reverse-geocode
+    // result can mutate UI state (prevents stale async responses from flicker).
+    @State private var geocodeRequestID: Int = 0
+
+    // Minimum movement (meters) before we bother running another geocode.
+    private let geocodeSkipDistanceMeters: Double = 15
+
     // Default fallback: Kuwait City center
     private let defaultCoordinate = CLLocationCoordinate2D(latitude: 29.3759, longitude: 47.9774)
 
@@ -129,23 +141,15 @@ struct CarPickupLocationPickerView: View {
 
     private var addressSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "mappin.and.ellipse")
                     .foregroundColor(Color.driveBaiPrimary)
 
-                if isGeocoding {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Finding address...")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                } else if let error = geocodeError {
-                    Text(error)
-                        .font(.subheadline)
-                        .foregroundColor(.orange)
-                } else if !resolvedAddress.isEmpty {
+                // Show the last resolved address whenever we have one — even while
+                // a new geocode is in flight. This prevents the text from
+                // blinking between the address and "Finding address..." on every
+                // camera settle.
+                if !resolvedAddress.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(resolvedAddress.displaySummary)
                             .font(.subheadline)
@@ -157,6 +161,19 @@ struct CarPickupLocationPickerView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                } else if isGeocoding {
+                    // No known address yet — show the "looking up" state.
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Finding address...")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                } else if let error = geocodeError {
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.orange)
                 } else {
                     Text("Move the map to select a location")
                         .font(.subheadline)
@@ -164,6 +181,12 @@ struct CarPickupLocationPickerView: View {
                 }
 
                 Spacer()
+
+                // Subtle inline spinner when refreshing an already-resolved address.
+                if isGeocoding && !resolvedAddress.isEmpty {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
             }
             .padding(16)
             .background(Color(.systemGray6))
@@ -191,7 +214,11 @@ struct CarPickupLocationPickerView: View {
     }
 
     private var canSave: Bool {
-        selectedCoordinate != nil && !isGeocoding
+        // Allow saving as long as we have a coordinate and a resolved address.
+        // The in-flight spinner for a background refresh should not block save.
+        guard selectedCoordinate != nil else { return false }
+        if !resolvedAddress.isEmpty { return true }
+        return !isGeocoding
     }
 
     // MARK: - Actions
@@ -201,13 +228,15 @@ struct CarPickupLocationPickerView: View {
         hasSetInitialPosition = true
 
         if let initial = initialCoordinate, initial.latitude != 0, initial.longitude != 0 {
-            // Use previously selected coordinate
+            // Use previously selected coordinate. The programmatic camera move
+            // below will trigger onMapCameraChange → debouncedGeocode, so we do
+            // NOT also call reverseGeocode here (that caused two races to
+            // flicker the "Finding address..." label).
             selectedCoordinate = initial
             cameraPosition = .region(MKCoordinateRegion(
                 center: initial,
                 span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
             ))
-            reverseGeocode(coordinate: initial)
         } else {
             // Request user location and center on it
             locationManager.requestPermission()
@@ -216,12 +245,14 @@ struct CarPickupLocationPickerView: View {
                 try? await Task.sleep(for: .milliseconds(800))
                 await MainActor.run {
                     if let userLoc = locationManager.lastLocation {
+                        // The programmatic camera move triggers onMapCameraChange,
+                        // which schedules a single debounced geocode. No direct
+                        // call here — avoids racing with the camera-change path.
                         selectedCoordinate = userLoc
                         cameraPosition = .region(MKCoordinateRegion(
                             center: userLoc,
                             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
                         ))
-                        reverseGeocode(coordinate: userLoc)
                     } else {
                         // Fallback to default
                         selectedCoordinate = defaultCoordinate
@@ -266,6 +297,20 @@ struct CarPickupLocationPickerView: View {
     }
 
     private func reverseGeocode(coordinate: CLLocationCoordinate2D) {
+        // Skip if we already resolved an address for a coordinate very close to
+        // this one. Prevents redundant re-geocodes (and the flicker they cause)
+        // when the camera settles slightly after a programmatic move.
+        if let last = lastGeocodedCoordinate, !resolvedAddress.isEmpty {
+            let a = CLLocation(latitude: last.latitude, longitude: last.longitude)
+            let b = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            if a.distance(from: b) < geocodeSkipDistanceMeters {
+                return
+            }
+        }
+
+        geocodeRequestID += 1
+        let requestID = geocodeRequestID
+
         isGeocoding = true
         geocodeError = nil
 
@@ -276,6 +321,10 @@ struct CarPickupLocationPickerView: View {
             do {
                 let placemarks = try await geocoder.reverseGeocodeLocation(location)
                 await MainActor.run {
+                    // Drop stale responses so a slow geocode from a previous
+                    // coordinate can't overwrite a newer one.
+                    guard requestID == geocodeRequestID else { return }
+
                     if let placemark = placemarks.first {
                         let area = placemark.subLocality ?? placemark.locality ?? placemark.administrativeArea ?? ""
                         let thoroughfare = placemark.thoroughfare ?? ""
@@ -297,14 +346,19 @@ struct CarPickupLocationPickerView: View {
                             zip: zip,
                             addressLine: addressLine
                         )
-                    } else {
+                        lastGeocodedCoordinate = coordinate
+                    } else if resolvedAddress.isEmpty {
                         geocodeError = "Could not resolve address"
                     }
                     isGeocoding = false
                 }
             } catch {
                 await MainActor.run {
-                    geocodeError = "Address lookup failed. Try again."
+                    guard requestID == geocodeRequestID else { return }
+                    // Keep any previously resolved address visible on failure.
+                    if resolvedAddress.isEmpty {
+                        geocodeError = "Address lookup failed. Try again."
+                    }
                     isGeocoding = false
                     #if DEBUG
                     print("[CarPickupLocationPicker] Geocode error: \(error.localizedDescription)")
