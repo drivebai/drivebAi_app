@@ -484,17 +484,10 @@ private struct CarOwnerSection: View {
 
                 Spacer()
 
-                // Message button
-                Button(action: {}) {
-                    Image(systemName: "message.fill")
-                        .font(.system(size: 16))
-                        .foregroundColor(Color.driveBaiPrimary)
-                        .frame(width: 44, height: 44)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.driveBaiPrimary, lineWidth: 1.5)
-                        )
-                }
+                // Chat CTA intentionally omitted: this screen is the owner's
+                // management view of their own car. Chat is only meaningful
+                // when viewing another user's listing (see ListingDetailView
+                // in DiscoverView, gated by ChatEligibility.canStartChat).
             }
         }
     }

@@ -803,6 +803,8 @@ struct ListingDetailView: View {
 
     private func startChat() {
         guard let user = authStore.state.user, !isCreatingChat else { return }
+        // Defensive guard: never try to start a chat with yourself.
+        guard ChatEligibility.canStartChat(currentUserId: user.id, otherUserId: car.owner.id) else { return }
         isCreatingChat = true
 
         Task {
@@ -1006,29 +1008,35 @@ struct ListingDetailView: View {
             Divider()
 
             HStack(spacing: 12) {
-                // Message owner button
-                Button(action: startChat) {
-                    HStack(spacing: 6) {
-                        if isCreatingChat {
-                            ProgressView()
-                                .tint(.driveBaiPrimary)
-                        } else {
-                            Image(systemName: "message.fill")
+                // Message owner button — hidden when the viewer is the owner
+                // (no self-chat) or when auth state is missing.
+                if ChatEligibility.canStartChat(
+                    currentUserId: authStore.state.user?.id,
+                    otherUserId: car.owner.id
+                ) {
+                    Button(action: startChat) {
+                        HStack(spacing: 6) {
+                            if isCreatingChat {
+                                ProgressView()
+                                    .tint(.driveBaiPrimary)
+                            } else {
+                                Image(systemName: "message.fill")
+                            }
+                            Text("Message")
+                                .font(.headline)
                         }
-                        Text("Message")
-                            .font(.headline)
+                        .foregroundColor(.driveBaiPrimary)
+                        .frame(minWidth: 120)
+                        .padding(.vertical, 14)
+                        .background(Color(.systemBackground))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.driveBaiPrimary, lineWidth: 2)
+                        )
+                        .cornerRadius(12)
                     }
-                    .foregroundColor(.driveBaiPrimary)
-                    .frame(minWidth: 120)
-                    .padding(.vertical, 14)
-                    .background(Color(.systemBackground))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.driveBaiPrimary, lineWidth: 2)
-                    )
-                    .cornerRadius(12)
+                    .disabled(isCreatingChat)
                 }
-                .disabled(isCreatingChat)
 
                 // Request lease button (primary) - only show if for rent
                 if car.isForRent {
