@@ -639,19 +639,19 @@ struct CreateListingPricingStep: View {
 
                 if state.isForRent {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Weekly Rent Price")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        PriceEditorRow(
+                            label: "Weekly Rent Price",
+                            suffix: "/ week",
+                            value: $state.weeklyRentPrice,
+                            minValue: 50,
+                            step: 10,
+                            sheetTitle: "Weekly rent"
+                        )
 
-                        CurrencyTextField(value: $state.weeklyRentPrice, placeholder: "350")
-
-                        Text("Minimum $50")
+                        Text("Minimum $50 — tap to edit with +/- or type")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
                 }
 
                 Divider()
@@ -669,19 +669,19 @@ struct CreateListingPricingStep: View {
 
                 if state.isForSale {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Sale Price")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        PriceEditorRow(
+                            label: "Sale Price",
+                            suffix: nil,
+                            value: $state.salePrice,
+                            minValue: 1000,
+                            step: 10,
+                            sheetTitle: "Sale price"
+                        )
 
-                        CurrencyTextField(value: $state.salePrice, placeholder: "25000")
-
-                        Text("Minimum $1,000")
+                        Text("Minimum $1,000 — tap to edit with +/- or type")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
                 }
 
                 if !state.isForRent && !state.isForSale {

@@ -284,31 +284,33 @@ private struct GeneralInformationContent: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            // Weekly rent price slider
+            // Weekly rent price
             if car.isForRent {
-                PriceSliderField(
+                PriceEditorRow(
                     label: "Weekly rent price",
+                    suffix: "/ week",
                     value: Binding(
                         get: { car.weeklyRentPrice?.amount ?? 0 },
                         set: { car.weeklyRentPrice = Money(amount: $0) }
                     ),
-                    range: 100...2000,
-                    step: 25,
-                    suffix: "/ week"
+                    minValue: 50,
+                    step: 10,
+                    sheetTitle: "Weekly rent"
                 )
             }
 
-            // Sale price slider
+            // Sale price
             if car.isForSale {
-                PriceSliderField(
+                PriceEditorRow(
                     label: "Sale price",
+                    suffix: nil,
                     value: Binding(
                         get: { car.salePrice?.amount ?? 0 },
                         set: { car.salePrice = Money(amount: $0) }
                     ),
-                    range: 5000...200000,
-                    step: 1000,
-                    suffix: nil
+                    minValue: 1000,
+                    step: 10,
+                    sheetTitle: "Sale price"
                 )
             }
 
