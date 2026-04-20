@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -16,13 +19,15 @@ import (
 )
 
 type LeaseRequestHandler struct {
-	leaseRepo *repository.LeaseRequestRepository
-	carRepo   *repository.CarRepository
-	userRepo  *repository.UserRepository
-	chatRepo  *repository.ChatRepository
-	stripe    *stripeService.Service
-	wsHub     *ws.Hub
-	logger    *slog.Logger
+	leaseRepo      *repository.LeaseRequestRepository
+	carRepo        *repository.CarRepository
+	userRepo       *repository.UserRepository
+	chatRepo       *repository.ChatRepository
+	docRepo        *repository.DocumentRepository
+	sharedDocsRepo *repository.SharedDocumentRepository
+	stripe         *stripeService.Service
+	wsHub          *ws.Hub
+	logger         *slog.Logger
 }
 
 func NewLeaseRequestHandler(
@@ -30,18 +35,22 @@ func NewLeaseRequestHandler(
 	carRepo *repository.CarRepository,
 	userRepo *repository.UserRepository,
 	chatRepo *repository.ChatRepository,
+	docRepo *repository.DocumentRepository,
+	sharedDocsRepo *repository.SharedDocumentRepository,
 	stripe *stripeService.Service,
 	wsHub *ws.Hub,
 	logger *slog.Logger,
 ) *LeaseRequestHandler {
 	return &LeaseRequestHandler{
-		leaseRepo: leaseRepo,
-		carRepo:   carRepo,
-		userRepo:  userRepo,
-		chatRepo:  chatRepo,
-		stripe:    stripe,
-		wsHub:     wsHub,
-		logger:    logger,
+		leaseRepo:      leaseRepo,
+		carRepo:        carRepo,
+		userRepo:       userRepo,
+		chatRepo:       chatRepo,
+		docRepo:        docRepo,
+		sharedDocsRepo: sharedDocsRepo,
+		stripe:         stripe,
+		wsHub:          wsHub,
+		logger:         logger,
 	}
 }
 
@@ -110,6 +119,13 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		}
 		return
 	}
+
+	// Auto-share the driver's onboarding documents with the owner via this
+	// lease request. Non-fatal: if the driver has no docs yet, or the insert
+	// fails transiently, the lease request itself still succeeds — the owner
+	// simply won't see a Driver Documents section until docs are re-shared on
+	// a subsequent request.
+	h.shareDriverDocs(r.Context(), created)
 
 	// Build response with names
 	resp := h.buildLeaseRequestResponse(r, created, nil)
@@ -705,4 +721,126 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponse(r *http.Request, lr *mod
 	}
 
 	return resp
+}
+
+// ─── Shared driver documents ────────────────────────────────────────────────
+
+// SharedDocumentResponse is the owner-facing view of a driver document shared
+// through a lease request. It intentionally does NOT expose the on-disk
+// file_path; only the public file_url (under /uploads/...) is surfaced, and
+// the listing endpoint is gated by chat participation.
+type SharedDocumentResponse struct {
+	ID         uuid.UUID             `json:"id"`
+	DocumentID uuid.UUID             `json:"document_id"`
+	UploaderID uuid.UUID             `json:"uploader_id"`
+	Type       models.DocumentType   `json:"type"`
+	FileName   string                `json:"file_name"`
+	FileURL    string                `json:"file_url"`
+	FileSize   int64                 `json:"file_size"`
+	MimeType   string                `json:"mime_type"`
+	Status     models.DocumentStatus `json:"status"`
+	SharedAt   models.RFC3339Time    `json:"shared_at"`
+}
+
+type SharedDocumentsListResponse struct {
+	Documents []SharedDocumentResponse `json:"documents"`
+}
+
+// shareDriverDocs captures a snapshot of the driver's onboarding documents
+// into the lease_request_shared_documents link table, so the car owner can
+// view them from the chat without the driver re-uploading anything. Called
+// AFTER the lease request transaction commits and treated as best-effort:
+// a failure here must never prevent the lease request from being returned.
+func (h *LeaseRequestHandler) shareDriverDocs(ctx context.Context, lr *models.LeaseRequest) {
+	required := []models.DocumentType{
+		models.DocumentDriversLicense,
+		models.DocumentRegistration,
+	}
+
+	var docIDs []uuid.UUID
+	for _, t := range required {
+		doc, err := h.docRepo.GetByUserIDAndType(ctx, lr.DriverID, t)
+		if err != nil {
+			h.logger.Warn("share driver docs: lookup failed",
+				"error", err, "driver_id", lr.DriverID, "type", t)
+			continue
+		}
+		if doc != nil {
+			docIDs = append(docIDs, doc.ID)
+		}
+	}
+
+	if len(docIDs) == 0 {
+		return
+	}
+
+	if err := h.sharedDocsRepo.CreateForLeaseRequest(ctx, lr.ID, docIDs); err != nil {
+		h.logger.Warn("share driver docs: insert failed",
+			"error", err, "lease_request_id", lr.ID, "count", len(docIDs))
+	}
+}
+
+// ListSharedDocuments handles GET /api/v1/chats/{chatId}/shared-documents.
+// Returns every driver document shared through any lease request in the chat.
+// Auth: caller must be a participant (driver or owner) of the chat; unrelated
+// users get 403. A driver CAN see their own shared docs (helpful context),
+// but they cannot reach a chat they aren't part of.
+func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	chatID, err := uuid.Parse(chi.URLParam(r, "chatId"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid chat ID"))
+		return
+	}
+
+	isParticipant, err := h.chatRepo.IsParticipant(r.Context(), chatID, userID)
+	if err != nil {
+		h.logger.Error("shared docs: participant check failed", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if !isParticipant {
+		httputil.WriteError(w, http.StatusForbidden, models.ErrNotParticipant)
+		return
+	}
+
+	infos, err := h.sharedDocsRepo.ListByChatID(r.Context(), chatID)
+	if err != nil {
+		h.logger.Error("shared docs: list failed", "error", err, "chat_id", chatID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	out := make([]SharedDocumentResponse, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, SharedDocumentResponse{
+			ID:         info.ID,
+			DocumentID: info.DocumentID,
+			UploaderID: info.UploaderID,
+			Type:       info.Type,
+			FileName:   info.FileName,
+			FileURL:    publicURLForDocument(info.UploaderID, info.FilePath),
+			FileSize:   info.FileSize,
+			MimeType:   info.MimeType,
+			Status:     info.Status,
+			SharedAt:   models.NewRFC3339Time(info.SharedAt),
+		})
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, SharedDocumentsListResponse{Documents: out})
+}
+
+// publicURLForDocument derives the /uploads/... relative URL from a stored
+// document FilePath. Documents are written to {uploadDir}/{userID}/{onDiskName}
+// by the upload handler, so the last two path segments form the public URL
+// under the /uploads/* static file server — the same convention already used
+// by car photos and profile photos.
+func publicURLForDocument(userID uuid.UUID, filePath string) string {
+	diskName := filepath.Base(filePath)
+	return fmt.Sprintf("/uploads/%s/%s", userID.String(), diskName)
 }

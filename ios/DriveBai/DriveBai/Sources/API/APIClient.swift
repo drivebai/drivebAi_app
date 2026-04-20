@@ -186,6 +186,7 @@ protocol APIClientProtocol {
     // Lease Requests
     func createLeaseRequest(listingId: UUID, request: CreateLeaseRequestAPIRequest) async throws -> CreateLeaseRequestAPIResponse
     func fetchLeaseRequests(chatId: UUID) async throws -> LeaseRequestsListAPIResponse
+    func fetchSharedDocuments(chatId: UUID) async throws -> SharedDocumentsListAPIResponse
     func acceptLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func declineLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
@@ -567,6 +568,10 @@ final class APIClient: APIClientProtocol {
 
     func fetchLeaseRequests(chatId: UUID) async throws -> LeaseRequestsListAPIResponse {
         try await get(path: "chats/\(chatId.uuidString)/lease-requests", authenticated: true)
+    }
+
+    func fetchSharedDocuments(chatId: UUID) async throws -> SharedDocumentsListAPIResponse {
+        try await get(path: "chats/\(chatId.uuidString)/shared-documents", authenticated: true)
     }
 
     func acceptLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse {

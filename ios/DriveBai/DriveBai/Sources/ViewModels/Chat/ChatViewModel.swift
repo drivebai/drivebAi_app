@@ -22,6 +22,12 @@ final class ChatViewModel: ObservableObject {
     @Published var leaseRequests: [LeaseRequest] = []
     @Published var isLoadingLeaseRequests = false
 
+    /// Driver onboarding documents shared into this chat through one or more
+    /// lease requests. Deduplicated by document. Only the car owner should
+    /// render these in the UI — the view decides via `isOwnerOfChat`.
+    @Published var sharedDocuments: [SharedDocumentAPIResponse] = []
+    @Published var isLoadingSharedDocuments = false
+
     @Published var messageText = ""
     @Published var selectedTab: ChatTab = .messages
     @Published var error: String?
@@ -63,6 +69,19 @@ final class ChatViewModel: ObservableObject {
                 let request = req.toChatRequest()
                 if let idx = self?.requests.firstIndex(where: { $0.id == request.id }) {
                     self?.requests[idx] = request
+                }
+            }
+            .store(in: &cancellables)
+
+        // When a new lease request arrives in this chat, the backend has also
+        // snapshotted the driver's documents into the shared-docs table. Refresh
+        // both so the owner sees the Driver Documents section without a reload.
+        WebSocketManager.shared.leaseRequestCreatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { [weak self] in
+                    await self?.loadLeaseRequests()
+                    await self?.loadSharedDocuments()
                 }
             }
             .store(in: &cancellables)
@@ -179,6 +198,24 @@ final class ChatViewModel: ObservableObject {
             self.error = error.localizedDescription
         }
         isLoadingLeaseRequests = false
+    }
+
+    // MARK: - Shared Driver Documents
+
+    /// Fetches the driver onboarding documents shared into this chat via lease
+    /// requests. Silent failure — driver docs are auxiliary to the chat; any
+    /// error is logged and the section simply stays empty.
+    func loadSharedDocuments() async {
+        isLoadingSharedDocuments = true
+        defer { isLoadingSharedDocuments = false }
+        do {
+            let response = try await apiClient.fetchSharedDocuments(chatId: chatId)
+            sharedDocuments = response.documents
+        } catch {
+            #if DEBUG
+            print("[ChatViewModel] Failed to fetch shared documents: \(error)")
+            #endif
+        }
     }
 
     func acceptLeaseRequest(id: UUID) async {

@@ -86,6 +86,7 @@
 		E000000100000000000000FF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FE /* AppConfig.swift */; };
 		E00000010000000000000311 /* ChatEligibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000310 /* ChatEligibility.swift */; };
 		E00000010000000000000101 /* OTPLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000100 /* OTPLoginView.swift */; };
+		E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000320 /* DriverDocumentsSection.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -169,6 +170,7 @@
 		E000000100000000000000FE /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		E00000010000000000000310 /* ChatEligibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatEligibility.swift; sourceTree = "<group>"; };
 		E00000010000000000000100 /* OTPLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTPLoginView.swift; sourceTree = "<group>"; };
+		E00000010000000000000320 /* DriverDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriverDocumentsSection.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -473,6 +475,7 @@
 				E000000100000000000000D2 /* RequestFormSheets.swift */,
 				E000000100000000000000F2 /* LeaseRequestCardView.swift */,
 				E000000100000000000000F3 /* PaymentSheetPresenter.swift */,
+				E00000010000000000000320 /* DriverDocumentsSection.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -620,6 +623,7 @@
 				E000000100000000000000F5 /* LeaseRequestModels.swift in Sources */,
 				E000000100000000000000F6 /* LeaseRequestCardView.swift in Sources */,
 				E000000100000000000000F7 /* PaymentSheetPresenter.swift in Sources */,
+				E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */,
 				E000000100000000000000FA /* LocationManager.swift in Sources */,
 				E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */,
 				E000000100000000000000FD /* TodayActionsAPIModels.swift in Sources */,

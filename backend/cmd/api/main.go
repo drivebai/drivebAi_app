@@ -74,6 +74,7 @@ func main() {
 	likesRepo := repository.NewLikesRepository(db)
 	chatRepo := repository.NewChatRepository(db)
 	leaseRepo := repository.NewLeaseRequestRepository(db)
+	sharedDocsRepo := repository.NewSharedDocumentRepository(db)
 
 	// Ensure uploads directory exists
 	uploadDir := cfg.UploadDir
@@ -110,7 +111,7 @@ func main() {
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
-	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, logger)
+	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 
 	// Setup router
@@ -248,6 +249,7 @@ func main() {
 			// Lease requests
 			r.Post("/listings/{listingId}/lease-requests", leaseHandler.CreateLeaseRequest)
 			r.Get("/chats/{chatId}/lease-requests", leaseHandler.ListLeaseRequests)
+			r.Get("/chats/{chatId}/shared-documents", leaseHandler.ListSharedDocuments)
 			r.Post("/lease-requests/{id}/accept", leaseHandler.AcceptLeaseRequest)
 			r.Post("/lease-requests/{id}/decline", leaseHandler.DeclineLeaseRequest)
 			r.Post("/lease-requests/{id}/cancel", leaseHandler.CancelLeaseRequest)

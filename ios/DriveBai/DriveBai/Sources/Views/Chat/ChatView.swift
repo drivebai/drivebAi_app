@@ -77,7 +77,8 @@ struct ChatView: View {
             await viewModel.loadInitialMessages()
             async let reqTask: () = viewModel.loadRequests()
             async let leaseTask: () = viewModel.loadLeaseRequests()
-            _ = await (reqTask, leaseTask)
+            async let sharedDocsTask: () = viewModel.loadSharedDocuments()
+            _ = await (reqTask, leaseTask, sharedDocsTask)
             await viewModel.markAsRead()
         }
         .alert("Error", isPresented: .constant(viewModel.error != nil)) {
@@ -151,6 +152,17 @@ struct ChatView: View {
         viewModel.isLoadingRequests || viewModel.isLoadingLeaseRequests
     }
 
+    /// The current user is the car owner in this chat if they appear as the
+    /// ownerId on at least one lease request. This avoids needing an extra
+    /// chat-details lookup just to decide whether to show driver docs.
+    private var currentUserIsOwner: Bool {
+        viewModel.leaseRequests.contains { $0.ownerId == currentUserId }
+    }
+
+    private var shouldShowDriverDocs: Bool {
+        currentUserIsOwner && !viewModel.sharedDocuments.isEmpty
+    }
+
     private var requestsContent: some View {
         Group {
             if isLoadingAnyRequests && !hasAnyRequests {
@@ -174,6 +186,13 @@ struct ChatView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {
+                        // Driver documents (owner-only). Shown above the lease
+                        // request cards so the owner can review identity docs
+                        // alongside the request they're deciding on.
+                        if shouldShowDriverDocs {
+                            DriverDocumentsSection(documents: viewModel.sharedDocuments)
+                        }
+
                         // Lease requests first
                         ForEach(viewModel.leaseRequests) { leaseReq in
                             LeaseRequestCardView(

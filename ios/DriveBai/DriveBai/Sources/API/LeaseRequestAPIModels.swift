@@ -123,3 +123,40 @@ struct CreateLeaseRequestAPIRequest: Codable {
     let weeks: Int?
     let message: String?
 }
+
+// MARK: - Shared Driver Documents
+
+/// A driver onboarding document shared with the car owner through a lease
+/// request. Mirrors `SharedDocumentResponse` in the Go backend. The backend
+/// only exposes the public `fileUrl` (under /uploads/...) — no on-disk path.
+struct SharedDocumentAPIResponse: Codable, Identifiable, Equatable {
+    let id: UUID
+    let documentId: UUID
+    let uploaderId: UUID
+    let type: String
+    let fileName: String
+    let fileUrl: String
+    let fileSize: Int64
+    let mimeType: String
+    let status: String
+    let sharedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case documentId = "document_id"
+        case uploaderId = "uploader_id"
+        case type
+        case fileName = "file_name"
+        case fileUrl = "file_url"
+        case fileSize = "file_size"
+        case mimeType = "mime_type"
+        case status
+        case sharedAt = "shared_at"
+    }
+
+    var documentType: DocumentType? { DocumentType(rawValue: type) }
+}
+
+struct SharedDocumentsListAPIResponse: Codable {
+    let documents: [SharedDocumentAPIResponse]
+}
