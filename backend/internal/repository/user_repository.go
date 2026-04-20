@@ -244,3 +244,37 @@ func (r *UserRepository) UpdateLastSeenActionsAt(ctx context.Context, userID uui
 	_, err := r.db.Pool.Exec(ctx, `UPDATE users SET last_seen_actions_at = NOW() WHERE id = $1`, userID)
 	return err
 }
+
+// GetActiveProfileID returns the user's currently-active mode profile ID, or
+// nil if none has been assigned yet (e.g. legacy users before the migration
+// was backfilled).
+func (r *UserRepository) GetActiveProfileID(ctx context.Context, userID uuid.UUID) (*uuid.UUID, error) {
+	var id *uuid.UUID
+	err := r.db.Pool.QueryRow(ctx, `SELECT active_profile_id FROM users WHERE id = $1`, userID).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrUserNotFound
+		}
+		return nil, err
+	}
+	return id, nil
+}
+
+// SetActiveProfile atomically sets users.active_profile_id and mirrors the
+// profile's role into users.role. The mirrored column is kept in sync during
+// the transitional period until users.role is dropped (see migration 000013).
+func (r *UserRepository) SetActiveProfile(ctx context.Context, userID uuid.UUID, profileID uuid.UUID, role models.Role) error {
+	query := `
+		UPDATE users
+		SET active_profile_id = $2, role = $3, updated_at = NOW()
+		WHERE id = $1
+	`
+	result, err := r.db.Pool.Exec(ctx, query, userID, profileID, role)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return models.ErrUserNotFound
+	}
+	return nil
+}

@@ -42,12 +42,43 @@ struct AuthenticatedProfileView: View {
     let user: UserProfile
     @Binding var showLogoutConfirmation: Bool
 
+    @EnvironmentObject private var authStore: AuthStore
+    @State private var isSwitchingMode = false
+    @State private var showDriverDocsSheet = false
+    @State private var switchError: String?
+
     /// Constructs the full URL for the profile photo
     private var profilePhotoURL: URL? {
         guard let photoPath = user.profilePhotoURL, !photoPath.isEmpty else {
             return nil
         }
         return URL(string: AppConfig.serverBaseURL.absoluteString + photoPath)
+    }
+
+    /// The mode the user can switch TO (the one they're not currently in).
+    /// Admins don't get a switch affordance.
+    private var switchTargetRole: UserRole? {
+        switch user.role {
+        case .driver:    return .carOwner
+        case .carOwner:  return .driver
+        case .admin:     return nil
+        }
+    }
+
+    private var switchLabel: String {
+        switch switchTargetRole {
+        case .driver:   return "Switch to Driver mode"
+        case .carOwner: return "Switch to Owner mode"
+        default:        return ""
+        }
+    }
+
+    private var switchIcon: String {
+        switch switchTargetRole {
+        case .driver:   return "steeringwheel"
+        case .carOwner: return "car.2.fill"
+        default:        return "arrow.triangle.2.circlepath"
+        }
     }
 
     var body: some View {
@@ -118,6 +149,21 @@ struct AuthenticatedProfileView: View {
                 .cornerRadius(12)
                 .padding(.horizontal)
 
+                // Mode switch (only when a valid target role exists)
+                if switchTargetRole != nil {
+                    VStack(spacing: 0) {
+                        ProfileActionRow(
+                            icon: switchIcon,
+                            title: switchLabel,
+                            isLoading: isSwitchingMode,
+                            action: { performSwitch() }
+                        )
+                    }
+                    .background(Color(.systemBackground))
+                    .cornerRadius(12)
+                    .padding(.horizontal)
+                }
+
                 // Actions
                 VStack(spacing: 0) {
                     ProfileActionRow(icon: "person.fill", title: "Edit Profile", action: {})
@@ -146,6 +192,51 @@ struct AuthenticatedProfileView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+        .sheet(isPresented: $showDriverDocsSheet) {
+            DriverDocsRequiredSheet(
+                onCompleted: {
+                    showDriverDocsSheet = false
+                    // Docs are uploaded — retry the switch.
+                    performSwitch()
+                },
+                onCancel: {
+                    showDriverDocsSheet = false
+                }
+            )
+            .environmentObject(authStore)
+        }
+        .alert("Couldn't switch mode", isPresented: Binding(
+            get: { switchError != nil },
+            set: { if !$0 { switchError = nil } }
+        )) {
+            Button("OK", role: .cancel) { switchError = nil }
+        } message: {
+            Text(switchError ?? "")
+        }
+    }
+
+    private func performSwitch() {
+        guard let target = switchTargetRole, !isSwitchingMode else { return }
+        isSwitchingMode = true
+        Task {
+            defer { Task { @MainActor in isSwitchingMode = false } }
+            do {
+                let result = try await authStore.switchProfile(to: target)
+                switch result {
+                case .switched:
+                    // ContentView will re-route to the new tab group automatically
+                    // because it keys off `user.role` which /me now mirrors.
+                    break
+                case .needsDriverDocs:
+                    await authStore.fetchDocuments()
+                    showDriverDocsSheet = true
+                }
+            } catch let apiError as APIError {
+                switchError = apiError.errorDescription ?? "Something went wrong."
+            } catch {
+                switchError = "Something went wrong. Please try again."
+            }
+        }
     }
 
     /// Fallback view showing user initials
@@ -232,6 +323,7 @@ struct ProfileInfoRow: View {
 struct ProfileActionRow: View {
     let icon: String
     let title: String
+    var isLoading: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -248,11 +340,165 @@ struct ProfileActionRow: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if isLoading {
+                    ProgressView()
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             .padding()
+        }
+        .disabled(isLoading)
+    }
+}
+
+// MARK: - Driver Documents Required Sheet
+//
+// Presented when the server rejects a switch-to-Driver with DRIVER_DOCS_REQUIRED.
+// Reuses the existing DocumentUploadCard primitive so the UX matches the
+// driver onboarding flow exactly. When both required documents are uploaded,
+// the Continue button becomes enabled and calls `onCompleted`, which triggers
+// the caller to retry the switch.
+
+private struct DriverDocsRequiredSheet: View {
+    @EnvironmentObject private var authStore: AuthStore
+    @Environment(\.dismiss) private var dismiss
+
+    let onCompleted: () -> Void
+    let onCancel: () -> Void
+
+    @State private var isUploadingLicense = false
+    @State private var isUploadingRegistration = false
+    @State private var errorMessage: String?
+
+    private var licenseDocument: Document? {
+        authStore.documents.first { $0.type == .driversLicense }
+    }
+
+    private var registrationDocument: Document? {
+        authStore.documents.first { $0.type == .registration }
+    }
+
+    private var canContinue: Bool {
+        licenseDocument != nil && registrationDocument != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Driver documents required")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        Text("To switch into Driver mode, we need to verify your identity. Please upload the documents below.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+
+                    VStack(spacing: 16) {
+                        DocumentUploadCard(
+                            type: .driversLicense,
+                            document: licenseDocument,
+                            isUploading: isUploadingLicense,
+                            onFileSelected: { data, filename, mimeType in
+                                Task { await upload(type: .driversLicense, data: data, filename: filename, mimeType: mimeType) }
+                            },
+                            onDelete: { delete(licenseDocument) }
+                        )
+
+                        DocumentUploadCard(
+                            type: .registration,
+                            document: registrationDocument,
+                            isUploading: isUploadingRegistration,
+                            onFileSelected: { data, filename, mimeType in
+                                Task { await upload(type: .registration, data: data, filename: filename, mimeType: mimeType) }
+                            },
+                            onDelete: { delete(registrationDocument) }
+                        )
+                    }
+                    .padding(.horizontal)
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                            .padding(.horizontal)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Accepted formats: JPEG, PNG, PDF", systemImage: "info.circle")
+                        Label("Maximum file size: 10MB", systemImage: "doc")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    .padding(.top, 4)
+
+                    Spacer(minLength: 24)
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+            .safeAreaInset(edge: .bottom) {
+                Button(action: onCompleted) {
+                    Text("Continue to Driver mode")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(DriveBaiButtonStyle())
+                .disabled(!canContinue)
+                .padding()
+                .background(Color(.systemBackground))
+            }
+            .navigationTitle("Verify Driver")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+            }
+            .task {
+                await authStore.fetchDocuments()
+            }
+        }
+    }
+
+    private func upload(type: DocumentType, data: Data, filename: String, mimeType: String) async {
+        if type == .driversLicense {
+            isUploadingLicense = true
+        } else {
+            isUploadingRegistration = true
+        }
+        defer {
+            if type == .driversLicense {
+                isUploadingLicense = false
+            } else {
+                isUploadingRegistration = false
+            }
+        }
+
+        errorMessage = nil
+        do {
+            try await authStore.uploadDocument(
+                type: type,
+                fileData: data,
+                filename: filename,
+                mimeType: mimeType
+            )
+        } catch let apiError as APIError {
+            errorMessage = apiError.errorDescription ?? "Failed to upload document"
+        } catch {
+            errorMessage = "Failed to upload document"
+        }
+    }
+
+    private func delete(_ document: Document?) {
+        guard let document else { return }
+        Task {
+            try? await authStore.deleteDocument(id: document.id)
         }
     }
 }

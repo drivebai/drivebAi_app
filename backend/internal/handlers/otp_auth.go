@@ -15,29 +15,32 @@ import (
 
 // OTPAuthHandler handles passwordless email-OTP login and registration-completion flows.
 type OTPAuthHandler struct {
-	userRepo   *repository.UserRepository
-	tokenRepo  *repository.TokenRepository
-	otpRepo    *repository.LoginOTPRepository
-	jwtSvc     *auth.JWTService
-	otpSender  email.OTPSender
-	logger     *slog.Logger
+	userRepo    *repository.UserRepository
+	tokenRepo   *repository.TokenRepository
+	otpRepo     *repository.LoginOTPRepository
+	profileRepo *repository.ProfileRepository
+	jwtSvc      *auth.JWTService
+	otpSender   email.OTPSender
+	logger      *slog.Logger
 }
 
 func NewOTPAuthHandler(
 	userRepo *repository.UserRepository,
 	tokenRepo *repository.TokenRepository,
 	otpRepo *repository.LoginOTPRepository,
+	profileRepo *repository.ProfileRepository,
 	jwtSvc *auth.JWTService,
 	otpSender email.OTPSender,
 	logger *slog.Logger,
 ) *OTPAuthHandler {
 	return &OTPAuthHandler{
-		userRepo:  userRepo,
-		tokenRepo: tokenRepo,
-		otpRepo:   otpRepo,
-		jwtSvc:    jwtSvc,
-		otpSender: otpSender,
-		logger:    logger,
+		userRepo:    userRepo,
+		tokenRepo:   tokenRepo,
+		otpRepo:     otpRepo,
+		profileRepo: profileRepo,
+		jwtSvc:      jwtSvc,
+		otpSender:   otpSender,
+		logger:      logger,
 	}
 }
 
@@ -397,6 +400,16 @@ func (h *OTPAuthHandler) CompleteRegistration(w http.ResponseWriter, r *http.Req
 			WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		}
 		return
+	}
+
+	// Default mode profile + active pointer. Second profile is lazily created on switch.
+	if req.Role == models.RoleDriver || req.Role == models.RoleCarOwner {
+		profile, pErr := h.profileRepo.Create(ctx, user.ID, req.Role, user.OnboardingStatus)
+		if pErr != nil {
+			h.logger.Error("otp/complete-registration: failed to create default profile", "error", pErr, "user_id", user.ID)
+		} else if setErr := h.userRepo.SetActiveProfile(ctx, user.ID, profile.ID, profile.Role); setErr != nil {
+			h.logger.Error("otp/complete-registration: failed to set default active profile", "error", setErr, "user_id", user.ID)
+		}
 	}
 
 	// ── Issue tokens ───────────────────────────────────────────────────────

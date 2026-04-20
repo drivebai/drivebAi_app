@@ -22,16 +22,28 @@ const (
 	ErrCodeTokenInvalid          = "TOKEN_INVALID"
 	ErrCodeInternalError         = "INTERNAL_ERROR"
 	ErrCodeRegistrationTokenRequired = "REGISTRATION_TOKEN_REQUIRED"
+	ErrCodeDriverDocsRequired    = "DRIVER_DOCS_REQUIRED"
+	ErrCodeProfileNotFound       = "PROFILE_NOT_FOUND"
 )
 
 // APIError represents a structured API error
 type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+// WithDetails returns a copy of the APIError with additional structured details
+// attached. Useful for errors that need to return extra context to the client
+// (e.g. DRIVER_DOCS_REQUIRED listing missing document types).
+func (e *APIError) WithDetails(details map[string]interface{}) *APIError {
+	copy := *e
+	copy.Details = details
+	return &copy
 }
 
 // Predefined errors

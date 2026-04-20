@@ -67,6 +67,7 @@ enum APIError: Error, LocalizedError {
     case networkError(Error)
     case decodingError(Error)
     case serverError(code: String, message: String)
+    case driverDocsRequired(missingTypes: [DocumentType])
     case unauthorized
     case unknown
 
@@ -80,6 +81,8 @@ enum APIError: Error, LocalizedError {
             return "Failed to decode response: \(error.localizedDescription)"
         case .serverError(_, let message):
             return message
+        case .driverDocsRequired:
+            return "Driver documents are required before switching to Driver mode."
         case .unauthorized:
             return "Please log in to continue"
         case .unknown:
@@ -88,10 +91,14 @@ enum APIError: Error, LocalizedError {
     }
 
     var errorCode: String? {
-        if case .serverError(let code, _) = self {
+        switch self {
+        case .serverError(let code, _):
             return code
+        case .driverDocsRequired:
+            return APIErrorCode.driverDocsRequired.rawValue
+        default:
+            return nil
         }
-        return nil
     }
 }
 
@@ -114,6 +121,11 @@ protocol APIClientProtocol {
 
     func getCurrentUser() async throws -> UserProfile
     func updateProfile(request: UpdateProfileRequest) async throws -> UpdateProfileResponse
+
+    // Mode profiles (Owner / Driver switch)
+    func listMyProfiles() async throws -> ListProfilesResponse
+    func createMyProfile(role: UserRole) async throws -> ProfileSummary
+    func switchActiveProfile(role: UserRole) async throws -> SwitchProfileResponse
 
     // Document methods
     func fetchDocuments() async throws -> [Document]
@@ -282,6 +294,24 @@ final class APIClient: APIClientProtocol {
 
     func updateProfile(request: UpdateProfileRequest) async throws -> UpdateProfileResponse {
         try await patch(path: "profile", body: request, authenticated: true)
+    }
+
+    // MARK: - Mode Profile Methods
+
+    func listMyProfiles() async throws -> ListProfilesResponse {
+        try await get(path: "me/profiles", authenticated: true)
+    }
+
+    func createMyProfile(role: UserRole) async throws -> ProfileSummary {
+        try await post(path: "me/profiles", body: CreateProfileRequest(role: role), authenticated: true)
+    }
+
+    func switchActiveProfile(role: UserRole) async throws -> SwitchProfileResponse {
+        try await post(
+            path: "me/active-profile",
+            body: SwitchProfileRequest(role: role, profileId: nil),
+            authenticated: true
+        )
     }
 
     // MARK: - Document Methods
@@ -791,6 +821,14 @@ final class APIClient: APIClientProtocol {
                 print("[API] ERROR: Status \(httpResponse.statusCode) for \(request.url?.absoluteString ?? "?")")
                 #endif
                 if let errorResponse = try? decoder.decode(APIErrorResponse.self, from: data) {
+                    // Promote DRIVER_DOCS_REQUIRED to its own typed case so
+                    // callers (ProfileView) can present the doc-upload flow
+                    // without string-matching the code.
+                    if errorResponse.error.code == APIErrorCode.driverDocsRequired.rawValue {
+                        let missingRaw = errorResponse.error.details?.missingTypes ?? []
+                        let missing = missingRaw.compactMap { DocumentType(rawValue: $0) }
+                        throw APIError.driverDocsRequired(missingTypes: missing)
+                    }
                     throw APIError.serverError(
                         code: errorResponse.error.code,
                         message: errorResponse.error.message

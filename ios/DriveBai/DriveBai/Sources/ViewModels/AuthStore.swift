@@ -234,6 +234,66 @@ final class AuthStore: ObservableObject {
         }
     }
 
+    // MARK: - Mode Profiles (Owner / Driver switch)
+
+    /// List of mode profiles owned by the current user. Populated on demand by
+    /// ProfileView via `fetchProfiles()`. Used to decide which "Switch to X"
+    /// label to render and whether the target profile already exists.
+    @Published private(set) var profiles: [ProfileSummary] = []
+
+    /// Result of a profile-switch attempt. `.needsDriverDocs` is the blocking
+    /// case that triggers the iOS document-upload sheet.
+    enum SwitchProfileResult {
+        case switched
+        case needsDriverDocs(missing: [DocumentType])
+    }
+
+    func fetchProfiles() async {
+        guard state.isAuthenticated else { return }
+        do {
+            let response = try await apiClient.listMyProfiles()
+            profiles = response.profiles
+        } catch {
+            #if DEBUG
+            print("[AuthStore] Failed to fetch profiles: \(error)")
+            #endif
+        }
+    }
+
+    /// Switch the active mode profile. Transparently catches the server's
+    /// DRIVER_DOCS_REQUIRED gate so the caller can present the document upload
+    /// sheet and retry, without needing to parse error codes.
+    @discardableResult
+    func switchProfile(to role: UserRole) async throws -> SwitchProfileResult {
+        isLoading = true
+        error = nil
+        defer { isLoading = false }
+
+        do {
+            let response = try await apiClient.switchActiveProfile(role: role)
+
+            // New JWT carries the new role; persist and update state.
+            try keychain.saveTokens(
+                accessToken: response.accessToken,
+                refreshToken: response.refreshToken,
+                expiresAt: response.expiresAt
+            )
+            state = .authenticated(response.user)
+
+            // Refresh cached profiles in the background so the UI stays accurate.
+            Task { await fetchProfiles() }
+
+            return .switched
+        } catch APIError.driverDocsRequired(let missing) {
+            // Don't surface this as a user-facing error — the UI handles it
+            // by presenting the doc-upload sheet.
+            return .needsDriverDocs(missing: missing)
+        } catch let apiError as APIError {
+            error = apiError.errorDescription
+            throw apiError
+        }
+    }
+
     func refreshCurrentUser() async {
         guard state.isAuthenticated else { return }
 

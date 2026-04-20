@@ -16,29 +16,32 @@ import (
 )
 
 type AuthHandler struct {
-	userRepo  *repository.UserRepository
-	tokenRepo *repository.TokenRepository
-	jwtSvc    *auth.JWTService
-	emailSvc  email.Sender
-	cfg       *config.Config
-	logger    *slog.Logger
+	userRepo    *repository.UserRepository
+	tokenRepo   *repository.TokenRepository
+	profileRepo *repository.ProfileRepository
+	jwtSvc      *auth.JWTService
+	emailSvc    email.Sender
+	cfg         *config.Config
+	logger      *slog.Logger
 }
 
 func NewAuthHandler(
 	userRepo *repository.UserRepository,
 	tokenRepo *repository.TokenRepository,
+	profileRepo *repository.ProfileRepository,
 	jwtSvc *auth.JWTService,
 	emailSvc email.Sender,
 	cfg *config.Config,
 	logger *slog.Logger,
 ) *AuthHandler {
 	return &AuthHandler{
-		userRepo:  userRepo,
-		tokenRepo: tokenRepo,
-		jwtSvc:    jwtSvc,
-		emailSvc:  emailSvc,
-		cfg:       cfg,
-		logger:    logger,
+		userRepo:    userRepo,
+		tokenRepo:   tokenRepo,
+		profileRepo: profileRepo,
+		jwtSvc:      jwtSvc,
+		emailSvc:    emailSvc,
+		cfg:         cfg,
+		logger:      logger,
 	}
 }
 
@@ -175,6 +178,17 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		}
 		return
+	}
+
+	// Create the default mode profile mirroring the user's chosen role and set
+	// it as active. Second profile (other role) is created lazily on first switch.
+	if req.Role == models.RoleDriver || req.Role == models.RoleCarOwner {
+		profile, pErr := h.profileRepo.Create(ctx, user.ID, req.Role, user.OnboardingStatus)
+		if pErr != nil {
+			h.logger.Error("failed to create default profile", "error", pErr, "user_id", user.ID)
+		} else if setErr := h.userRepo.SetActiveProfile(ctx, user.ID, profile.ID, profile.Role); setErr != nil {
+			h.logger.Error("failed to set default active profile", "error", setErr, "user_id", user.ID)
+		}
 	}
 
 	// Generate tokens immediately - user is active

@@ -66,6 +66,7 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	tokenRepo := repository.NewTokenRepository(db)
 	loginOTPRepo := repository.NewLoginOTPRepository(db)
+	profileRepo := repository.NewProfileRepository(db)
 	docRepo := repository.NewDocumentRepository(db)
 	carRepo := repository.NewCarRepository(db)
 	carPhotoRepo := repository.NewCarPhotoRepository(db)
@@ -103,9 +104,9 @@ func main() {
 	}
 
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, jwtSvc, emailSvc, cfg, logger)
-	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, jwtSvc, otpEmailSvc, logger)
-	userHandler := handlers.NewUserHandler(userRepo, docRepo, uploadDir, logger)
+	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)
+	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
+	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
@@ -173,6 +174,11 @@ func main() {
 			r.Use(middleware.AuthMiddleware(jwtSvc))
 			r.Get("/me", userHandler.GetCurrentUser)
 			r.Patch("/profile", userHandler.UpdateProfile)
+
+			// Mode profiles (Owner / Driver switch)
+			r.Get("/me/profiles", userHandler.ListMyProfiles)
+			r.Post("/me/profiles", userHandler.CreateMyProfile)
+			r.Post("/me/active-profile", userHandler.SetActiveProfile)
 
 			// Profile photo
 			r.Post("/profile/photo", userHandler.UploadProfilePhoto)

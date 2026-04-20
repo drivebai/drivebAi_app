@@ -316,6 +316,17 @@ struct APIErrorResponse: Codable {
 struct APIErrorDetail: Codable {
     let code: String
     let message: String
+    let details: APIErrorDetails?
+}
+
+/// Server-provided structured error context. Currently only DRIVER_DOCS_REQUIRED
+/// uses this, to report which document types still need uploading.
+struct APIErrorDetails: Codable {
+    let missingTypes: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case missingTypes = "missing_types"
+    }
 }
 
 enum APIErrorCode: String {
@@ -332,6 +343,8 @@ enum APIErrorCode: String {
     case tokenExpired = "TOKEN_EXPIRED"
     case tokenInvalid = "TOKEN_INVALID"
     case internalError = "INTERNAL_ERROR"
+    case driverDocsRequired = "DRIVER_DOCS_REQUIRED"
+    case profileNotFound = "PROFILE_NOT_FOUND"
 
     var userMessage: String {
         switch self {
@@ -361,6 +374,79 @@ enum APIErrorCode: String {
             return "Invalid session. Please log in again."
         case .internalError:
             return "Something went wrong. Please try again later."
+        case .driverDocsRequired:
+            return "Driver documents are required before switching to Driver mode."
+        case .profileNotFound:
+            return "Profile not found."
         }
+    }
+}
+
+// MARK: - Mode Profiles
+
+/// One role-scoped sub-account under a user identity. Each user may have up to
+/// one driver profile and one car_owner profile; one is active at any time and
+/// determines which role-scoped tabs + permissions the app uses.
+struct ProfileSummary: Codable, Equatable, Identifiable {
+    let id: UUID
+    let role: UserRole
+    let onboardingStatus: OnboardingStatus
+    let hasRequiredDocs: Bool
+    let isActive: Bool
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, role
+        case onboardingStatus = "onboarding_status"
+        case hasRequiredDocs = "has_required_docs"
+        case isActive = "is_active"
+        case createdAt = "created_at"
+    }
+}
+
+struct ListProfilesResponse: Codable {
+    let profiles: [ProfileSummary]
+    let activeProfileId: UUID?
+    let activeRole: UserRole?
+
+    enum CodingKeys: String, CodingKey {
+        case profiles
+        case activeProfileId = "active_profile_id"
+        case activeRole = "active_role"
+    }
+}
+
+struct CreateProfileRequest: Codable {
+    let role: UserRole
+}
+
+/// Request body for POST /me/active-profile. `role` is the preferred field;
+/// `profileId` is accepted too but the server treats them equivalently.
+struct SwitchProfileRequest: Codable {
+    let role: UserRole?
+    let profileId: UUID?
+
+    enum CodingKeys: String, CodingKey {
+        case role
+        case profileId = "profile_id"
+    }
+}
+
+/// Successful response from POST /me/active-profile: a fresh token pair (the
+/// role embedded in the JWT now matches the new active profile) + the updated
+/// user + the activated profile summary.
+struct SwitchProfileResponse: Codable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAt: Date
+    let user: UserProfile
+    let activeProfile: ProfileSummary
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
+        case user
+        case activeProfile = "active_profile"
     }
 }
