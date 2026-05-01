@@ -17,6 +17,7 @@ import (
 	"github.com/drivebai/backend/internal/email"
 	"github.com/drivebai/backend/internal/handlers"
 	"github.com/drivebai/backend/internal/middleware"
+	"github.com/drivebai/backend/internal/models"
 	"github.com/drivebai/backend/internal/repository"
 	stripeService "github.com/drivebai/backend/internal/stripe"
 	"github.com/drivebai/backend/internal/ws"
@@ -75,6 +76,7 @@ func main() {
 	chatRepo := repository.NewChatRepository(db)
 	leaseRepo := repository.NewLeaseRequestRepository(db)
 	sharedDocsRepo := repository.NewSharedDocumentRepository(db)
+	adminRepo := repository.NewAdminRepository(db)
 
 	// Ensure uploads directory exists
 	uploadDir := cfg.UploadDir
@@ -113,6 +115,7 @@ func main() {
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
+	adminHandler := handlers.NewAdminHandler(adminRepo, logger)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -257,6 +260,35 @@ func main() {
 			// Payments (Stripe)
 			r.Post("/lease-requests/{id}/payments/intent", leaseHandler.CreatePaymentIntent)
 			r.Post("/lease-requests/{id}/payments/sync", leaseHandler.SyncPaymentStatus)
+
+			// Admin panel API — require role=admin
+			r.Route("/admin", func(r chi.Router) {
+				r.Use(middleware.RequireRole(models.RoleAdmin))
+
+				r.Get("/users", adminHandler.ListUsers)
+				r.Get("/users/{id}", adminHandler.GetUser)
+				r.Patch("/users/{id}/block", adminHandler.BlockUser)
+
+				r.Get("/cars", adminHandler.ListCars)
+				r.Get("/cars/{id}", adminHandler.GetCar)
+				r.Patch("/cars/{id}/approve", adminHandler.ApproveCar)
+
+				r.Get("/chats", adminHandler.ListChats)
+				r.Get("/chats/{id}/messages", adminHandler.ListChatMessages)
+
+				r.Get("/rents", adminHandler.ListRents)
+				r.Get("/rents/{id}", adminHandler.GetRent)
+
+				r.Get("/support/chats", adminHandler.ListSupportChats)
+				r.Get("/support/chats/{id}/messages", adminHandler.ListSupportMessages)
+				r.Post("/support/chats/{id}/messages", adminHandler.SendSupportMessage)
+
+				r.Get("/accidents", adminHandler.ListAccidents)
+				r.Get("/accidents/{id}", adminHandler.GetAccident)
+
+				r.Get("/car-sells", adminHandler.ListCarSells)
+				r.Get("/car-sells/{id}", adminHandler.GetCarSell)
+			})
 		})
 	})
 

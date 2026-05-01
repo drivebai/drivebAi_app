@@ -204,15 +204,18 @@ func (r *CarRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status m
 func (r *CarRepository) GetAvailableListings(ctx context.Context, status string, search string) ([]*models.Car, error) {
 	query := `
 		SELECT
-			id, owner_id, title, description,
-			make, model, year, body_type, fuel_type, mileage,
-			address, neighborhood, latitude, longitude, area, street, block, zip,
-			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
-			min_years_licensed, deposit_amount, insurance_coverage,
-			status, is_paused, rented_weeks, total_earned,
-			created_at, updated_at
-		FROM cars
-		WHERE is_paused = false
+			c.id, c.owner_id, c.title, c.description,
+			c.make, c.model, c.year, c.body_type, c.fuel_type, c.mileage,
+			c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
+			c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
+			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
+			c.status, c.is_paused, c.rented_weeks, c.total_earned,
+			c.created_at, c.updated_at
+		FROM cars c
+		JOIN users u ON u.id = c.owner_id
+		WHERE c.is_paused = false
+		  AND c.is_approved = true
+		  AND u.is_blocked = false
 	`
 
 	args := []interface{}{}
@@ -220,18 +223,18 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 
 	// Filter by status if provided
 	if status != "" && status != "all" {
-		query += fmt.Sprintf(" AND status = $%d", argIndex)
+		query += fmt.Sprintf(" AND c.status = $%d", argIndex)
 		args = append(args, status)
 		argIndex++
 	}
 
 	// Search by make, model, or title
 	if search != "" {
-		query += fmt.Sprintf(" AND (LOWER(make) LIKE $%d OR LOWER(model) LIKE $%d OR LOWER(title) LIKE $%d)", argIndex, argIndex, argIndex)
+		query += fmt.Sprintf(" AND (LOWER(c.make) LIKE $%d OR LOWER(c.model) LIKE $%d OR LOWER(c.title) LIKE $%d)", argIndex, argIndex, argIndex)
 		args = append(args, "%"+strings.ToLower(search)+"%")
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY c.created_at DESC"
 
 	rows, err := r.db.Pool.Query(ctx, query, args...)
 	if err != nil {

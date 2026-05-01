@@ -61,7 +61,7 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 
 func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	query := `
-		SELECT id, email, password_hash, role, first_name, last_name, phone, is_email_verified, onboarding_status, profile_photo_url, created_at, updated_at
+		SELECT id, email, password_hash, role, first_name, last_name, phone, is_email_verified, onboarding_status, profile_photo_url, is_blocked, blocked_at, created_at, updated_at
 		FROM users
 		WHERE id = $1
 	`
@@ -78,6 +78,8 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Use
 		&user.IsEmailVerified,
 		&user.OnboardingStatus,
 		&user.ProfilePhotoURL,
+		&user.IsBlocked,
+		&user.BlockedAt,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -94,7 +96,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Use
 
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
 	query := `
-		SELECT id, email, password_hash, role, first_name, last_name, phone, is_email_verified, onboarding_status, profile_photo_url, created_at, updated_at
+		SELECT id, email, password_hash, role, first_name, last_name, phone, is_email_verified, onboarding_status, profile_photo_url, is_blocked, blocked_at, created_at, updated_at
 		FROM users
 		WHERE email = $1
 	`
@@ -111,6 +113,8 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 		&user.IsEmailVerified,
 		&user.OnboardingStatus,
 		&user.ProfilePhotoURL,
+		&user.IsBlocked,
+		&user.BlockedAt,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)

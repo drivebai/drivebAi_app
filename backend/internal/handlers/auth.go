@@ -245,6 +245,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.IsBlocked {
+		WriteError(w, http.StatusForbidden, models.NewAPIError("ACCOUNT_BLOCKED", "Account has been blocked"))
+		return
+	}
+
 	// Generate tokens - no email verification check needed
 	tokens, err := h.generateTokens(ctx, user)
 	if err != nil {

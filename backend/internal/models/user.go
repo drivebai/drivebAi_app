@@ -86,6 +86,8 @@ type User struct {
 	IsEmailVerified  bool             `json:"is_email_verified"`
 	OnboardingStatus OnboardingStatus `json:"onboarding_status"`
 	ProfilePhotoURL  *string          `json:"profile_photo_url,omitempty"`
+	IsBlocked        bool             `json:"is_blocked"`
+	BlockedAt        *time.Time       `json:"blocked_at,omitempty"`
 	CreatedAt        time.Time        `json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
 }
