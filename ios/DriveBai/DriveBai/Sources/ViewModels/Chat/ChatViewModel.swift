@@ -85,6 +85,15 @@ final class ChatViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        WebSocketManager.shared.leaseRequestUpdatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { [weak self] in
+                    await self?.loadLeaseRequests()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Messages
@@ -254,6 +263,18 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    func adjustLeasePrice(id: UUID, offeredWeeklyPrice: Double) async {
+        do {
+            let response = try await apiClient.updateLeaseRequestPrice(id: id, offeredWeeklyPrice: offeredWeeklyPrice)
+            let updated = response.toLeaseRequest()
+            if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
+                leaseRequests[idx] = updated
+            }
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
     /// Returns the PaymentIntent client secret + ephemeral key + customer ID for PaymentSheet
     func createPaymentIntent(leaseRequestId: UUID) async -> PaymentIntentAPIResponse? {
         do {
@@ -302,7 +323,8 @@ final class ChatViewModel: ObservableObject {
                     id: lr.id, chatId: lr.chatId, listingId: lr.listingId,
                     ownerId: lr.ownerId, driverId: lr.driverId,
                     driverName: lr.driverName, ownerName: lr.ownerName,
-                    status: .paid, weeklyPrice: lr.weeklyPrice, totalAmount: lr.totalAmount,
+                    status: .paid, weeklyPrice: lr.weeklyPrice, offeredWeeklyPrice: lr.offeredWeeklyPrice,
+                    totalAmount: lr.totalAmount,
                     currency: lr.currency, weeks: lr.weeks, message: lr.message,
                     carTitle: lr.carTitle, payment: updatedPayment,
                     createdAt: lr.createdAt, updatedAt: lr.updatedAt
@@ -312,7 +334,8 @@ final class ChatViewModel: ObservableObject {
                     id: lr.id, chatId: lr.chatId, listingId: lr.listingId,
                     ownerId: lr.ownerId, driverId: lr.driverId,
                     driverName: lr.driverName, ownerName: lr.ownerName,
-                    status: .paid, weeklyPrice: lr.weeklyPrice, totalAmount: lr.totalAmount,
+                    status: .paid, weeklyPrice: lr.weeklyPrice, offeredWeeklyPrice: lr.offeredWeeklyPrice,
+                    totalAmount: lr.totalAmount,
                     currency: lr.currency, weeks: lr.weeks, message: lr.message,
                     carTitle: lr.carTitle, payment: lr.payment,
                     createdAt: lr.createdAt, updatedAt: lr.updatedAt

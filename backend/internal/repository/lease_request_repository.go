@@ -72,12 +72,12 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 	err = tx.QueryRow(ctx, `
 		INSERT INTO lease_requests (id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
 	`, lr.ID, lr.ChatID, lr.ListingID, lr.OwnerID, lr.DriverID, lr.Status,
 		lr.WeeklyPrice, lr.Currency, lr.Weeks, lr.Message, lr.ExpiresAt, now,
 	).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
-		&lr.Status, &lr.WeeklyPrice, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 	)
 	if err != nil {
@@ -119,11 +119,11 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
 	var lr models.LeaseRequest
 	err := r.db.Pool.QueryRow(ctx, `
-		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
 		FROM lease_requests WHERE id = $1
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
-		&lr.Status, &lr.WeeklyPrice, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -140,7 +140,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT
 			lr.id, lr.chat_id, lr.listing_id, lr.owner_id, lr.driver_id, lr.status,
-			lr.weekly_price, lr.currency, lr.weeks, lr.message, lr.expires_at, lr.created_at, lr.updated_at,
+			lr.weekly_price, lr.offered_weekly_price, lr.currency, lr.weeks, lr.message, lr.expires_at, lr.created_at, lr.updated_at,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.driver_id) AS driver_name,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
 			(SELECT title FROM cars WHERE id = lr.listing_id) AS car_title,
@@ -171,7 +171,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 
 		err := rows.Scan(
 			&resp.ID, &resp.ChatID, &resp.ListingID, &resp.OwnerID, &resp.DriverID, &resp.Status,
-			&resp.WeeklyPrice, &resp.Currency, &resp.Weeks, &message, &expiresAt, &createdAt, &updatedAt,
+			&resp.WeeklyPrice, &resp.OfferedWeeklyPrice, &resp.Currency, &resp.Weeks, &message, &expiresAt, &createdAt, &updatedAt,
 			&resp.DriverName, &resp.OwnerName, &resp.CarTitle,
 			&paymentID, &paymentIntentID, &paymentAmount,
 			&platformFee, &paymentCurrency, &paymentStatus,
@@ -180,7 +180,11 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			return nil, fmt.Errorf("scan lease request: %w", err)
 		}
 		resp.Message = message
-		resp.TotalAmount = resp.WeeklyPrice * float64(resp.Weeks)
+		effectivePrice := resp.WeeklyPrice
+		if resp.OfferedWeeklyPrice != nil {
+			effectivePrice = *resp.OfferedWeeklyPrice
+		}
+		resp.TotalAmount = effectivePrice * float64(resp.Weeks)
 		resp.ExpiresAt = models.RFC3339Time(expiresAt)
 		resp.CreatedAt = models.RFC3339Time(createdAt)
 		resp.UpdatedAt = models.RFC3339Time(updatedAt)
@@ -223,10 +227,10 @@ func (r *LeaseRequestRepository) SetPaymentPending(ctx context.Context, id uuid.
 	err := r.db.Pool.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = NOW()
 		WHERE id = $1 AND status = 'accepted'
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
 	`, id, models.LeaseStatusPaymentPending).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
-		&lr.Status, &lr.WeeklyPrice, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -245,10 +249,10 @@ func (r *LeaseRequestRepository) SetPaid(ctx context.Context, id uuid.UUID) (*mo
 	err := r.db.Pool.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = NOW()
 		WHERE id = $1 AND status IN ('accepted', 'payment_pending')
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
 	`, id, models.LeaseStatusPaid).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
-		&lr.Status, &lr.WeeklyPrice, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -271,11 +275,11 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 	// Lock and validate
 	var lr models.LeaseRequest
 	err = tx.QueryRow(ctx, `
-		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
 		FROM lease_requests WHERE id = $1 FOR UPDATE
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
-		&lr.Status, &lr.WeeklyPrice, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -306,10 +310,10 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 	err = tx.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = $3
 		WHERE id = $1
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
 	`, id, toStatus, now).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
-		&lr.Status, &lr.WeeklyPrice, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 	)
 	if err != nil {
@@ -322,6 +326,74 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
 		VALUES ($1, $2, $3, 'system', $4, $5)
 	`, uuid.New(), lr.ChatID, actorID, sysMsg, now)
+	if err != nil {
+		return nil, fmt.Errorf("insert system message: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1`, lr.ChatID, now)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &lr, nil
+}
+
+// UpdateOfferedPrice sets the owner's offered price for a pending lease request.
+// Only allowed while status == 'requested'. Inserts a system chat message.
+func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, ownerID uuid.UUID, offeredPrice float64) (*models.LeaseRequest, error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var lr models.LeaseRequest
+	err = tx.QueryRow(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		FROM lease_requests WHERE id = $1 FOR UPDATE
+	`, id).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, models.ErrLeaseRequestNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if ownerID != lr.OwnerID {
+		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the owner can adjust the price")
+	}
+
+	if lr.Status != models.LeaseStatusRequested {
+		return nil, models.ErrPriceLocked
+	}
+
+	now := time.Now().UTC()
+	err = tx.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET offered_weekly_price = $2, offered_price_updated_at = $3, updated_at = $3
+		WHERE id = $1
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+	`, id, offeredPrice, now).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update offered price: %w", err)
+	}
+
+	sysMsg := fmt.Sprintf("Owner updated the weekly price to %s %.2f/wk", lr.Currency, offeredPrice)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
+		VALUES ($1, $2, $3, 'system', $4, $5)
+	`, uuid.New(), lr.ChatID, ownerID, sysMsg, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert system message: %w", err)
 	}

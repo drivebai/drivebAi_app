@@ -33,24 +33,31 @@ const (
 
 // LeaseRequest represents a driver's request to lease a car listing
 type LeaseRequest struct {
-	ID          uuid.UUID          `json:"id"`
-	ChatID      uuid.UUID          `json:"chat_id"`
-	ListingID   uuid.UUID          `json:"listing_id"`
-	OwnerID     uuid.UUID          `json:"owner_id"`
-	DriverID    uuid.UUID          `json:"driver_id"`
-	Status      LeaseRequestStatus `json:"status"`
-	WeeklyPrice float64            `json:"weekly_price"`
-	Currency    string             `json:"currency"`
-	Weeks       int                `json:"weeks"`
-	Message     *string            `json:"message,omitempty"`
-	ExpiresAt   time.Time          `json:"expires_at"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	ID                   uuid.UUID          `json:"id"`
+	ChatID               uuid.UUID          `json:"chat_id"`
+	ListingID            uuid.UUID          `json:"listing_id"`
+	OwnerID              uuid.UUID          `json:"owner_id"`
+	DriverID             uuid.UUID          `json:"driver_id"`
+	Status               LeaseRequestStatus `json:"status"`
+	WeeklyPrice          float64            `json:"weekly_price"`
+	OfferedWeeklyPrice   *float64           `json:"offered_weekly_price,omitempty"`
+	OfferedPriceUpdatedAt *time.Time        `json:"offered_price_updated_at,omitempty"`
+	Currency             string             `json:"currency"`
+	Weeks                int                `json:"weeks"`
+	Message              *string            `json:"message,omitempty"`
+	ExpiresAt            time.Time          `json:"expires_at"`
+	CreatedAt            time.Time          `json:"created_at"`
+	UpdatedAt            time.Time          `json:"updated_at"`
 }
 
-// TotalAmountCents returns the total amount in smallest currency unit (cents)
+// TotalAmountCents returns the total amount in smallest currency unit (cents),
+// using offered_weekly_price when set by the owner.
 func (lr *LeaseRequest) TotalAmountCents() int64 {
-	return int64(lr.WeeklyPrice * float64(lr.Weeks) * 100)
+	price := lr.WeeklyPrice
+	if lr.OfferedWeeklyPrice != nil {
+		price = *lr.OfferedWeeklyPrice
+	}
+	return int64(price * float64(lr.Weeks) * 100)
 }
 
 // Payment represents a Stripe payment linked to a lease request
@@ -78,6 +85,7 @@ const (
 	ErrCodePaymentNotFound      = "PAYMENT_NOT_FOUND"
 	ErrCodePaymentAlreadyExists = "PAYMENT_ALREADY_EXISTS"
 	ErrCodeInvalidLeaseAction   = "INVALID_LEASE_ACTION"
+	ErrCodePriceLocked          = "PRICE_LOCKED"
 )
 
 var (
@@ -88,6 +96,7 @@ var (
 	ErrPaymentNotFound      = &APIError{Code: ErrCodePaymentNotFound, Message: "Payment not found"}
 	ErrPaymentAlreadyExists = &APIError{Code: ErrCodePaymentAlreadyExists, Message: "Payment already exists for this lease request"}
 	ErrInvalidLeaseAction   = &APIError{Code: ErrCodeInvalidLeaseAction, Message: "Invalid action for the current lease request status"}
+	ErrPriceLocked          = &APIError{Code: ErrCodePriceLocked, Message: "Price can only be adjusted while the request is pending"}
 )
 
 // --- API request types ---
@@ -97,27 +106,32 @@ type CreateLeaseRequestBody struct {
 	Message *string `json:"message,omitempty"`
 }
 
+type UpdateOfferedPriceBody struct {
+	OfferedWeeklyPrice float64 `json:"offered_weekly_price"`
+}
+
 // --- API response types ---
 
 type LeaseRequestResponse struct {
-	ID          uuid.UUID          `json:"id"`
-	ChatID      uuid.UUID          `json:"chat_id"`
-	ListingID   uuid.UUID          `json:"listing_id"`
-	OwnerID     uuid.UUID          `json:"owner_id"`
-	DriverID    uuid.UUID          `json:"driver_id"`
-	DriverName  string             `json:"driver_name"`
-	OwnerName   string             `json:"owner_name"`
-	Status      LeaseRequestStatus `json:"status"`
-	WeeklyPrice float64            `json:"weekly_price"`
-	TotalAmount float64            `json:"total_amount"`
-	Currency    string             `json:"currency"`
-	Weeks       int                `json:"weeks"`
-	Message     *string            `json:"message,omitempty"`
-	CarTitle    string             `json:"car_title"`
-	Payment     *PaymentSummary    `json:"payment,omitempty"`
-	ExpiresAt   RFC3339Time        `json:"expires_at"`
-	CreatedAt   RFC3339Time        `json:"created_at"`
-	UpdatedAt   RFC3339Time        `json:"updated_at"`
+	ID                 uuid.UUID          `json:"id"`
+	ChatID             uuid.UUID          `json:"chat_id"`
+	ListingID          uuid.UUID          `json:"listing_id"`
+	OwnerID            uuid.UUID          `json:"owner_id"`
+	DriverID           uuid.UUID          `json:"driver_id"`
+	DriverName         string             `json:"driver_name"`
+	OwnerName          string             `json:"owner_name"`
+	Status             LeaseRequestStatus `json:"status"`
+	WeeklyPrice        float64            `json:"weekly_price"`
+	OfferedWeeklyPrice *float64           `json:"offered_weekly_price,omitempty"`
+	TotalAmount        float64            `json:"total_amount"`
+	Currency           string             `json:"currency"`
+	Weeks              int                `json:"weeks"`
+	Message            *string            `json:"message,omitempty"`
+	CarTitle           string             `json:"car_title"`
+	Payment            *PaymentSummary    `json:"payment,omitempty"`
+	ExpiresAt          RFC3339Time        `json:"expires_at"`
+	CreatedAt          RFC3339Time        `json:"created_at"`
+	UpdatedAt          RFC3339Time        `json:"updated_at"`
 }
 
 type PaymentSummary struct {

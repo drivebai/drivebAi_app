@@ -190,6 +190,7 @@ protocol APIClientProtocol {
     func acceptLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func declineLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
+    func updateLeaseRequestPrice(id: UUID, offeredWeeklyPrice: Double) async throws -> LeaseRequestAPIResponse
 
     // Actions (Today tab) — chat requests
     func fetchMyActions() async throws -> ActionsListAPIResponse
@@ -584,6 +585,11 @@ final class APIClient: APIClientProtocol {
 
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse {
         try await postEmpty(path: "lease-requests/\(id.uuidString)/cancel", authenticated: true)
+    }
+
+    func updateLeaseRequestPrice(id: UUID, offeredWeeklyPrice: Double) async throws -> LeaseRequestAPIResponse {
+        let body = UpdateLeaseRequestPriceAPIRequest(offeredWeeklyPrice: offeredWeeklyPrice)
+        return try await patch(path: "lease-requests/\(id.uuidString)/price", body: body, authenticated: true)
     }
 
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse {

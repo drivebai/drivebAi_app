@@ -7,6 +7,7 @@ struct LeaseRequestCardView: View {
     let onDecline: () -> Void
     let onPay: () -> Void
     let onCancel: () -> Void
+    let onAdjustPrice: () -> Void
 
     private var isOwner: Bool { currentUserId == leaseRequest.ownerId }
     private var isDriver: Bool { currentUserId == leaseRequest.driverId }
@@ -45,17 +46,44 @@ struct LeaseRequestCardView: View {
                     .lineLimit(3)
             }
 
+            // Price-adjusted banner (driver only, while still pending)
+            if isDriver && leaseRequest.isPriceAdjusted && leaseRequest.status == .requested {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                    Text("Price updated by owner")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.orange)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
             // Pricing details
             HStack(spacing: 16) {
-                if let weeklyFormatted = leaseRequest.formattedWeeklyPrice {
-                    Label {
+                Label {
+                    if leaseRequest.isPriceAdjusted, let base = leaseRequest.formattedWeeklyPrice,
+                       let offered = leaseRequest.formattedEffectiveWeeklyPrice {
+                        HStack(spacing: 4) {
+                            Text("\(base)/wk")
+                                .strikethrough()
+                                .foregroundColor(.secondary)
+                            Text("\(offered)/wk")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.primary)
+                        }
+                    } else if let weeklyFormatted = leaseRequest.formattedEffectiveWeeklyPrice {
                         Text("\(weeklyFormatted)/wk")
                             .font(.subheadline.weight(.semibold))
-                    } icon: {
-                        Image(systemName: "calendar")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
+                } icon: {
+                    Image(systemName: "calendar")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
 
                 Text("\(leaseRequest.weeks) \(leaseRequest.weeks == 1 ? "week" : "weeks")")
@@ -135,7 +163,20 @@ struct LeaseRequestCardView: View {
     @ViewBuilder
     private var actionButtons: some View {
         if isOwner && leaseRequest.status.ownerCanRespond {
-            // Owner can accept or decline
+            // Owner: adjust price + accept/decline
+            Button(action: onAdjustPrice) {
+                HStack(spacing: 6) {
+                    Image(systemName: "pencil")
+                    Text(leaseRequest.isPriceAdjusted ? "Adjust Price Again" : "Adjust Price")
+                }
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color(.systemGray6))
+                .foregroundColor(.primary)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
             HStack(spacing: 12) {
                 Button(action: onDecline) {
                     Text("Decline")

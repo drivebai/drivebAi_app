@@ -75,6 +75,7 @@ struct LeaseRequest: Identifiable, Equatable {
     let ownerName: String
     let status: LeaseRequestStatus
     let weeklyPrice: Double
+    let offeredWeeklyPrice: Double?
     let totalAmount: Double
     let currency: String
     let weeks: Int
@@ -84,11 +85,24 @@ struct LeaseRequest: Identifiable, Equatable {
     let createdAt: Date
     let updatedAt: Date
 
+    /// The price actually in effect: owner's offer when set, otherwise the base listing price.
+    var effectiveWeeklyPrice: Double { offeredWeeklyPrice ?? weeklyPrice }
+
+    /// True when the owner has explicitly set a custom price different from the listing price.
+    var isPriceAdjusted: Bool { offeredWeeklyPrice != nil && offeredWeeklyPrice != weeklyPrice }
+
     var formattedWeeklyPrice: String? {
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
         formatter.currencyCode = currency
         return formatter.string(from: NSNumber(value: weeklyPrice))
+    }
+
+    var formattedEffectiveWeeklyPrice: String? {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = currency
+        return formatter.string(from: NSNumber(value: effectiveWeeklyPrice))
     }
 
     var formattedTotalAmount: String? {

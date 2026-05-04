@@ -256,6 +256,7 @@ func main() {
 			r.Post("/lease-requests/{id}/accept", leaseHandler.AcceptLeaseRequest)
 			r.Post("/lease-requests/{id}/decline", leaseHandler.DeclineLeaseRequest)
 			r.Post("/lease-requests/{id}/cancel", leaseHandler.CancelLeaseRequest)
+			r.Patch("/lease-requests/{id}/price", leaseHandler.UpdateOfferedPrice)
 
 			// Payments (Stripe)
 			r.Post("/lease-requests/{id}/payments/intent", leaseHandler.CreatePaymentIntent)

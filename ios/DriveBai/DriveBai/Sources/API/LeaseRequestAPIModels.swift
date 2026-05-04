@@ -12,6 +12,7 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
     let ownerName: String
     let status: String
     let weeklyPrice: Double
+    let offeredWeeklyPrice: Double?
     let totalAmount: Double
     let currency: String
     let weeks: Int
@@ -31,6 +32,7 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
         case ownerName = "owner_name"
         case status
         case weeklyPrice = "weekly_price"
+        case offeredWeeklyPrice = "offered_weekly_price"
         case totalAmount = "total_amount"
         case currency, weeks, message
         case carTitle = "car_title"
@@ -45,7 +47,8 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
             ownerId: ownerId, driverId: driverId,
             driverName: driverName, ownerName: ownerName,
             status: LeaseRequestStatus(rawValue: status) ?? .requested,
-            weeklyPrice: weeklyPrice, totalAmount: totalAmount,
+            weeklyPrice: weeklyPrice, offeredWeeklyPrice: offeredWeeklyPrice,
+            totalAmount: totalAmount,
             currency: currency, weeks: weeks, message: message,
             carTitle: carTitle,
             payment: payment?.toPaymentSummary(),
@@ -122,6 +125,14 @@ struct PaymentIntentAPIResponse: Codable {
 struct CreateLeaseRequestAPIRequest: Codable {
     let weeks: Int?
     let message: String?
+}
+
+struct UpdateLeaseRequestPriceAPIRequest: Codable {
+    let offeredWeeklyPrice: Double
+
+    enum CodingKeys: String, CodingKey {
+        case offeredWeeklyPrice = "offered_weekly_price"
+    }
 }
 
 // MARK: - Shared Driver Documents

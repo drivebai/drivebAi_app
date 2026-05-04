@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var showPaymentSheet = false
     @State private var paymentIntentResponse: PaymentIntentAPIResponse?
     @State private var paymentLeaseRequestId: UUID?
+    @State private var adjustPriceLeaseRequest: LeaseRequest?
 
     init(chatId: UUID, currentUserId: UUID, counterpartyId: UUID, counterpartyName: String) {
         self.chatId = chatId
@@ -65,6 +66,11 @@ struct ChatView: View {
                 RequestComposerSheet(chatId: chatId, userRole: user.role) {
                     await viewModel.loadRequests()
                 }
+            }
+        }
+        .sheet(item: $adjustPriceLeaseRequest) { leaseReq in
+            AdjustPriceSheet(leaseRequest: leaseReq) { newPrice in
+                Task { await viewModel.adjustLeasePrice(id: leaseReq.id, offeredWeeklyPrice: newPrice) }
             }
         }
         .navigationDestination(isPresented: $showDetails) {
@@ -209,6 +215,9 @@ struct ChatView: View {
                                 },
                                 onCancel: {
                                     Task { await viewModel.cancelLeaseRequest(id: leaseReq.id) }
+                                },
+                                onAdjustPrice: {
+                                    adjustPriceLeaseRequest = leaseReq
                                 }
                             )
                         }

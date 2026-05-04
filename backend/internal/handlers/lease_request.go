@@ -663,24 +663,78 @@ func (h *LeaseRequestHandler) handlePaymentCanceled(r *http.Request, intentID st
 	h.logger.Info("payment canceled", "lease_request_id", payment.LeaseRequestID, "payment_id", payment.ID, "intent_id", intentID)
 }
 
+// UpdateOfferedPrice handles PATCH /api/v1/lease-requests/{id}/price
+// Allows the owner to set a custom weekly price before accepting the request.
+func (h *LeaseRequestHandler) UpdateOfferedPrice(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	var body models.UpdateOfferedPriceBody
+	if err := httputil.DecodeJSON(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+
+	if body.OfferedWeeklyPrice < 1.0 {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Offered weekly price must be at least 1.00"))
+		return
+	}
+
+	updated, err := h.leaseRepo.UpdateOfferedPrice(r.Context(), leaseID, userID, body.OfferedWeeklyPrice)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			status := http.StatusBadRequest
+			if apiErr.Code == models.ErrCodeLeaseRequestNotFound {
+				status = http.StatusNotFound
+			} else if apiErr.Code == models.ErrCodePriceLocked {
+				status = http.StatusConflict
+			}
+			httputil.WriteError(w, status, apiErr)
+		} else {
+			h.logger.Error("update offered price", "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		}
+		return
+	}
+
+	resp := h.buildLeaseRequestResponse(r, updated, nil)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{updated.DriverID},
+	})
+}
+
 // --- Helpers ---
 
 func (h *LeaseRequestHandler) buildLeaseRequestResponse(r *http.Request, lr *models.LeaseRequest, payment *models.Payment) models.LeaseRequestResponse {
 	resp := models.LeaseRequestResponse{
-		ID:          lr.ID,
-		ChatID:      lr.ChatID,
-		ListingID:   lr.ListingID,
-		OwnerID:     lr.OwnerID,
-		DriverID:    lr.DriverID,
-		Status:      lr.Status,
-		WeeklyPrice: lr.WeeklyPrice,
-		TotalAmount: lr.WeeklyPrice * float64(lr.Weeks),
-		Currency:    lr.Currency,
-		Weeks:       lr.Weeks,
-		Message:     lr.Message,
-		ExpiresAt:   models.RFC3339Time(lr.ExpiresAt),
-		CreatedAt:   models.RFC3339Time(lr.CreatedAt),
-		UpdatedAt:   models.RFC3339Time(lr.UpdatedAt),
+		ID:                 lr.ID,
+		ChatID:             lr.ChatID,
+		ListingID:          lr.ListingID,
+		OwnerID:            lr.OwnerID,
+		DriverID:           lr.DriverID,
+		Status:             lr.Status,
+		WeeklyPrice:        lr.WeeklyPrice,
+		OfferedWeeklyPrice: lr.OfferedWeeklyPrice,
+		TotalAmount:        float64(lr.TotalAmountCents()) / 100.0,
+		Currency:           lr.Currency,
+		Weeks:              lr.Weeks,
+		Message:            lr.Message,
+		ExpiresAt:          models.RFC3339Time(lr.ExpiresAt),
+		CreatedAt:          models.RFC3339Time(lr.CreatedAt),
+		UpdatedAt:          models.RFC3339Time(lr.UpdatedAt),
 	}
 
 	// Look up names
