@@ -2,6 +2,13 @@ import SwiftUI
 import PhotosUI
 import CoreLocation
 
+// Minimum weekly rent price: 1 in debug builds (testing), 50 in release (production).
+#if DEBUG
+private let kMinWeeklyRentPrice: Double = 1
+#else
+private let kMinWeeklyRentPrice: Double = 50
+#endif
+
 // MARK: - Create Listing Flow State
 
 enum CreateListingStep: Int, CaseIterable {
@@ -105,7 +112,7 @@ class CreateListingState: ObservableObject {
 
     var isPricingValid: Bool {
         (isForRent || isForSale) &&
-        (!isForRent || weeklyRentPrice >= 50) &&
+        (!isForRent || weeklyRentPrice >= kMinWeeklyRentPrice) &&
         (!isForSale || salePrice >= 1000)
     }
 
@@ -643,12 +650,12 @@ struct CreateListingPricingStep: View {
                             label: "Weekly Rent Price",
                             suffix: "/ week",
                             value: $state.weeklyRentPrice,
-                            minValue: 50,
+                            minValue: kMinWeeklyRentPrice,
                             step: 10,
                             sheetTitle: "Weekly rent"
                         )
 
-                        Text("Minimum $50 — tap to edit with +/- or type")
+                        Text("Minimum $\(Int(kMinWeeklyRentPrice)) — tap to edit with +/- or type")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

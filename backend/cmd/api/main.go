@@ -110,7 +110,7 @@ func main() {
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
-	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir)
+	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, cfg.MinWeeklyRentPrice)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, logger)

@@ -38,6 +38,9 @@ type Config struct {
 	StripePublishableKey string
 	StripeWebhookSecret  string
 	PlatformFeeBPS       int // basis points, e.g. 500 = 5%
+
+	// Listing price constraints
+	MinWeeklyRentPrice float64 // minimum allowed weekly rent price; default 50
 }
 
 func Load() (*Config, error) {
@@ -70,6 +73,8 @@ func Load() (*Config, error) {
 		StripePublishableKey: getEnv("STRIPE_PUBLISHABLE_KEY", ""),
 		StripeWebhookSecret:  getEnv("STRIPE_WEBHOOK_SECRET", ""),
 		PlatformFeeBPS:       getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
+
+		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
 	}
 
 	return cfg, nil
@@ -95,6 +100,15 @@ func getIntEnv(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if i, err := strconv.Atoi(value); err == nil {
 			return i
+		}
+	}
+	return defaultValue
+}
+
+func getFloat64Env(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if f, err := strconv.ParseFloat(value, 64); err == nil {
+			return f
 		}
 	}
 	return defaultValue

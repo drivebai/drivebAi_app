@@ -2,6 +2,13 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 
+// Minimum weekly rent price: 1 in debug builds (testing), 50 in release (production).
+#if DEBUG
+private let kMinWeeklyRentPrice: Double = 1
+#else
+private let kMinWeeklyRentPrice: Double = 50
+#endif
+
 /// Car detail edit mode with collapsible sections - Figma accurate
 struct CarDetailEditView: View {
     let car: Car
@@ -293,7 +300,7 @@ private struct GeneralInformationContent: View {
                         get: { car.weeklyRentPrice?.amount ?? 0 },
                         set: { car.weeklyRentPrice = Money(amount: $0) }
                     ),
-                    minValue: 50,
+                    minValue: kMinWeeklyRentPrice,
                     step: 10,
                     sheetTitle: "Weekly rent"
                 )

@@ -21,11 +21,12 @@ import (
 )
 
 type CarHandler struct {
-	carRepo   *repository.CarRepository
-	photoRepo *repository.CarPhotoRepository
-	docRepo   *repository.CarDocumentRepository
-	userRepo  *repository.UserRepository
-	uploadDir string
+	carRepo            *repository.CarRepository
+	photoRepo          *repository.CarPhotoRepository
+	docRepo            *repository.CarDocumentRepository
+	userRepo           *repository.UserRepository
+	uploadDir          string
+	minWeeklyRentPrice float64
 }
 
 func NewCarHandler(
@@ -34,13 +35,15 @@ func NewCarHandler(
 	docRepo *repository.CarDocumentRepository,
 	userRepo *repository.UserRepository,
 	uploadDir string,
+	minWeeklyRentPrice float64,
 ) *CarHandler {
 	return &CarHandler{
-		carRepo:   carRepo,
-		photoRepo: photoRepo,
-		docRepo:   docRepo,
-		userRepo:  userRepo,
-		uploadDir: uploadDir,
+		carRepo:            carRepo,
+		photoRepo:          photoRepo,
+		docRepo:            docRepo,
+		userRepo:           userRepo,
+		uploadDir:          uploadDir,
+		minWeeklyRentPrice: minWeeklyRentPrice,
 	}
 }
 
@@ -229,6 +232,14 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 		car.InsuranceCoverage = models.InsuranceFullCoverage
 	}
 
+	// Validate pricing
+	if car.IsForRent && car.WeeklyRentPrice.Valid && car.WeeklyRentPrice.Float64 < h.minWeeklyRentPrice {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
+			fmt.Sprintf("Weekly rent price must be at least %.0f", h.minWeeklyRentPrice),
+		))
+		return
+	}
+
 	// Save to database
 	if err := h.carRepo.Create(ctx, car); err != nil {
 		slog.Error("failed to create car", "error", err, "error_type", fmt.Sprintf("%T", err), "user_id", userID, "car_id", car.ID)
@@ -358,6 +369,14 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 		} else if car.Status == models.CarStatusPaused {
 			car.Status = models.CarStatusAvailable
 		}
+	}
+
+	// Validate pricing
+	if car.IsForRent && car.WeeklyRentPrice.Valid && car.WeeklyRentPrice.Float64 < h.minWeeklyRentPrice {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
+			fmt.Sprintf("Weekly rent price must be at least %.0f", h.minWeeklyRentPrice),
+		))
+		return
 	}
 
 	// Save to database
