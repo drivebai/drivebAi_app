@@ -82,6 +82,7 @@
 		E000000100000000000000FA /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F8 /* LocationManager.swift */; };
 		E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F9 /* CarPickupLocationPickerView.swift */; };
 		E000000100000000000000FD /* TodayActionsAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FC /* TodayActionsAPIModels.swift */; };
+		E00000010000000000000341 /* NotificationAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000340 /* NotificationAPIModels.swift */; };
 		E000000100000000000000FF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FE /* AppConfig.swift */; };
 		E00000010000000000000101 /* OTPLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000100 /* OTPLoginView.swift */; };
 		E00000010000000000000301 /* PriceEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000300 /* PriceEditorSheet.swift */; };
@@ -167,6 +168,7 @@
 		E000000100000000000000F8 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		E000000100000000000000F9 /* CarPickupLocationPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPickupLocationPickerView.swift; sourceTree = "<group>"; };
 		E000000100000000000000FC /* TodayActionsAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayActionsAPIModels.swift; sourceTree = "<group>"; };
+		E00000010000000000000340 /* NotificationAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationAPIModels.swift; sourceTree = "<group>"; };
 		E000000100000000000000FE /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		E00000010000000000000100 /* OTPLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTPLoginView.swift; sourceTree = "<group>"; };
 		E00000010000000000000300 /* PriceEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriceEditorSheet.swift; sourceTree = "<group>"; };
@@ -254,6 +256,7 @@
 				E000000100000000000000C2 /* ChatAPIModels.swift */,
 				E000000100000000000000F0 /* LeaseRequestAPIModels.swift */,
 				E000000100000000000000FC /* TodayActionsAPIModels.swift */,
+				E00000010000000000000340 /* NotificationAPIModels.swift */,
 			);
 			path = API;
 			sourceTree = "<group>";
@@ -631,6 +634,7 @@
 				E000000100000000000000FA /* LocationManager.swift in Sources */,
 				E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */,
 				E000000100000000000000FD /* TodayActionsAPIModels.swift in Sources */,
+				E00000010000000000000341 /* NotificationAPIModels.swift in Sources */,
 				E000000100000000000000FF /* AppConfig.swift in Sources */,
 				E00000010000000000000311 /* ChatEligibility.swift in Sources */,
 				E00000010000000000000101 /* OTPLoginView.swift in Sources */,
