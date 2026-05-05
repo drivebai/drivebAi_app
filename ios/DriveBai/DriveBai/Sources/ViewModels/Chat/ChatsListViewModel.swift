@@ -12,6 +12,10 @@ final class ChatsListViewModel: ObservableObject {
     @Published var error: String?
     @Published var totalUnreadCount = 0
 
+    /// Set by ChatView while the user is actively reading a conversation.
+    /// New messages for this chat won't bump the unread badge.
+    var activelyReadingChatId: UUID?
+
     private let apiClient: APIClient
     private var cancellables = Set<AnyCancellable>()
 
@@ -35,26 +39,48 @@ final class ChatsListViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] message in
                 guard let self = self else { return }
-                if let idx = self.chats.firstIndex(where: { $0.id == message.chatId }) {
-                    var updated = self.chats[idx]
-                    updated = ChatSummary(
-                        id: updated.id, carId: updated.carId, carTitle: updated.carTitle,
-                        carCoverPhotoURL: updated.carCoverPhotoURL,
-                        counterpartyId: updated.counterpartyId,
-                        counterpartyName: updated.counterpartyName,
-                        counterpartyAvatarURL: updated.counterpartyAvatarURL,
-                        lastMessage: message.body,
-                        lastMessageAt: message.createdAt,
-                        unreadCount: updated.unreadCount + 1,
-                        openRequestsCount: updated.openRequestsCount,
-                        isArchived: updated.isArchived
-                    )
-                    self.chats[idx] = updated
-                    self.totalUnreadCount += 1
-                    self.applySearch(self.searchText)
-                }
+                guard let idx = self.chats.firstIndex(where: { $0.id == message.chatId }) else { return }
+                let isActive = message.chatId == self.activelyReadingChatId
+                var updated = self.chats[idx]
+                updated = ChatSummary(
+                    id: updated.id, carId: updated.carId, carTitle: updated.carTitle,
+                    carCoverPhotoURL: updated.carCoverPhotoURL,
+                    counterpartyId: updated.counterpartyId,
+                    counterpartyName: updated.counterpartyName,
+                    counterpartyAvatarURL: updated.counterpartyAvatarURL,
+                    lastMessage: message.body,
+                    lastMessageAt: message.createdAt,
+                    unreadCount: isActive ? updated.unreadCount : updated.unreadCount + 1,
+                    openRequestsCount: updated.openRequestsCount,
+                    isArchived: updated.isArchived
+                )
+                self.chats[idx] = updated
+                if !isActive { self.totalUnreadCount += 1 }
+                self.applySearch(self.searchText)
             }
             .store(in: &cancellables)
+    }
+
+    /// Called when the user opens a chat. Immediately zeroes out that chat's
+    /// local unread count so the badge reflects reality before the next fetch.
+    func markChatRead(_ chatId: UUID) {
+        guard let idx = chats.firstIndex(where: { $0.id == chatId }) else { return }
+        let prev = chats[idx].unreadCount
+        guard prev > 0 else { return }
+        chats[idx] = ChatSummary(
+            id: chats[idx].id, carId: chats[idx].carId, carTitle: chats[idx].carTitle,
+            carCoverPhotoURL: chats[idx].carCoverPhotoURL,
+            counterpartyId: chats[idx].counterpartyId,
+            counterpartyName: chats[idx].counterpartyName,
+            counterpartyAvatarURL: chats[idx].counterpartyAvatarURL,
+            lastMessage: chats[idx].lastMessage,
+            lastMessageAt: chats[idx].lastMessageAt,
+            unreadCount: 0,
+            openRequestsCount: chats[idx].openRequestsCount,
+            isArchived: chats[idx].isArchived
+        )
+        totalUnreadCount = max(0, totalUnreadCount - prev)
+        applySearch(searchText)
     }
 
     func fetchChats() async {

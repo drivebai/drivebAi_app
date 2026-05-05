@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainTabView: View {
     @EnvironmentObject private var authStore: AuthStore
+    @ObservedObject private var chatsVM = ChatsListViewModel.shared
 
     @State private var selectedTab = 0
     @State private var showAuthFlow = false
@@ -28,7 +29,7 @@ struct MainTabView: View {
                     Label("Chats", systemImage: "message")
                 }
                 .tag(2)
-                .badge(ChatsListViewModel.shared.totalUnreadCount)
+                .badge(chatsVM.totalUnreadCount)
 
             // Profile Tab
             ProfileView(showAuthFlow: $showAuthFlow)

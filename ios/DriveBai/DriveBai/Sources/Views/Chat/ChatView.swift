@@ -79,6 +79,14 @@ struct ChatView: View {
         .navigationDestination(isPresented: $showProfile) {
             CounterpartyProfileView(userId: counterpartyId)
         }
+        .onAppear {
+            ChatsListViewModel.shared.activelyReadingChatId = chatId
+        }
+        .onDisappear {
+            if ChatsListViewModel.shared.activelyReadingChatId == chatId {
+                ChatsListViewModel.shared.activelyReadingChatId = nil
+            }
+        }
         .task {
             await viewModel.loadInitialMessages()
             async let reqTask: () = viewModel.loadRequests()
@@ -86,6 +94,7 @@ struct ChatView: View {
             async let sharedDocsTask: () = viewModel.loadSharedDocuments()
             _ = await (reqTask, leaseTask, sharedDocsTask)
             await viewModel.markAsRead()
+            ChatsListViewModel.shared.markChatRead(chatId)
         }
         .alert("Error", isPresented: .constant(viewModel.error != nil)) {
             Button("OK") { viewModel.error = nil }
@@ -137,6 +146,13 @@ struct ChatView: View {
                     .padding(.horizontal)
                 }
                 .defaultScrollAnchor(.bottom)
+                .onChange(of: viewModel.messages.count) { _, _ in
+                    if let lastId = viewModel.messages.last?.id {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastId, anchor: .bottom)
+                        }
+                    }
+                }
             }
 
             // Input bar
