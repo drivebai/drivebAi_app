@@ -11,6 +11,8 @@ struct OwnerTodayView: View {
     @State private var selectedCarId: UUID?
     @State private var navigateToChatTask: OnboardingTask?
     @State private var showChat = false
+    @State private var notificationChatId: UUID?
+    @State private var showNotificationChat = false
 
     /// Get listings from OwnerCarsStore (single source of truth)
     private var listings: [ListingSummary] {
@@ -39,7 +41,30 @@ struct OwnerTodayView: View {
             .background(TodayLayout.pageBackground.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(isPresented: $showNotifications) {
-                NotificationsView(notifications: viewModel.notifications)
+                NotificationsView(
+                    notifications: viewModel.notifications,
+                    onOpen: { chatId in
+                        guard let chatId else { return }
+                        notificationChatId = chatId
+                        showNotifications = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            showNotificationChat = true
+                        }
+                    },
+                    onMarkRead: { id in Task { await viewModel.markNotificationRead(id) } },
+                    onMarkAllRead: { Task { await viewModel.markAllNotificationsRead() } }
+                )
+            }
+            .navigationDestination(isPresented: $showNotificationChat) {
+                if let chatId = notificationChatId,
+                   let user = authStore.state.user {
+                    ChatView(
+                        chatId: chatId,
+                        currentUserId: user.id,
+                        counterpartyId: UUID(),
+                        counterpartyName: "Chat"
+                    )
+                }
             }
             .sheet(isPresented: $showCreateListing, onDismiss: {
                 // Re-fetch cars when the sheet is dismissed to ensure fresh data
@@ -70,7 +95,9 @@ struct OwnerTodayView: View {
             }
             .task {
                 await carsStore.fetchCars()
-                await viewModel.fetchActions()
+                async let actionsTask: () = viewModel.fetchActions()
+                async let notifTask: () = viewModel.fetchNotifications()
+                _ = await (actionsTask, notifTask)
                 viewModel.markActionsSeen()
             }
             .refreshable {

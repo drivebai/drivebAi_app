@@ -8,6 +8,8 @@ struct DriverTodayView: View {
     @State private var showNotifications = false
     @State private var navigateToChatTask: OnboardingTask?
     @State private var showChat = false
+    @State private var notificationChatId: UUID?
+    @State private var showNotificationChat = false
 
     var body: some View {
         NavigationStack {
@@ -31,7 +33,30 @@ struct DriverTodayView: View {
             .background(TodayLayout.pageBackground.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(isPresented: $showNotifications) {
-                NotificationsView(notifications: viewModel.notifications)
+                NotificationsView(
+                    notifications: viewModel.notifications,
+                    onOpen: { chatId in
+                        guard let chatId else { return }
+                        notificationChatId = chatId
+                        showNotifications = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            showNotificationChat = true
+                        }
+                    },
+                    onMarkRead: { id in Task { await viewModel.markNotificationRead(id) } },
+                    onMarkAllRead: nil
+                )
+            }
+            .navigationDestination(isPresented: $showNotificationChat) {
+                if let chatId = notificationChatId,
+                   let user = authStore.state.user {
+                    ChatView(
+                        chatId: chatId,
+                        currentUserId: user.id,
+                        counterpartyId: UUID(),
+                        counterpartyName: "Chat"
+                    )
+                }
             }
             .navigationDestination(isPresented: $showChat) {
                 if let task = navigateToChatTask,
@@ -46,7 +71,9 @@ struct DriverTodayView: View {
                 }
             }
             .task {
-                await viewModel.fetchActions()
+                async let actionsTask: () = viewModel.fetchActions()
+                async let notifTask: () = viewModel.fetchNotifications()
+                _ = await (actionsTask, notifTask)
                 viewModel.markActionsSeen()
             }
             .refreshable {

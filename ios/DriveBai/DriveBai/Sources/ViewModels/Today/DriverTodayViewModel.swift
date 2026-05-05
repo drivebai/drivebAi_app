@@ -24,20 +24,17 @@ final class DriverTodayViewModel: ObservableObject {
     /// Tasks to complete (empty array shows "All done" state)
     @Published var tasks: [OnboardingTask] = []
 
-    /// Notifications for the bell icon
+    /// Notifications for the bell icon (real data from backend)
     @Published var notifications: [NotificationItem] = []
+
+    /// Unread notification count returned by the API
+    @Published var unreadNotificationCount: Int = 0
 
     /// Current time for countdown calculations
     @Published var currentTime: Date = Date()
 
-    /// Unread actions dot on bell
+    /// Unread actions dot on bell (from today/actions endpoint)
     @Published var hasUnreadActions: Bool = false
-
-    /// Number of unread notifications (combines mock notifs + real actions)
-    var unreadNotificationCount: Int {
-        let mockUnread = notifications.filter { !$0.isRead }.count
-        return hasUnreadActions ? max(mockUnread, 1) : mockUnread
-    }
 
     @Published var isLoadingActions = false
     @Published var actionsError: String?
@@ -55,7 +52,10 @@ final class DriverTodayViewModel: ObservableObject {
         loadMockData()
         startCountdownTimer()
         subscribeToWebSocketEvents()
-        Task { await fetchActions() }
+        Task {
+            await fetchActions()
+            await fetchNotifications()
+        }
     }
 
     deinit {
@@ -81,7 +81,28 @@ final class DriverTodayViewModel: ObservableObject {
         } else {
             listings = []
         }
-        notifications = NotificationItem.mockNotifications()
+    }
+
+    func fetchNotifications() async {
+        do {
+            let response = try await apiClient.fetchNotifications()
+            notifications = response.notifications.map { $0.toNotificationItem() }
+            unreadNotificationCount = response.unreadCount
+        } catch {
+            #if DEBUG
+            print("[DriverTodayVM] fetchNotifications error: \(error)")
+            #endif
+        }
+    }
+
+    func markNotificationRead(_ id: UUID) async {
+        _ = try? await apiClient.markNotificationRead(id: id)
+        if let idx = notifications.firstIndex(where: { $0.id == id }), !notifications[idx].isRead {
+            let n = notifications[idx]
+            notifications[idx] = NotificationItem(id: n.id, type: n.type, title: n.title,
+                body: n.body, date: n.date, isRead: true, relatedChatId: n.relatedChatId)
+            unreadNotificationCount = max(0, unreadNotificationCount - 1)
+        }
     }
 
     func fetchActions() async {
@@ -113,6 +134,7 @@ final class DriverTodayViewModel: ObservableObject {
     func refresh() async {
         loadMockData()
         await fetchActions()
+        await fetchNotifications()
     }
 
     // MARK: - Countdown Timer
@@ -134,6 +156,15 @@ final class DriverTodayViewModel: ObservableObject {
             .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchActions() }
+            }
+            .store(in: &wsCancellables)
+
+        ws.notificationCreatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] unreadCount in
+                guard let self else { return }
+                self.unreadNotificationCount = unreadCount
+                Task { await self.fetchNotifications() }
             }
             .store(in: &wsCancellables)
     }
@@ -194,32 +225,4 @@ final class DriverTodayViewModel: ObservableObject {
         Task { await fetchActions() }
     }
 
-    // MARK: - Notification Actions
-
-    func markNotificationAsRead(_ notificationId: UUID) {
-        if let index = notifications.firstIndex(where: { $0.id == notificationId }) {
-            let notification = notifications[index]
-            notifications[index] = NotificationItem(
-                id: notification.id,
-                type: notification.type,
-                title: notification.title,
-                body: notification.body,
-                date: notification.date,
-                isRead: true
-            )
-        }
-    }
-
-    func markAllNotificationsAsRead() {
-        notifications = notifications.map { notification in
-            NotificationItem(
-                id: notification.id,
-                type: notification.type,
-                title: notification.title,
-                body: notification.body,
-                date: notification.date,
-                isRead: true
-            )
-        }
-    }
 }

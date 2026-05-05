@@ -23,6 +23,9 @@ final class WebSocketManager: ObservableObject {
     let leaseRequestCreatedPublisher = PassthroughSubject<Void, Never>()
     let leaseRequestUpdatedPublisher = PassthroughSubject<Void, Never>()
 
+    // Notification events — payload is the new unread count
+    let notificationCreatedPublisher = PassthroughSubject<Int, Never>()
+
     private var webSocketTask: URLSessionWebSocketTask?
     private let session: URLSession = .shared
     private let keychain: KeychainService = .shared
@@ -138,6 +141,13 @@ final class WebSocketManager: ObservableObject {
             leaseRequestCreatedPublisher.send()
         case "lease_request_updated":
             leaseRequestUpdatedPublisher.send()
+        case "notification_created":
+            // Payload: { "unread_count": Int }
+            if let unread = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: Int])?["unread_count"] {
+                notificationCreatedPublisher.send(unread)
+            } else {
+                notificationCreatedPublisher.send(1)
+            }
         default:
             #if DEBUG
             print("[WebSocket] Unknown event type: \(type)")

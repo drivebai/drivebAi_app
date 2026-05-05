@@ -202,6 +202,15 @@ protocol APIClientProtocol {
     // Payments (Stripe)
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
+
+    // Notifications
+    func fetchNotifications() async throws -> NotificationsListAPIResponse
+    func markNotificationRead(id: UUID) async throws -> MessageResponse
+    func markAllNotificationsRead() async throws -> MessageResponse
+
+    // Device token (push)
+    func registerDeviceToken(token: String, sandbox: Bool) async throws -> MessageResponse
+    func deleteDeviceToken(token: String) async throws -> MessageResponse
 }
 
 // MARK: - API Client
@@ -600,6 +609,32 @@ final class APIClient: APIClientProtocol {
         try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/payments/sync", authenticated: true)
     }
 
+    // MARK: - Notifications
+
+    func fetchNotifications() async throws -> NotificationsListAPIResponse {
+        try await get(path: "notifications", authenticated: true)
+    }
+
+    func markNotificationRead(id: UUID) async throws -> MessageResponse {
+        try await postEmpty(path: "notifications/\(id.uuidString)/read", authenticated: true)
+    }
+
+    func markAllNotificationsRead() async throws -> MessageResponse {
+        try await postEmpty(path: "notifications/read-all", authenticated: true)
+    }
+
+    // MARK: - Device Token
+
+    func registerDeviceToken(token: String, sandbox: Bool) async throws -> MessageResponse {
+        let body = RegisterDeviceTokenAPIRequest(token: token, platform: "ios", sandbox: sandbox)
+        return try await post(path: "me/device-token", body: body, authenticated: true)
+    }
+
+    func deleteDeviceToken(token: String) async throws -> MessageResponse {
+        struct Body: Codable { let token: String }
+        return try await deleteWithBody(path: "me/device-token", body: Body(token: token), authenticated: true)
+    }
+
     // MARK: - Private Request Methods
 
     private func post<T: Codable, R: Codable>(
@@ -665,6 +700,21 @@ final class APIClient: APIClientProtocol {
         authenticated: Bool = false
     ) async throws -> R {
         var request = try makeRequest(path: path, method: "DELETE")
+
+        if authenticated {
+            try await addAuthHeader(to: &request)
+        }
+
+        return try await execute(request: request, authenticated: authenticated)
+    }
+
+    private func deleteWithBody<T: Codable, R: Codable>(
+        path: String,
+        body: T,
+        authenticated: Bool = false
+    ) async throws -> R {
+        var request = try makeRequest(path: path, method: "DELETE")
+        request.httpBody = try encoder.encode(body)
 
         if authenticated {
             try await addAuthHeader(to: &request)

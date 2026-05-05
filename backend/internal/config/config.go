@@ -41,6 +41,13 @@ type Config struct {
 
 	// Listing price constraints
 	MinWeeklyRentPrice float64 // minimum allowed weekly rent price; default 50
+
+	// APNs push notification (all required; if any empty, push is disabled)
+	AppleTeamID     string
+	APNSKeyID       string
+	APNSAuthKeyP8   string // base64-encoded .p8 key file contents
+	IOSBundleID     string
+	APNSSandbox     bool   // true for dev/TestFlight builds
 }
 
 func Load() (*Config, error) {
@@ -75,6 +82,12 @@ func Load() (*Config, error) {
 		PlatformFeeBPS:       getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
 
 		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
+
+		AppleTeamID:   getEnv("APPLE_TEAM_ID", ""),
+		APNSKeyID:     getEnv("APNS_KEY_ID", ""),
+		APNSAuthKeyP8: getEnv("APNS_AUTH_KEY_P8", ""),
+		IOSBundleID:   getEnv("IOS_BUNDLE_ID", ""),
+		APNSSandbox:   getEnv("APNS_SANDBOX", "true") != "false",
 	}
 
 	return cfg, nil

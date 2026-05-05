@@ -18,6 +18,7 @@ import (
 	"github.com/drivebai/backend/internal/handlers"
 	"github.com/drivebai/backend/internal/middleware"
 	"github.com/drivebai/backend/internal/models"
+	"github.com/drivebai/backend/internal/push"
 	"github.com/drivebai/backend/internal/repository"
 	stripeService "github.com/drivebai/backend/internal/stripe"
 	"github.com/drivebai/backend/internal/ws"
@@ -77,6 +78,8 @@ func main() {
 	leaseRepo := repository.NewLeaseRequestRepository(db)
 	sharedDocsRepo := repository.NewSharedDocumentRepository(db)
 	adminRepo := repository.NewAdminRepository(db)
+	notifRepo := repository.NewNotificationRepository(db)
+	deviceTokenRepo := repository.NewDeviceTokenRepository(db)
 
 	// Ensure uploads directory exists
 	uploadDir := cfg.UploadDir
@@ -106,6 +109,9 @@ func main() {
 		logger.Warn("STRIPE_WEBHOOK_SECRET is empty — webhooks will fail signature verification")
 	}
 
+	// Initialize push notification service (nil if APNs not configured)
+	pushSvc := push.NewService(cfg.AppleTeamID, cfg.APNSKeyID, cfg.APNSAuthKeyP8, cfg.IOSBundleID, cfg.APNSSandbox, logger)
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
@@ -113,7 +119,9 @@ func main() {
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, cfg.MinWeeklyRentPrice)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
-	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, logger)
+	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
+	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
+	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, notifHandler, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	adminHandler := handlers.NewAdminHandler(adminRepo, logger)
 
@@ -201,6 +209,15 @@ func main() {
 			// Today tab — lease request actions + seen marker
 			r.Get("/today/actions", todayHandler.GetActions)
 			r.Post("/today/actions/seen", todayHandler.MarkActionsSeen)
+
+			// Notifications
+			r.Get("/notifications", notifHandler.ListNotifications)
+			r.Post("/notifications/{id}/read", notifHandler.MarkRead)
+			r.Post("/notifications/read-all", notifHandler.MarkAllRead)
+
+			// Device tokens (push notifications)
+			r.Post("/me/device-token", deviceTokenHandler.RegisterDeviceToken)
+			r.Delete("/me/device-token", deviceTokenHandler.DeleteDeviceToken)
 
 			// Likes/Favorites
 			r.Get("/me/likes", likesHandler.GetLikedListings)

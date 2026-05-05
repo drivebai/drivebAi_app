@@ -214,6 +214,7 @@ struct NotificationItem: Identifiable {
     let body: String
     let date: Date
     let isRead: Bool
+    let relatedChatId: UUID?
 
     var formattedDate: String {
         let formatter = RelativeDateTimeFormatter()
@@ -408,48 +409,34 @@ extension NotificationItem {
         let now = Date()
 
         let notif1 = NotificationItem(
-            id: UUID(),
-            type: .booking,
+            id: UUID(), type: .booking,
             title: "New booking request",
             body: "John D. wants to book your BMW X6 for 2 weeks starting March 15.",
-            date: now.addingTimeInterval(-3600),
-            isRead: false
+            date: now.addingTimeInterval(-3600), isRead: false, relatedChatId: nil
         )
-
         let notif2 = NotificationItem(
-            id: UUID(),
-            type: .message,
+            id: UUID(), type: .message,
             title: "New message",
             body: "Sarah M. sent you a message about the Tesla Model Y.",
-            date: now.addingTimeInterval(-7200),
-            isRead: false
+            date: now.addingTimeInterval(-7200), isRead: false, relatedChatId: nil
         )
-
         let notif3 = NotificationItem(
-            id: UUID(),
-            type: .payment,
+            id: UUID(), type: .payment,
             title: "Payment received",
             body: "You received $850 for your BMW X6 rental.",
-            date: now.addingTimeInterval(-86400),
-            isRead: true
+            date: now.addingTimeInterval(-86400), isRead: true, relatedChatId: nil
         )
-
         let notif4 = NotificationItem(
-            id: UUID(),
-            type: .reminder,
+            id: UUID(), type: .reminder,
             title: "Rental ending soon",
             body: "The current rental of your Mercedes GLE ends in 3 days.",
-            date: now.addingTimeInterval(-86400 * 2),
-            isRead: true
+            date: now.addingTimeInterval(-86400 * 2), isRead: true, relatedChatId: nil
         )
-
         let notif5 = NotificationItem(
-            id: UUID(),
-            type: .system,
+            id: UUID(), type: .system,
             title: "Profile update required",
             body: "Please update your profile photo to improve trust with renters.",
-            date: now.addingTimeInterval(-86400 * 3),
-            isRead: true
+            date: now.addingTimeInterval(-86400 * 3), isRead: true, relatedChatId: nil
         )
 
         let notifications: [NotificationItem] = [notif1, notif2, notif3, notif4, notif5]

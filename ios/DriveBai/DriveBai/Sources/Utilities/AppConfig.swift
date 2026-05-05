@@ -39,4 +39,14 @@ enum AppConfig {
             return "wss://drivebai-api-team.fly.dev/api/v1/ws"
         }
     }
+
+    /// True when running on a development/TestFlight build — tells the backend
+    /// to use the APNs sandbox gateway instead of production.
+    static var apnsSandbox: Bool {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }
 }

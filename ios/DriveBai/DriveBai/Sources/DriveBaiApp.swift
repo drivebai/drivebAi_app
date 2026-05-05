@@ -1,7 +1,31 @@
 import SwiftUI
+import UIKit
+import UserNotifications
+
+// MARK: - AppDelegate (captures APNs token callbacks)
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        NotificationCenter.default.post(name: .didRegisterDeviceToken, object: token)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        #if DEBUG
+        print("[Push] Failed to register for remote notifications: \(error)")
+        #endif
+    }
+}
 
 @main
 struct DriveBaiApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var authStore = AuthStore.shared
     @StateObject private var deepLinkRouter = DeepLinkRouter.shared
     @StateObject private var likedListingsStore = LikedListingsStore.shared
@@ -14,21 +38,28 @@ struct DriveBaiApp: App {
                 .environmentObject(likedListingsStore)
                 .task {
                     await authStore.checkAuthState()
-                    // Fetch liked listings and connect chat services if user is authenticated
                     if authStore.state.isAuthenticated {
                         await likedListingsStore.fetchLikedListings()
                         await ChatsListViewModel.shared.fetchChats()
                         WebSocketManager.shared.connect()
+                        await requestPushPermissionIfNeeded()
                     }
                 }
                 .onChange(of: authStore.state) { _, newState in
                     if newState.isAuthenticated {
                         WebSocketManager.shared.connect()
-                        Task { await ChatsListViewModel.shared.fetchChats() }
+                        Task {
+                            await ChatsListViewModel.shared.fetchChats()
+                            await requestPushPermissionIfNeeded()
+                        }
                     } else {
                         WebSocketManager.shared.disconnect()
                         ChatsListViewModel.shared.clearAll()
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .didRegisterDeviceToken)) { note in
+                    guard let token = note.object as? String else { return }
+                    Task { _ = try? await APIClient.shared.registerDeviceToken(token: token, sandbox: AppConfig.apnsSandbox) }
                 }
                 .onOpenURL { url in
                     deepLinkRouter.handle(url: url)
@@ -52,6 +83,37 @@ struct DriveBaiApp: App {
                     }
                 }
         }
+    }
+}
+
+// MARK: - Push helpers
+
+extension NSNotification.Name {
+    static let didRegisterDeviceToken = NSNotification.Name("didRegisterDeviceToken")
+}
+
+/// Requests APNs permission on first run only (when status is .notDetermined).
+/// On subsequent launches the OS re-registers silently via UIApplication.
+@MainActor
+private func requestPushPermissionIfNeeded() async {
+    let center = UNUserNotificationCenter.current()
+    let settings = await center.notificationSettings()
+    guard settings.authorizationStatus == .notDetermined else {
+        // Already authorized or denied — re-register silently so the token is current
+        if settings.authorizationStatus == .authorized {
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+        return
+    }
+    do {
+        let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        if granted {
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    } catch {
+        #if DEBUG
+        print("[Push] requestAuthorization error: \(error)")
+        #endif
     }
 }
 

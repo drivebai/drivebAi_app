@@ -27,6 +27,7 @@ type LeaseRequestHandler struct {
 	sharedDocsRepo *repository.SharedDocumentRepository
 	stripe         *stripeService.Service
 	wsHub          *ws.Hub
+	notifHandler   *NotificationHandler
 	logger         *slog.Logger
 }
 
@@ -39,6 +40,7 @@ func NewLeaseRequestHandler(
 	sharedDocsRepo *repository.SharedDocumentRepository,
 	stripe *stripeService.Service,
 	wsHub *ws.Hub,
+	notifHandler *NotificationHandler,
 	logger *slog.Logger,
 ) *LeaseRequestHandler {
 	return &LeaseRequestHandler{
@@ -50,6 +52,7 @@ func NewLeaseRequestHandler(
 		sharedDocsRepo: sharedDocsRepo,
 		stripe:         stripe,
 		wsHub:          wsHub,
+		notifHandler:   notifHandler,
 		logger:         logger,
 	}
 }
@@ -141,6 +144,21 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		Payload:       resp,
 		TargetUserIDs: []uuid.UUID{created.OwnerID},
 	})
+
+	// In-app notification + push for owner
+	chatID := created.ChatID
+	leaseID := created.ID
+	driverName := resp.DriverName
+	if driverName == "" {
+		driverName = "A driver"
+	}
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "your listing"
+	}
+	notifBody := fmt.Sprintf("%s requested %d week(s) for %s", driverName, created.Weeks, carTitle)
+	go h.notifHandler.Notify(created.OwnerID, models.NotificationTypeLeaseRequest,
+		"New lease request", notifBody, &chatID, &leaseID)
 }
 
 // ListLeaseRequests handles GET /api/v1/chats/{chatId}/lease-requests
@@ -483,13 +501,30 @@ func (h *LeaseRequestHandler) SyncPaymentStatus(w http.ResponseWriter, r *http.R
 		} else {
 			lr = updatedLR
 			h.logger.Info("sync: lease transitioned to paid", "lease_request_id", leaseID)
-			// Broadcast the update
-			resp := h.buildLeaseRequestResponse(r, lr, payment)
+			syncResp := h.buildLeaseRequestResponse(r, lr, payment)
 			h.wsHub.Broadcast(&ws.Event{
 				Type:          "lease_request_updated",
-				Payload:       resp,
+				Payload:       syncResp,
 				TargetUserIDs: []uuid.UUID{lr.DriverID, lr.OwnerID},
 			})
+			chatID := lr.ChatID
+			lrID := lr.ID
+			driverName := syncResp.DriverName
+			if driverName == "" {
+				driverName = "The driver"
+			}
+			carTitle := syncResp.CarTitle
+			if carTitle == "" {
+				carTitle = "your listing"
+			}
+			go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
+				"Payment received",
+				fmt.Sprintf("%s paid for %d week(s) of %s — coordinate pickup in chat", driverName, lr.Weeks, carTitle),
+				&chatID, &lrID)
+			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+				"Payment confirmed",
+				fmt.Sprintf("Payment confirmed for %s — wait for pickup instructions from the owner", carTitle),
+				&chatID, &lrID)
 		}
 	}
 
@@ -613,6 +648,25 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 		Payload:       resp,
 		TargetUserIDs: []uuid.UUID{lr.DriverID, lr.OwnerID},
 	})
+
+	// In-app notifications + push
+	chatID := lr.ChatID
+	leaseID := lr.ID
+	driverName := resp.DriverName
+	if driverName == "" {
+		driverName = "The driver"
+	}
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "your listing"
+	}
+	ownerBody := fmt.Sprintf("%s paid for %d week(s) of %s — coordinate pickup in chat", driverName, lr.Weeks, carTitle)
+	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
+		"Payment received", ownerBody, &chatID, &leaseID)
+
+	driverBody := fmt.Sprintf("Payment confirmed for %s — wait for pickup instructions from the owner", carTitle)
+	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+		"Payment confirmed", driverBody, &chatID, &leaseID)
 }
 
 func (h *LeaseRequestHandler) handlePaymentFailed(r *http.Request, intentID string) {
