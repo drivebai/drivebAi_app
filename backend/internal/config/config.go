@@ -42,6 +42,10 @@ type Config struct {
 	// Listing price constraints
 	MinWeeklyRentPrice float64 // minimum allowed weekly rent price; default 50
 
+	// Test/staging bypass: auto-approve newly created cars so they appear in Discover immediately.
+	// Set AUTO_APPROVE_CARS=true in dev/staging; must be false (default) in production.
+	AutoApproveCars bool
+
 	// APNs push notification (all required; if any empty, push is disabled)
 	AppleTeamID     string
 	APNSKeyID       string
@@ -82,6 +86,7 @@ func Load() (*Config, error) {
 		PlatformFeeBPS:       getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
 
 		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
+		AutoApproveCars:    getEnv("AUTO_APPROVE_CARS", "false") == "true",
 
 		AppleTeamID:   getEnv("APPLE_TEAM_ID", ""),
 		APNSKeyID:     getEnv("APNS_KEY_ID", ""),

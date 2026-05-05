@@ -56,6 +56,13 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 	return err
 }
 
+// SetApproved sets is_approved on a car. Used by the auto-approve path when AUTO_APPROVE_CARS=true.
+func (r *CarRepository) SetApproved(ctx context.Context, id uuid.UUID, approved bool) error {
+	_, err := r.db.Pool.Exec(ctx,
+		`UPDATE cars SET is_approved = $2, updated_at = NOW() WHERE id = $1`, id, approved)
+	return err
+}
+
 // GetByID retrieves a car by its ID
 func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car, error) {
 	query := `

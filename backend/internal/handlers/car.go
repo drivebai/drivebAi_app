@@ -27,6 +27,7 @@ type CarHandler struct {
 	userRepo           *repository.UserRepository
 	uploadDir          string
 	minWeeklyRentPrice float64
+	autoApproveCars    bool
 }
 
 func NewCarHandler(
@@ -36,6 +37,7 @@ func NewCarHandler(
 	userRepo *repository.UserRepository,
 	uploadDir string,
 	minWeeklyRentPrice float64,
+	autoApproveCars bool,
 ) *CarHandler {
 	return &CarHandler{
 		carRepo:            carRepo,
@@ -44,6 +46,7 @@ func NewCarHandler(
 		userRepo:           userRepo,
 		uploadDir:          uploadDir,
 		minWeeklyRentPrice: minWeeklyRentPrice,
+		autoApproveCars:    autoApproveCars,
 	}
 }
 
@@ -247,10 +250,18 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-approve in test/staging environments (AUTO_APPROVE_CARS=true).
+	// Discover filtering logic is unchanged; this only sets the initial approval state.
+	if h.autoApproveCars {
+		if err := h.carRepo.SetApproved(ctx, car.ID, true); err != nil {
+			slog.Warn("auto-approve failed", "car_id", car.ID, "error", err)
+		}
+	}
+
 	// Get owner info for response
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
-	slog.Info("car created", "car_id", car.ID, "user_id", userID)
+	slog.Info("car created", "car_id", car.ID, "user_id", userID, "auto_approved", h.autoApproveCars)
 	httputil.WriteJSON(w, http.StatusCreated, car.ToResponse(nil, nil, owner))
 }
 
