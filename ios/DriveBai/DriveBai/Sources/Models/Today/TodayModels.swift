@@ -189,6 +189,7 @@ struct OnboardingTask: Identifiable {
 
 enum NotificationType: String, CaseIterable {
     case booking = "booking"
+    case leaseRequest = "lease_request"
     case message = "message"
     case payment = "payment"
     case reminder = "reminder"
@@ -197,6 +198,7 @@ enum NotificationType: String, CaseIterable {
     var iconName: String {
         switch self {
         case .booking: return "calendar"
+        case .leaseRequest: return "key.fill"
         case .message: return "message"
         case .payment: return "creditcard"
         case .reminder: return "bell"

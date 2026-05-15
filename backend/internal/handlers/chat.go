@@ -227,8 +227,11 @@ func (h *ChatHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up sender name for the response
-	senderName := "Unknown"
+	// Look up sender name and chat for WS broadcast.
+	senderName := h.chatRepo.GetUserFullName(r.Context(), userID)
+	if senderName == "" {
+		senderName = "Unknown"
+	}
 	chat, _ := h.chatRepo.GetChatByID(r.Context(), chatID)
 
 	resp := models.MessageResponse{

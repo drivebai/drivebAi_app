@@ -833,3 +833,14 @@ func (r *ChatRepository) GetUserProfileDetail(ctx context.Context, userID uuid.U
 
 	return &resp, nil
 }
+
+// GetUserFullName returns "first_name last_name" for the given user ID.
+// Returns an empty string on any error.
+func (r *ChatRepository) GetUserFullName(ctx context.Context, userID uuid.UUID) string {
+	var name string
+	_ = r.db.Pool.QueryRow(ctx,
+		`SELECT first_name || ' ' || last_name FROM users WHERE id = $1`,
+		userID,
+	).Scan(&name)
+	return name
+}

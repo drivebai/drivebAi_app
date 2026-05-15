@@ -94,13 +94,6 @@ func (c *Conn) WritePump() {
 			}
 			w.Write(message)
 
-			// Flush any queued messages to reduce write calls.
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte("\n"))
-				w.Write(<-c.send)
-			}
-
 			if err := w.Close(); err != nil {
 				return
 			}

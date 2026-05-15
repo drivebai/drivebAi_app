@@ -82,13 +82,13 @@
 		E000000100000000000000FA /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F8 /* LocationManager.swift */; };
 		E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F9 /* CarPickupLocationPickerView.swift */; };
 		E000000100000000000000FD /* TodayActionsAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FC /* TodayActionsAPIModels.swift */; };
-		E00000010000000000000341 /* NotificationAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000340 /* NotificationAPIModels.swift */; };
 		E000000100000000000000FF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FE /* AppConfig.swift */; };
 		E00000010000000000000101 /* OTPLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000100 /* OTPLoginView.swift */; };
 		E00000010000000000000301 /* PriceEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000300 /* PriceEditorSheet.swift */; };
 		E00000010000000000000311 /* ChatEligibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000310 /* ChatEligibility.swift */; };
 		E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000320 /* DriverDocumentsSection.swift */; };
 		E00000010000000000000331 /* AdjustPriceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000330 /* AdjustPriceSheet.swift */; };
+		E00000010000000000000341 /* NotificationAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000340 /* NotificationAPIModels.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -168,13 +168,13 @@
 		E000000100000000000000F8 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		E000000100000000000000F9 /* CarPickupLocationPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPickupLocationPickerView.swift; sourceTree = "<group>"; };
 		E000000100000000000000FC /* TodayActionsAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayActionsAPIModels.swift; sourceTree = "<group>"; };
-		E00000010000000000000340 /* NotificationAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationAPIModels.swift; sourceTree = "<group>"; };
 		E000000100000000000000FE /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		E00000010000000000000100 /* OTPLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTPLoginView.swift; sourceTree = "<group>"; };
 		E00000010000000000000300 /* PriceEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriceEditorSheet.swift; sourceTree = "<group>"; };
 		E00000010000000000000310 /* ChatEligibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatEligibility.swift; sourceTree = "<group>"; };
 		E00000010000000000000320 /* DriverDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriverDocumentsSection.swift; sourceTree = "<group>"; };
 		E00000010000000000000330 /* AdjustPriceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdjustPriceSheet.swift; sourceTree = "<group>"; };
+		E00000010000000000000340 /* NotificationAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationAPIModels.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -769,7 +769,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
@@ -782,6 +782,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -801,7 +802,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
@@ -814,6 +815,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

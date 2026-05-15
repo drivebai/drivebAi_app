@@ -23,9 +23,10 @@ struct NotificationAPIResponse: Codable {
     func toNotificationItem() -> NotificationItem {
         let notifType: NotificationType
         switch type {
-        case "payment":   notifType = .payment
-        case "system":    notifType = .system
-        default:          notifType = .booking
+        case "lease_request": notifType = .leaseRequest
+        case "payment":       notifType = .payment
+        case "system":        notifType = .system
+        default:              notifType = .booking
         }
         return NotificationItem(
             id: id,
