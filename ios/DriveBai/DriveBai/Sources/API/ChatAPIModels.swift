@@ -71,6 +71,7 @@ struct ChatMessageAPIResponse: Codable {
     let chatId: UUID
     let senderId: UUID
     let senderName: String
+    let senderKind: String?
     let type: String
     let body: String
     let attachments: [ChatAttachmentAPIResponse]?
@@ -82,6 +83,7 @@ struct ChatMessageAPIResponse: Codable {
         case chatId = "chat_id"
         case senderId = "sender_id"
         case senderName = "sender_name"
+        case senderKind = "sender_kind"
         case type, body, attachments
         case clientMessageId = "client_message_id"
         case createdAt = "created_at"
@@ -94,6 +96,7 @@ struct ChatMessageAPIResponse: Codable {
             chatId: chatId,
             senderId: senderId,
             senderName: senderName,
+            senderKind: senderKind ?? "user",
             direction: senderId == currentUserId ? .sent : .received,
             messageType: type,
             body: body,

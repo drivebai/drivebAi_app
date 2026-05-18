@@ -239,6 +239,7 @@ func (h *ChatHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		ChatID:          msg.ChatID,
 		SenderID:        msg.SenderID,
 		SenderName:      senderName,
+		SenderKind:      "user",
 		Type:            msg.Type,
 		Body:            msg.Body,
 		ClientMessageID: msg.ClientMessageID,
@@ -848,24 +849,49 @@ var upgrader = websocket.Upgrader{
 // HandleWebSocket upgrades the HTTP connection to WebSocket.
 // Auth is done via ?token= query parameter since WS doesn't support Authorization header.
 func (h *ChatHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	h.logger.Info("ws handshake",
+		"remote", r.RemoteAddr,
+		"host", r.Host,
+		"proto", r.Proto,
+		"upgrade", r.Header.Get("Upgrade"),
+		"connection", r.Header.Get("Connection"),
+		"ws_version", r.Header.Get("Sec-WebSocket-Version"),
+		"ws_key_present", r.Header.Get("Sec-WebSocket-Key") != "",
+		"has_token", r.URL.Query().Get("token") != "",
+	)
+
 	token := r.URL.Query().Get("token")
 	if token == "" {
+		h.logger.Warn("ws: missing token", "remote", r.RemoteAddr)
 		http.Error(w, "Missing token", http.StatusUnauthorized)
 		return
 	}
 
 	claims, err := h.jwtSvc.ValidateAccessToken(token)
 	if err != nil {
+		reason := "invalid"
+		if err == models.ErrTokenExpired {
+			reason = "expired"
+		}
+		h.logger.Warn("ws: token rejected", "remote", r.RemoteAddr, "reason", reason)
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
 
+	h.logger.Info("ws: token ok", "user_id", claims.UserID, "remote", r.RemoteAddr)
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		h.logger.Error("ws upgrade failed", "error", err)
+		h.logger.Error("ws: upgrade failed",
+			"user_id", claims.UserID,
+			"error", err,
+			"upgrade_header", r.Header.Get("Upgrade"),
+			"connection_header", r.Header.Get("Connection"),
+		)
 		return
 	}
 
+	h.logger.Info("ws: connected", "user_id", claims.UserID)
 	wsConn := ws.NewConn(h.wsHub, conn, claims.UserID, h.logger)
 	h.wsHub.Register(wsConn)
 

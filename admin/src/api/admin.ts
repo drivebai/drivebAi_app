@@ -29,6 +29,8 @@ export const adminApi = {
     api.get<Page<AdminChat>>(`${BASE}/chats${qs(q)}`),
   listChatMessages: (chatId: string) =>
     api.get<{ messages: AdminMessage[] }>(`${BASE}/chats/${chatId}/messages`),
+  sendChatMessage: (chatId: string, text: string) =>
+    api.post<AdminMessage>(`${BASE}/chats/${chatId}/messages`, { text }),
 
   // ---- Rents ----
   listRents: (q: { query?: string; status?: string; page?: number; limit?: number }) =>

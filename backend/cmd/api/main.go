@@ -123,7 +123,7 @@ func main() {
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, notifHandler, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
-	adminHandler := handlers.NewAdminHandler(adminRepo, logger)
+	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -293,6 +293,7 @@ func main() {
 
 				r.Get("/chats", adminHandler.ListChats)
 				r.Get("/chats/{id}/messages", adminHandler.ListChatMessages)
+				r.Post("/chats/{id}/messages", adminHandler.SendChatMessage)
 
 				r.Get("/rents", adminHandler.ListRents)
 				r.Get("/rents/{id}", adminHandler.GetRent)

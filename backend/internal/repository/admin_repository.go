@@ -415,6 +415,7 @@ type AdminMessage struct {
 	ChatID     uuid.UUID `json:"chat_id"`
 	SenderID   uuid.UUID `json:"sender_id"`
 	SenderName string    `json:"sender_name"`
+	SenderKind string    `json:"sender_kind"` // "user" | "admin"
 	Type       string    `json:"type"`
 	Body       string    `json:"body"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -427,7 +428,7 @@ func (r *AdminRepository) ListChatMessages(ctx context.Context, chatID uuid.UUID
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT m.id, m.chat_id, m.sender_id,
 		       COALESCE(u.first_name || ' ' || u.last_name, ''),
-		       m.type::text, m.body, m.created_at
+		       m.sender_kind, m.type::text, m.body, m.created_at
 		FROM messages m
 		LEFT JOIN users u ON u.id = m.sender_id
 		WHERE m.chat_id = $1
@@ -441,12 +442,70 @@ func (r *AdminRepository) ListChatMessages(ctx context.Context, chatID uuid.UUID
 	out := []AdminMessage{}
 	for rows.Next() {
 		var m AdminMessage
-		if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.Type, &m.Body, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.SenderName, &m.SenderKind, &m.Type, &m.Body, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// AdminSendChatMessage inserts a message with sender_kind='admin' into a user-to-user chat.
+// Returns the inserted message and the driver/owner IDs for WS broadcast.
+func (r *AdminRepository) AdminSendChatMessage(ctx context.Context, chatID, adminID uuid.UUID, body string) (*AdminMessage, uuid.UUID, uuid.UUID, error) {
+	var driverID, ownerID uuid.UUID
+	err := r.db.Pool.QueryRow(ctx,
+		`SELECT driver_id, owner_id FROM chats WHERE id = $1`, chatID,
+	).Scan(&driverID, &ownerID)
+	if err != nil {
+		return nil, uuid.Nil, uuid.Nil, models.ErrChatNotFound
+	}
+
+	var adminName string
+	_ = r.db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(first_name || ' ' || last_name, 'Admin') FROM users WHERE id = $1`, adminID,
+	).Scan(&adminName)
+	if adminName == "" {
+		adminName = "Admin"
+	}
+
+	now := time.Now().UTC()
+	msgID := uuid.New()
+
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, uuid.Nil, uuid.Nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, sender_kind, created_at)
+		VALUES ($1, $2, $3, 'text', $4, 'admin', $5)
+	`, msgID, chatID, adminID, body, now)
+	if err != nil {
+		return nil, uuid.Nil, uuid.Nil, fmt.Errorf("insert admin message: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `UPDATE chats SET last_message_at = $2 WHERE id = $1`, chatID, now)
+	if err != nil {
+		return nil, uuid.Nil, uuid.Nil, fmt.Errorf("update last_message_at: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, uuid.Nil, uuid.Nil, err
+	}
+
+	msg := &AdminMessage{
+		ID:         msgID,
+		ChatID:     chatID,
+		SenderID:   adminID,
+		SenderName: adminName,
+		SenderKind: "admin",
+		Type:       "text",
+		Body:       body,
+		CreatedAt:  now,
+	}
+	return msg, driverID, ownerID, nil
 }
 
 // ========== RENTS (lease_requests joined with payments) ==========

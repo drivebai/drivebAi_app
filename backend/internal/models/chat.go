@@ -198,6 +198,7 @@ type MessageResponse struct {
 	ChatID          uuid.UUID      `json:"chat_id"`
 	SenderID        uuid.UUID      `json:"sender_id"`
 	SenderName      string         `json:"sender_name"`
+	SenderKind      string         `json:"sender_kind"` // "user" | "admin"
 	Type            MessageType    `json:"type"`
 	Body            string         `json:"body"`
 	ClientMessageID *uuid.UUID     `json:"client_message_id,omitempty"`

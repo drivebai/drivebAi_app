@@ -4,7 +4,7 @@ import path from 'node:path'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const apiBase = env.VITE_API_BASE_URL || 'http://localhost:8080'
+  const apiBase = env.VITE_API_BASE_URL || 'https://drivebai-api-team.fly.dev'
   return {
     plugins: [vue()],
     resolve: {

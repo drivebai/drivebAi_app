@@ -6,6 +6,8 @@ struct ChatBubbleView: View {
     var body: some View {
         if message.isSystem {
             systemMessageView
+        } else if message.isAdmin {
+            adminMessageView
         } else {
             messageBubble
         }
@@ -24,6 +26,38 @@ struct ChatBubbleView: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+
+    private var adminMessageView: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ADMIN")
+                    .font(.caption2.bold())
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.purple)
+                    .clipShape(Capsule())
+
+                Text(message.body)
+                    .font(.body)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.purple.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18)
+                            .stroke(Color.purple.opacity(0.3), lineWidth: 1)
+                    )
+
+                Text(formatTime(message.createdAt))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 60)
+        }
+        .padding(.vertical, 1)
     }
 
     private var messageBubble: some View {

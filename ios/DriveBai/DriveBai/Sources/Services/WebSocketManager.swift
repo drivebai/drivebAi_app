@@ -39,6 +39,10 @@ final class WebSocketManager: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var usePollingFallback = false
 
+    // Last receive-layer error code; used to decide whether to skip token refresh.
+    // -1011 (badServerResponse) means a non-101 from the server — not an auth issue.
+    private var lastFailureCode: Int? = nil
+
     private let wsBaseURL = AppConfig.wsBaseURL
 
     private let decoder: JSONDecoder = {
@@ -60,23 +64,48 @@ final class WebSocketManager: ObservableObject {
 
     func connect() {
         guard connectionState == .disconnected else { return }
-        guard let token = keychain.getAccessToken() else { return }
-
         connectionState = .connecting
-        reconnectAttempt = 0
 
-        guard let url = URL(string: "\(wsBaseURL)?token=\(token)") else { return }
+        Task { @MainActor in
+            // Run a plain-HTTP preflight only on fresh connects (reconnectAttempt == 0)
+            // to diagnose redirects / auth failures without spamming logs on retries.
+            #if DEBUG
+            await runPreflight()
+            #endif
 
-        let task = session.webSocketTask(with: url)
-        task.resume()
-        webSocketTask = task
-        connectionState = .connected
+            // Only refresh token when the previous failure was NOT a WS-handshake
+            // error (-1011 = badServerResponse). A -1011 after a working HTTP API call
+            // means the issue is server/proxy-side, not token expiry.
+            // Unconditionally refreshing on -1011 just burns the token endpoint.
+            let isBadHandshake = lastFailureCode == URLError.Code.badServerResponse.rawValue
+            if !isBadHandshake {
+                await APIClient.shared.ensureFreshToken()
+            }
+            lastFailureCode = nil
 
-        receiveMessage()
-
-        #if DEBUG
-        print("[WebSocket] Connected")
-        #endif
+            guard let token = keychain.getAccessToken() else {
+                connectionState = .disconnected
+                return
+            }
+            // wsBaseURL is "wss://" for Fly and "ws://" for local.
+            // NSError displays these as "https://"/"http://" — that is an iOS
+            // NSURLErrorFailingURLStringErrorKey normalisation, not a code bug here.
+            guard let url = URL(string: "\(wsBaseURL)?token=\(token)") else {
+                connectionState = .disconnected
+                return
+            }
+            #if DEBUG
+            let masked = String(token.prefix(8)) + "…" + String(token.suffix(4))
+            print("[WS] Opening → scheme:\(url.scheme ?? "?") token:\(masked)")
+            #endif
+            let task = session.webSocketTask(with: url)
+            task.resume()
+            webSocketTask = task
+            // connectionState advances to .connected only on the first successful
+            // receive (see receiveMessage). Setting it here would be premature and
+            // would hide the real -1011 failure in logs.
+            receiveMessage()
+        }
     }
 
     func disconnect() {
@@ -86,6 +115,24 @@ final class WebSocketManager: ObservableObject {
         webSocketTask = nil
         connectionState = .disconnected
         usePollingFallback = false
+        reconnectAttempt = 0
+        lastFailureCode = nil
+    }
+
+    /// Call when the app returns to foreground or any time the connection may have silently dropped.
+    func reconnectIfNeeded() {
+        switch connectionState {
+        case .connected, .connecting:
+            return
+        default:
+            reconnectTask?.cancel()
+            pollingTask?.cancel()
+            usePollingFallback = false
+            reconnectAttempt = 0
+            lastFailureCode = nil
+            connectionState = .disconnected
+            connect()
+        }
     }
 
     // MARK: - Receive Loop
@@ -96,11 +143,22 @@ final class WebSocketManager: ObservableObject {
                 guard let self = self else { return }
                 switch result {
                 case .success(let message):
+                    // Handshake confirmed — promote state and reset retry counter here,
+                    // not inside connect(), so the counter only resets on real success.
+                    if self.connectionState != .connected {
+                        self.connectionState = .connected
+                        self.reconnectAttempt = 0
+                        #if DEBUG
+                        print("[WS] Handshake confirmed — live")
+                        #endif
+                    }
                     self.handleWebSocketMessage(message)
                     self.receiveMessage()
                 case .failure(let error):
+                    let e = error as NSError
+                    self.lastFailureCode = e.code
                     #if DEBUG
-                    print("[WebSocket] Receive error: \(error)")
+                    print("[WS] Receive failed: \(e.localizedDescription) (domain:\(e.domain) code:\(e.code))")
                     #endif
                     self.handleDisconnection()
                 }
@@ -179,6 +237,8 @@ final class WebSocketManager: ObservableObject {
         reconnectTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(totalDelay * 1_000_000_000))
             guard !Task.isCancelled else { return }
+            // Reset state so connect()'s guard passes after the backoff delay.
+            self.connectionState = .disconnected
             self.connect()
         }
     }
@@ -201,4 +261,60 @@ final class WebSocketManager: ObservableObject {
     func clearAll() {
         disconnect()
     }
+
+    // MARK: - Debug Preflight
+
+    // Runs a plain HTTPS GET to the WS endpoint before the first connection attempt
+    // so we can see actual HTTP status codes, redirects, and response bodies.
+    // Only runs when reconnectAttempt == 0 (fresh connect, not a retry) to avoid
+    // spamming logs during the reconnect backoff loop.
+    #if DEBUG
+    @MainActor
+    private func runPreflight() async {
+        guard reconnectAttempt == 0 else { return }
+        guard let token = keychain.getAccessToken() else { return }
+        // Convert wss:// → https:// (or ws:// → http://) for a plain HTTP request.
+        let httpURLString = wsBaseURL
+            .replacingOccurrences(of: "wss://", with: "https://")
+            .replacingOccurrences(of: "ws://", with: "http://")
+        guard let url = URL(string: "\(httpURLString)?token=\(token)") else { return }
+
+        // Use a one-shot session whose delegate blocks redirects so we can see
+        // 3xx status + Location header explicitly (URLSessionWebSocketTask does NOT
+        // follow redirects, so any redirect is a root cause of -1011).
+        let delegate = WSPreflightDelegate()
+        let cfg = URLSessionConfiguration.ephemeral
+        let preflightSession = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+        defer { preflightSession.invalidateAndCancel() }
+
+        do {
+            let (data, response) = try await preflightSession.data(from: url)
+            if let http = response as? HTTPURLResponse {
+                let body = String(data: data.prefix(200), encoding: .utf8) ?? "<binary \(data.count)b>"
+                print("[WS Preflight] status=\(http.statusCode)")
+                print("[WS Preflight] body: \(body)")
+            }
+        } catch let e as NSError where e.code == NSURLErrorCancelled {
+            // Redirect was blocked by the delegate — details already printed there.
+            print("[WS Preflight] → redirect intercepted (see above); this will cause -1011 on real WS connect")
+        } catch {
+            print("[WS Preflight] error: \(error)")
+        }
+    }
+
+    private final class WSPreflightDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            let loc = response.value(forHTTPHeaderField: "Location") ?? "—"
+            print("[WS Preflight] ⚠ REDIRECT \(response.statusCode) → \(request.url?.absoluteString ?? "?")")
+            print("[WS Preflight] Location: \(loc)")
+            completionHandler(nil)  // block redirect; throws .cancelled to caller
+        }
+    }
+    #endif
 }

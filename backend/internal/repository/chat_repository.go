@@ -191,7 +191,7 @@ func (r *ChatRepository) ListMessages(ctx context.Context, chatID uuid.UUID, cur
 		rows, err = r.db.Pool.Query(ctx, `
 			SELECT m.id, m.chat_id, m.sender_id,
 				(SELECT first_name || ' ' || last_name FROM users WHERE id = m.sender_id) AS sender_name,
-				m.type, m.body, m.client_message_id, m.request_id, m.created_at
+				m.type, m.body, m.client_message_id, m.request_id, m.created_at, m.sender_kind
 			FROM messages m
 			WHERE m.chat_id = $1 AND m.created_at < $2
 			ORDER BY m.created_at DESC
@@ -201,7 +201,7 @@ func (r *ChatRepository) ListMessages(ctx context.Context, chatID uuid.UUID, cur
 		rows, err = r.db.Pool.Query(ctx, `
 			SELECT m.id, m.chat_id, m.sender_id,
 				(SELECT first_name || ' ' || last_name FROM users WHERE id = m.sender_id) AS sender_name,
-				m.type, m.body, m.client_message_id, m.request_id, m.created_at
+				m.type, m.body, m.client_message_id, m.request_id, m.created_at, m.sender_kind
 			FROM messages m
 			WHERE m.chat_id = $1
 			ORDER BY m.created_at DESC
@@ -219,7 +219,7 @@ func (r *ChatRepository) ListMessages(ctx context.Context, chatID uuid.UUID, cur
 		var createdAt time.Time
 		err := rows.Scan(
 			&msg.ID, &msg.ChatID, &msg.SenderID, &msg.SenderName,
-			&msg.Type, &msg.Body, &msg.ClientMessageID, &msg.RequestID, &createdAt,
+			&msg.Type, &msg.Body, &msg.ClientMessageID, &msg.RequestID, &createdAt, &msg.SenderKind,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)

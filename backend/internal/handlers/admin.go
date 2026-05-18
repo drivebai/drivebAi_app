@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -14,17 +15,19 @@ import (
 	"github.com/drivebai/backend/internal/httputil"
 	"github.com/drivebai/backend/internal/models"
 	"github.com/drivebai/backend/internal/repository"
+	"github.com/drivebai/backend/internal/ws"
 )
 
 // AdminHandler exposes admin-panel-only endpoints.
 // All endpoints assume the caller has already passed AuthMiddleware + RequireRole(admin).
 type AdminHandler struct {
 	adminRepo *repository.AdminRepository
+	wsHub     *ws.Hub
 	logger    *slog.Logger
 }
 
-func NewAdminHandler(adminRepo *repository.AdminRepository, logger *slog.Logger) *AdminHandler {
-	return &AdminHandler{adminRepo: adminRepo, logger: logger}
+func NewAdminHandler(adminRepo *repository.AdminRepository, wsHub *ws.Hub, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{adminRepo: adminRepo, wsHub: wsHub, logger: logger}
 }
 
 func parsePage(r *http.Request) (page, limit int) {
@@ -186,6 +189,59 @@ func (h *AdminHandler) ListChatMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+}
+
+type sendAdminChatMessageBody struct {
+	Text string `json:"text"`
+}
+
+func (h *AdminHandler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
+	chatID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	var body sendAdminChatMessageBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("text is required"))
+		return
+	}
+	adminID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	msg, driverID, ownerID, err := h.adminRepo.AdminSendChatMessage(r.Context(), chatID, adminID, strings.TrimSpace(body.Text))
+	if err != nil {
+		if err == models.ErrChatNotFound {
+			httputil.WriteError(w, http.StatusNotFound, models.ErrChatNotFound)
+			return
+		}
+		h.logger.Error("admin send chat message", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resp := models.MessageResponse{
+		ID:          msg.ID,
+		ChatID:      msg.ChatID,
+		SenderID:    msg.SenderID,
+		SenderName:  msg.SenderName,
+		SenderKind:  msg.SenderKind,
+		Type:        models.MessageTypeText,
+		Body:        msg.Body,
+		Attachments: make([]models.AttachmentResponse, 0),
+		CreatedAt:   models.RFC3339Time(msg.CreatedAt),
+	}
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "new_message",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{driverID, ownerID},
+	})
+
+	httputil.WriteJSON(w, http.StatusCreated, resp)
 }
 
 // ===== RENTS =====

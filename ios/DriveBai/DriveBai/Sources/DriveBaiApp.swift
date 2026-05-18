@@ -29,6 +29,7 @@ struct DriveBaiApp: App {
     @StateObject private var authStore = AuthStore.shared
     @StateObject private var deepLinkRouter = DeepLinkRouter.shared
     @StateObject private var likedListingsStore = LikedListingsStore.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -56,6 +57,10 @@ struct DriveBaiApp: App {
                         WebSocketManager.shared.disconnect()
                         ChatsListViewModel.shared.clearAll()
                     }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active, authStore.state.isAuthenticated else { return }
+                    WebSocketManager.shared.reconnectIfNeeded()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .didRegisterDeviceToken)) { note in
                     guard let token = note.object as? String else { return }

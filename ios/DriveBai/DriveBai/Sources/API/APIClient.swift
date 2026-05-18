@@ -920,6 +920,10 @@ final class APIClient: APIClientProtocol {
 
     // MARK: - Token Refresh
 
+    func ensureFreshToken() async {
+        try? await refreshAccessToken()
+    }
+
     private func refreshAccessToken() async throws {
         // If already refreshing, wait for it to complete
         if isRefreshing {

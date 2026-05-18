@@ -44,6 +44,7 @@ struct ChatMessage: Identifiable, Equatable {
     let chatId: UUID
     let senderId: UUID
     let senderName: String
+    let senderKind: String // "user" | "admin"
     let direction: MessageDirection
     let messageType: String // "text" or "system"
     let body: String
@@ -58,6 +59,10 @@ struct ChatMessage: Identifiable, Equatable {
 
     var isSystem: Bool {
         messageType == "system"
+    }
+
+    var isAdmin: Bool {
+        senderKind == "admin"
     }
 }
 

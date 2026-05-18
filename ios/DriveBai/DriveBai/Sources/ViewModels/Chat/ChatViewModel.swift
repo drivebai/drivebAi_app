@@ -135,7 +135,7 @@ final class ChatViewModel: ObservableObject {
         let clientId = UUID()
         let optimistic = ChatMessage(
             id: clientId, clientMessageId: clientId, chatId: chatId,
-            senderId: currentUserId, senderName: "Me",
+            senderId: currentUserId, senderName: "Me", senderKind: "user",
             direction: .sent, messageType: "text",
             body: text, attachments: [], createdAt: Date(), status: .sending
         )
@@ -153,7 +153,7 @@ final class ChatViewModel: ObservableObject {
             if let idx = messages.firstIndex(where: { $0.clientMessageId == clientId }) {
                 messages[idx] = ChatMessage(
                     id: clientId, clientMessageId: clientId, chatId: chatId,
-                    senderId: currentUserId, senderName: "Me",
+                    senderId: currentUserId, senderName: "Me", senderKind: "user",
                     direction: .sent, messageType: "text",
                     body: text, attachments: [], createdAt: Date(),
                     status: .failed(error.localizedDescription)

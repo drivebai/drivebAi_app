@@ -18,6 +18,8 @@ const query = ref('')
 const selected = ref<AdminChat | null>(null)
 const messages = ref<AdminMessage[]>([])
 const loadingMsgs = ref(false)
+const newMessage = ref('')
+const sending = ref(false)
 
 let timer: number | undefined
 watch(query, () => {
@@ -43,6 +45,7 @@ async function selectChat(chat: AdminChat) {
   selected.value = chat
   loadingMsgs.value = true
   messages.value = []
+  newMessage.value = ''
   try {
     const res = await adminApi.listChatMessages(chat.id)
     messages.value = res.messages
@@ -50,6 +53,28 @@ async function selectChat(chat: AdminChat) {
     toast.error(e?.message || 'Failed to load messages')
   } finally {
     loadingMsgs.value = false
+  }
+}
+
+async function sendMessage() {
+  const text = newMessage.value.trim()
+  if (!text || !selected.value || sending.value) return
+  sending.value = true
+  try {
+    const msg = await adminApi.sendChatMessage(selected.value.id, text)
+    messages.value.push(msg)
+    newMessage.value = ''
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to send message')
+  } finally {
+    sending.value = false
+  }
+}
+
+function onComposerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendMessage()
   }
 }
 
@@ -103,13 +128,34 @@ loadChats()
         <div
           v-for="m in messages" :key="m.id"
           class="msg"
-          :class="{ system: m.type === 'system', driver: m.sender_id === selected.driver_id }"
+          :class="{
+            system: m.type === 'system',
+            driver: m.sender_id === selected.driver_id && m.sender_kind !== 'admin',
+            admin: m.sender_kind === 'admin'
+          }"
         >
+          <div v-if="m.sender_kind === 'admin'" class="admin-badge">ADMIN</div>
           <div class="msg-head">
             <span class="sender">{{ m.sender_name || (m.sender_id === selected.driver_id ? 'Driver' : 'Owner') }}</span>
             <span class="when">{{ fmtDateTime(m.created_at) }}</span>
           </div>
           <div class="body">{{ m.body }}</div>
+        </div>
+      </div>
+
+      <div v-if="selected" class="composer">
+        <div class="composer-warning">⚠ Users will see this as an Admin message</div>
+        <div class="composer-row">
+          <textarea
+            v-model="newMessage"
+            placeholder="Send as Admin…"
+            rows="2"
+            class="composer-input"
+            @keydown="onComposerKeydown"
+          />
+          <button class="composer-send" :disabled="!newMessage.trim() || sending" @click="sendMessage">
+            {{ sending ? '…' : 'Send' }}
+          </button>
         </div>
       </div>
     </section>
@@ -182,9 +228,42 @@ loadChats()
 }
 .msg.driver { background: var(--accent-soft); align-self: flex-end; }
 .msg.system { align-self: center; background: transparent; color: var(--text-muted); font-style: italic; }
+.msg.admin { background: #f3e8ff; border: 1px solid #c084fc; align-self: flex-start; }
+.admin-badge {
+  display: inline-block;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+  color: #fff; background: #9333ea;
+  border-radius: 999px; padding: 2px 8px;
+  margin-bottom: 4px;
+}
 .msg-head { display: flex; gap: 8px; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
 .sender { font-weight: 500; }
 .body { white-space: pre-wrap; }
+
+.composer {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.composer-warning {
+  font-size: 11px; color: #92400e;
+  background: #fef3c7; border: 1px solid #fcd34d;
+  border-radius: 6px; padding: 4px 10px;
+}
+.composer-row { display: flex; gap: 8px; align-items: flex-end; }
+.composer-input {
+  flex: 1; resize: none;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; font-size: 14px;
+  background: var(--bg); color: var(--text);
+}
+.composer-send {
+  padding: 8px 18px; font-weight: 600;
+  background: #9333ea; color: #fff;
+  border: none; border-radius: var(--radius); cursor: pointer;
+  white-space: nowrap;
+}
+.composer-send:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .state { padding: 32px; color: var(--text-muted); text-align: center; }
 </style>

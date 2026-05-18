@@ -79,6 +79,7 @@ export interface AdminMessage {
   chat_id: string
   sender_id: string
   sender_name: string
+  sender_kind: 'user' | 'admin'
   type: 'text' | 'system'
   body: string
   created_at: string

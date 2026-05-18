@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -23,6 +26,18 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
 	rw.wroteHeader = true
+}
+
+// Hijack delegates to the underlying ResponseWriter so that WebSocket
+// upgrades (gorilla/websocket) can take over the raw TCP connection.
+// Without this, w.(http.Hijacker) returns false and upgrader.Upgrade()
+// fails with "response does not implement http.Hijacker".
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter %T does not implement http.Hijacker", rw.ResponseWriter)
+	}
+	return h.Hijack()
 }
 
 // Logger creates a logging middleware
