@@ -44,8 +44,8 @@ func (r *AccidentRepository) GetByIDForUser(ctx context.Context, accidentID, use
 	row := r.db.Pool.QueryRow(ctx, `
 		SELECT id, reporter_id, related_chat_id, related_car_id, status,
 		       driver1_info, driver2_info, vehicle_damage,
-		       accident_description, insurance_info, other_info,
-		       signature_url, signature_signed_at, submitted_at,
+		       COALESCE(accident_description, ''), insurance_info, other_info,
+		       COALESCE(signature_url, ''), signature_signed_at, submitted_at,
 		       created_at, updated_at
 		FROM accidents
 		WHERE id = $1 AND reporter_id = $2
@@ -58,8 +58,8 @@ func (r *AccidentRepository) ListForUser(ctx context.Context, userID uuid.UUID) 
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT id, reporter_id, related_chat_id, related_car_id, status,
 		       driver1_info, driver2_info, vehicle_damage,
-		       accident_description, insurance_info, other_info,
-		       signature_url, signature_signed_at, submitted_at,
+		       COALESCE(accident_description, ''), insurance_info, other_info,
+		       COALESCE(signature_url, ''), signature_signed_at, submitted_at,
 		       created_at, updated_at
 		FROM accidents
 		WHERE reporter_id = $1
@@ -70,7 +70,7 @@ func (r *AccidentRepository) ListForUser(ctx context.Context, userID uuid.UUID) 
 	}
 	defer rows.Close()
 
-	var out []models.Accident
+	out := []models.Accident{}
 	for rows.Next() {
 		a, err := scanAccident(rows)
 		if err != nil {
