@@ -26,6 +26,9 @@ final class WebSocketManager: ObservableObject {
     // Notification events — payload is the new unread count
     let notificationCreatedPublisher = PassthroughSubject<Int, Never>()
 
+    // Support chat events — admin reply arrives in real-time
+    let supportMessageCreatedPublisher = PassthroughSubject<SupportMessageAPIResponse, Never>()
+
     private var webSocketTask: URLSessionWebSocketTask?
     private let session: URLSession = .shared
     private let keychain: KeychainService = .shared
@@ -205,6 +208,10 @@ final class WebSocketManager: ObservableObject {
                 notificationCreatedPublisher.send(unread)
             } else {
                 notificationCreatedPublisher.send(1)
+            }
+        case "support_message_created":
+            if let msg = try? decoder.decode(SupportMessageAPIResponse.self, from: payloadData) {
+                supportMessageCreatedPublisher.send(msg)
             }
         default:
             #if DEBUG

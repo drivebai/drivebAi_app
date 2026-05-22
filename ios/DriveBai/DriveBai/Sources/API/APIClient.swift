@@ -635,9 +635,39 @@ final class APIClient: APIClientProtocol {
         return try await deleteWithBody(path: "me/device-token", body: Body(token: token), authenticated: true)
     }
 
+    // MARK: - Support Chat Methods
+
+    func getOrCreateSupportChat() async throws -> SupportChatAPIResponse {
+        try await postEmpty(path: "support/chats", authenticated: true)
+    }
+
+    func fetchSupportMessages(chatId: UUID) async throws -> [SupportMessageAPIResponse] {
+        let resp: SupportMessagesListAPIResponse = try await get(
+            path: "support/chats/\(chatId.uuidString.lowercased())/messages",
+            authenticated: true
+        )
+        return resp.messages
+    }
+
+    func sendSupportMessage(chatId: UUID, body: String) async throws -> SupportMessageAPIResponse {
+        let req = SendSupportMessageRequest(body: body)
+        return try await post(
+            path: "support/chats/\(chatId.uuidString.lowercased())/messages",
+            body: req,
+            authenticated: true
+        )
+    }
+
+    func markSupportChatRead(chatId: UUID) async throws {
+        let _: MessageResponse = try await postEmpty(
+            path: "support/chats/\(chatId.uuidString.lowercased())/read",
+            authenticated: true
+        )
+    }
+
     // MARK: - Private Request Methods
 
-    private func post<T: Codable, R: Codable>(
+    private func post<T: Encodable, R: Decodable>(
         path: String,
         body: T,
         authenticated: Bool = false
@@ -652,7 +682,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func get<R: Codable>(
+    private func get<R: Decodable>(
         path: String,
         authenticated: Bool = false
     ) async throws -> R {
@@ -665,7 +695,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func patch<T: Codable, R: Codable>(
+    private func patch<T: Encodable, R: Decodable>(
         path: String,
         body: T,
         authenticated: Bool = false
@@ -680,7 +710,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func put<T: Codable, R: Codable>(
+    private func put<T: Encodable, R: Decodable>(
         path: String,
         body: T,
         authenticated: Bool = false
@@ -695,7 +725,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func delete<R: Codable>(
+    private func delete<R: Decodable>(
         path: String,
         authenticated: Bool = false
     ) async throws -> R {
@@ -708,7 +738,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func deleteWithBody<T: Codable, R: Codable>(
+    private func deleteWithBody<T: Encodable, R: Decodable>(
         path: String,
         body: T,
         authenticated: Bool = false
@@ -723,7 +753,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func postEmpty<R: Codable>(
+    private func postEmpty<R: Decodable>(
         path: String,
         authenticated: Bool = false
     ) async throws -> R {
@@ -736,7 +766,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func uploadMultipart<R: Codable>(
+    private func uploadMultipart<R: Decodable>(
         path: String,
         fileData: Data,
         filename: String,
@@ -769,7 +799,7 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
-    private func uploadMultipartWithFields<R: Codable>(
+    private func uploadMultipartWithFields<R: Decodable>(
         path: String,
         fileData: Data,
         filename: String,
@@ -838,7 +868,7 @@ final class APIClient: APIClientProtocol {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
-    private func execute<R: Codable>(
+    private func execute<R: Decodable>(
         request: URLRequest,
         authenticated: Bool,
         retryCount: Int = 0

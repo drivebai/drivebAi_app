@@ -635,6 +635,7 @@ type AdminSupportChat struct {
 	UserPhotoURL    *string    `json:"user_photo_url,omitempty"`
 	LastMessageBody *string    `json:"last_message_body,omitempty"`
 	LastMessageAt   *time.Time `json:"last_message_at,omitempty"`
+	UnreadCount     int        `json:"unread_count"` // user messages admin hasn't read
 }
 
 func (r *AdminRepository) ListSupportChats(ctx context.Context) ([]AdminSupportChat, error) {
@@ -643,7 +644,13 @@ func (r *AdminRepository) ListSupportChats(ctx context.Context) ([]AdminSupportC
 		       COALESCE(u.first_name || ' ' || u.last_name, ''),
 		       u.email, u.role::text, u.profile_photo_url,
 		       (SELECT body FROM support_messages WHERE support_chat_id = sc.id ORDER BY created_at DESC LIMIT 1),
-		       sc.last_message_at
+		       sc.last_message_at,
+		       (
+		         SELECT COUNT(*) FROM support_messages sm
+		         WHERE sm.support_chat_id = sc.id
+		           AND sm.sender_kind = 'user'
+		           AND (sc.admin_last_read_at IS NULL OR sm.created_at > sc.admin_last_read_at)
+		       ) AS unread_count
 		FROM support_chats sc
 		JOIN users u ON u.id = sc.user_id
 		ORDER BY sc.last_message_at DESC NULLS LAST, sc.created_at DESC
@@ -656,12 +663,37 @@ func (r *AdminRepository) ListSupportChats(ctx context.Context) ([]AdminSupportC
 	for rows.Next() {
 		var c AdminSupportChat
 		if err := rows.Scan(&c.ID, &c.UserID, &c.UserName, &c.UserEmail, &c.UserRole, &c.UserPhotoURL,
-			&c.LastMessageBody, &c.LastMessageAt); err != nil {
+			&c.LastMessageBody, &c.LastMessageAt, &c.UnreadCount); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// GetAdminUserIDs returns IDs of all users with role='admin'. Used to target WS broadcasts.
+func (r *AdminRepository) GetAdminUserIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := r.db.Pool.Query(ctx, "SELECT id FROM users WHERE role = 'admin'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// MarkSupportChatAdminRead stamps admin_last_read_at = NOW() for the given chat.
+func (r *AdminRepository) MarkSupportChatAdminRead(ctx context.Context, chatID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx,
+		"UPDATE support_chats SET admin_last_read_at = NOW() WHERE id = $1", chatID)
+	return err
 }
 
 type AdminSupportMessage struct {
@@ -695,12 +727,20 @@ func (r *AdminRepository) ListSupportMessages(ctx context.Context, chatID uuid.U
 	return out, nil
 }
 
-func (r *AdminRepository) PostSupportMessage(ctx context.Context, chatID, senderID uuid.UUID, kind, body string) (*AdminSupportMessage, error) {
+// PostSupportMessage inserts an admin message and returns it plus the chat's user_id
+// (needed for WS broadcast targeting).
+func (r *AdminRepository) PostSupportMessage(ctx context.Context, chatID, senderID uuid.UUID, kind, body string) (*AdminSupportMessage, uuid.UUID, error) {
 	tx, err := r.db.Pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, uuid.Nil, err
 	}
 	defer tx.Rollback(ctx)
+
+	// Fetch chat user_id inside the transaction.
+	var chatUserID uuid.UUID
+	if err := tx.QueryRow(ctx, "SELECT user_id FROM support_chats WHERE id = $1", chatID).Scan(&chatUserID); err != nil {
+		return nil, uuid.Nil, fmt.Errorf("support chat not found: %w", err)
+	}
 
 	var m AdminSupportMessage
 	now := time.Now().UTC()
@@ -712,15 +752,15 @@ func (r *AdminRepository) PostSupportMessage(ctx context.Context, chatID, sender
 		&m.ID, &m.SupportChatID, &m.SenderID, &m.SenderKind, &m.Body, &m.CreatedAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, uuid.Nil, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE support_chats SET last_message_at = $2, updated_at = $2 WHERE id = $1`, chatID, now); err != nil {
-		return nil, err
+		return nil, uuid.Nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, uuid.Nil, err
 	}
-	return &m, nil
+	return &m, chatUserID, nil
 }
 
 func (r *AdminRepository) GetRentDetail(ctx context.Context, id uuid.UUID) (*AdminRentRow, error) {

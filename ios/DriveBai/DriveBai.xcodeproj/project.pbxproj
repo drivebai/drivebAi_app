@@ -89,6 +89,10 @@
 		E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000320 /* DriverDocumentsSection.swift */; };
 		E00000010000000000000331 /* AdjustPriceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000330 /* AdjustPriceSheet.swift */; };
 		E00000010000000000000341 /* NotificationAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000340 /* NotificationAPIModels.swift */; };
+		E00000010000000000000351 /* SupportAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000350 /* SupportAPIModels.swift */; };
+		E00000010000000000000361 /* SupportChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000360 /* SupportChatViewModel.swift */; };
+		E00000010000000000000371 /* SupportChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000370 /* SupportChatView.swift */; };
+		E000000100000000000003A1 /* SupportInboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003A0 /* SupportInboxStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -175,6 +179,10 @@
 		E00000010000000000000320 /* DriverDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriverDocumentsSection.swift; sourceTree = "<group>"; };
 		E00000010000000000000330 /* AdjustPriceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdjustPriceSheet.swift; sourceTree = "<group>"; };
 		E00000010000000000000340 /* NotificationAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationAPIModels.swift; sourceTree = "<group>"; };
+		E00000010000000000000350 /* SupportAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportAPIModels.swift; sourceTree = "<group>"; };
+		E00000010000000000000360 /* SupportChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportChatViewModel.swift; sourceTree = "<group>"; };
+		E00000010000000000000370 /* SupportChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportChatView.swift; sourceTree = "<group>"; };
+		E000000100000000000003A0 /* SupportInboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportInboxStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -257,6 +265,7 @@
 				E000000100000000000000F0 /* LeaseRequestAPIModels.swift */,
 				E000000100000000000000FC /* TodayActionsAPIModels.swift */,
 				E00000010000000000000340 /* NotificationAPIModels.swift */,
+				E00000010000000000000350 /* SupportAPIModels.swift */,
 			);
 			path = API;
 			sourceTree = "<group>";
@@ -281,6 +290,7 @@
 				E00000010000000000000088 /* Cars */,
 				E0000001000000000000009F /* Discover */,
 				E000000100000000000000E7 /* Chat */,
+				E00000010000000000000380 /* Support */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -294,6 +304,7 @@
 				E00000010000000000000082 /* Today */,
 				E00000010000000000000089 /* MyCars */,
 				E000000100000000000000E8 /* Chat */,
+				E00000010000000000000390 /* Support */,
 				E00000010000000000000048 /* Components */,
 			);
 			path = Views;
@@ -486,6 +497,23 @@
 			path = Components;
 			sourceTree = "<group>";
 		};
+		E00000010000000000000380 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				E00000010000000000000360 /* SupportChatViewModel.swift */,
+				E000000100000000000003A0 /* SupportInboxStore.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		E00000010000000000000390 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				E00000010000000000000370 /* SupportChatView.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -638,6 +666,10 @@
 				E000000100000000000000FF /* AppConfig.swift in Sources */,
 				E00000010000000000000311 /* ChatEligibility.swift in Sources */,
 				E00000010000000000000101 /* OTPLoginView.swift in Sources */,
+				E00000010000000000000351 /* SupportAPIModels.swift in Sources */,
+				E00000010000000000000361 /* SupportChatViewModel.swift in Sources */,
+				E00000010000000000000371 /* SupportChatView.swift in Sources */,
+				E000000100000000000003A1 /* SupportInboxStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

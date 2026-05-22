@@ -29,6 +29,7 @@ struct DriveBaiApp: App {
     @StateObject private var authStore = AuthStore.shared
     @StateObject private var deepLinkRouter = DeepLinkRouter.shared
     @StateObject private var likedListingsStore = LikedListingsStore.shared
+    @StateObject private var supportInboxStore = SupportInboxStore.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -37,6 +38,7 @@ struct DriveBaiApp: App {
                 .environmentObject(authStore)
                 .environmentObject(deepLinkRouter)
                 .environmentObject(likedListingsStore)
+                .environmentObject(supportInboxStore)
                 .task {
                     await authStore.checkAuthState()
                     if authStore.state.isAuthenticated {
@@ -44,6 +46,7 @@ struct DriveBaiApp: App {
                         await ChatsListViewModel.shared.fetchChats()
                         WebSocketManager.shared.connect()
                         await requestPushPermissionIfNeeded()
+                        await supportInboxStore.refresh()
                     }
                 }
                 .onChange(of: authStore.state) { _, newState in
@@ -52,6 +55,7 @@ struct DriveBaiApp: App {
                         Task {
                             await ChatsListViewModel.shared.fetchChats()
                             await requestPushPermissionIfNeeded()
+                            await supportInboxStore.refresh()
                         }
                     } else {
                         WebSocketManager.shared.disconnect()
@@ -61,6 +65,7 @@ struct DriveBaiApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active, authStore.state.isAuthenticated else { return }
                     WebSocketManager.shared.reconnectIfNeeded()
+                    Task { await supportInboxStore.refresh() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .didRegisterDeviceToken)) { note in
                     guard let token = note.object as? String else { return }

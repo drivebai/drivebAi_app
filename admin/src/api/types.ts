@@ -117,6 +117,7 @@ export interface AdminSupportChat {
   user_photo_url?: string | null
   last_message_body?: string | null
   last_message_at?: string | null
+  unread_count: number
 }
 
 export interface AdminSupportMessage {

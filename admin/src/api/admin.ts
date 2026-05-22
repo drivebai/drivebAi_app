@@ -43,6 +43,8 @@ export const adminApi = {
     api.get<{ messages: AdminSupportMessage[] }>(`${BASE}/support/chats/${id}/messages`),
   sendSupportMessage: (id: string, body: string) =>
     api.post<AdminSupportMessage>(`${BASE}/support/chats/${id}/messages`, { body }),
+  markSupportRead: (id: string) =>
+    api.post<{ ok: boolean }>(`${BASE}/support/chats/${id}/read`, {}),
 
   // ---- Accidents / Car sell (stubs until tables exist) ----
   listAccidents: () => api.get<Page<AdminAccident>>(`${BASE}/accidents`),

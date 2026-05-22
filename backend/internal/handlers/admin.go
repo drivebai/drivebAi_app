@@ -316,22 +316,50 @@ func (h *AdminHandler) SendSupportMessage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var body sendSupportBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Body == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Body) == "" {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("body is required"))
 		return
 	}
+	body.Body = strings.TrimSpace(body.Body)
 	adminID, ok := httputil.GetUserID(r.Context())
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
 		return
 	}
-	msg, err := h.adminRepo.PostSupportMessage(r.Context(), id, adminID, "admin", body.Body)
+	msg, chatUserID, err := h.adminRepo.PostSupportMessage(r.Context(), id, adminID, "admin", body.Body)
 	if err != nil {
 		h.logger.Error("admin send support msg", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+
+	// Push the admin reply to the user in real-time.
+	if chatUserID != uuid.Nil {
+		h.wsHub.Broadcast(&ws.Event{
+			Type:          "support_message_created",
+			Payload:       msg,
+			TargetUserIDs: []uuid.UUID{chatUserID},
+		})
+	}
+
+	h.logger.Info("admin support message sent", "chat_id", id, "admin_id", adminID, "msg_id", msg.ID)
 	httputil.WriteJSON(w, http.StatusCreated, msg)
+}
+
+// MarkSupportChatRead — POST /admin/support/chats/{id}/read
+// Admin marks a support chat as read; resets the unread badge for this chat.
+func (h *AdminHandler) MarkSupportChatRead(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	if err := h.adminRepo.MarkSupportChatAdminRead(r.Context(), id); err != nil {
+		h.logger.Error("admin mark support read", "chat_id", id, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // ===== ACCIDENTS / CAR SELL =====

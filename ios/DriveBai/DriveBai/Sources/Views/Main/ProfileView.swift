@@ -43,9 +43,11 @@ struct AuthenticatedProfileView: View {
     @Binding var showLogoutConfirmation: Bool
 
     @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @State private var isSwitchingMode = false
     @State private var showDriverDocsSheet = false
     @State private var switchError: String?
+    @State private var showSupportChat = false
 
     /// Constructs the full URL for the profile photo
     private var profilePhotoURL: URL? {
@@ -172,7 +174,12 @@ struct AuthenticatedProfileView: View {
                     Divider().padding(.leading, 56)
                     ProfileActionRow(icon: "lock.fill", title: "Privacy & Security", action: {})
                     Divider().padding(.leading, 56)
-                    ProfileActionRow(icon: "questionmark.circle.fill", title: "Help & Support", action: {})
+                    ProfileActionRow(
+                        icon: "questionmark.circle.fill",
+                        title: "Help & Support",
+                        badge: supportInboxStore.unreadCount,
+                        action: { showSupportChat = true }
+                    )
                 }
                 .background(Color(.systemBackground))
                 .cornerRadius(12)
@@ -192,6 +199,14 @@ struct AuthenticatedProfileView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+        .sheet(isPresented: $showSupportChat, onDismiss: {
+            supportInboxStore.isSupportChatVisible = false
+            Task { await supportInboxStore.markRead() }
+        }) {
+            SupportChatView()
+                .environmentObject(authStore)
+                .environmentObject(supportInboxStore)
+        }
         .sheet(isPresented: $showDriverDocsSheet) {
             DriverDocsRequiredSheet(
                 onCompleted: {
@@ -324,6 +339,7 @@ struct ProfileActionRow: View {
     let icon: String
     let title: String
     var isLoading: Bool = false
+    var badge: Int = 0
     let action: () -> Void
 
     var body: some View {
@@ -339,6 +355,16 @@ struct ProfileActionRow: View {
                     .foregroundColor(.primary)
 
                 Spacer()
+
+                if badge > 0 {
+                    Text(badge > 99 ? "99+" : "\(badge)")
+                        .font(.caption2.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.red)
+                        .clipShape(Capsule())
+                }
 
                 if isLoading {
                     ProgressView()

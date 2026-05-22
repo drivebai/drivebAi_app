@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       // Proxy /api and /uploads to the Go backend so we don't touch CORS in dev.
       proxy: {
+        '/api/v1/ws': { target: apiBase.replace('https://', 'wss://').replace('http://', 'ws://'), changeOrigin: true, ws: true },
         '/api': { target: apiBase, changeOrigin: true },
         '/uploads': { target: apiBase, changeOrigin: true },
       },

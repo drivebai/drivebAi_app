@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DriverTabView: View {
     @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @ObservedObject private var chatsVM = ChatsListViewModel.shared
 
     @State private var selectedTab = 0
@@ -36,6 +37,7 @@ struct DriverTabView: View {
                     Label("Profile", systemImage: "person.fill")
                 }
                 .tag(3)
+                .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
     }

@@ -78,6 +78,7 @@ func main() {
 	leaseRepo := repository.NewLeaseRequestRepository(db)
 	sharedDocsRepo := repository.NewSharedDocumentRepository(db)
 	adminRepo := repository.NewAdminRepository(db)
+	supportRepo := repository.NewSupportRepository(db)
 	notifRepo := repository.NewNotificationRepository(db)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(db)
 
@@ -124,6 +125,7 @@ func main() {
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, notifHandler, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
+	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -279,6 +281,16 @@ func main() {
 			r.Post("/lease-requests/{id}/payments/intent", leaseHandler.CreatePaymentIntent)
 			r.Post("/lease-requests/{id}/payments/sync", leaseHandler.SyncPaymentStatus)
 
+			// Support chat (user-facing)
+			r.Route("/support", func(r chi.Router) {
+				r.Post("/chats", supportHandler.GetOrCreate)
+				r.Route("/chats/{chatId}", func(r chi.Router) {
+					r.Get("/messages", supportHandler.ListMessages)
+					r.Post("/messages", supportHandler.SendMessage)
+					r.Post("/read", supportHandler.MarkRead)
+				})
+			})
+
 			// Admin panel API — require role=admin
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(middleware.RequireRole(models.RoleAdmin))
@@ -301,6 +313,7 @@ func main() {
 				r.Get("/support/chats", adminHandler.ListSupportChats)
 				r.Get("/support/chats/{id}/messages", adminHandler.ListSupportMessages)
 				r.Post("/support/chats/{id}/messages", adminHandler.SendSupportMessage)
+				r.Post("/support/chats/{id}/read", adminHandler.MarkSupportChatRead)
 
 				r.Get("/accidents", adminHandler.ListAccidents)
 				r.Get("/accidents/{id}", adminHandler.GetAccident)

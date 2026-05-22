@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import { RouterView, RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useSupportStore } from '../stores/support'
 
 const auth = useAuthStore()
 const router = useRouter()
+const support = useSupportStore()
 
 const items = [
   { to: '/users',     label: 'Users',     icon: 'user' },
@@ -15,7 +18,11 @@ const items = [
   { to: '/car-sell',  label: 'Car Sell',  icon: 'sell' },
 ]
 
+onMounted(() => support.connect())
+onUnmounted(() => support.disconnect())
+
 function logout() {
+  support.disconnect()
   auth.logout()
   router.replace({ name: 'login' })
 }
@@ -37,6 +44,9 @@ function logout() {
         <RouterLink v-for="i in items" :key="i.to" :to="i.to" class="nav-item" active-class="active">
           <span class="nav-icon" :data-icon="i.icon" />
           <span>{{ i.label }}</span>
+          <span v-if="i.icon === 'support' && support.totalUnread > 0" class="badge">
+            {{ support.totalUnread > 99 ? '99+' : support.totalUnread }}
+          </span>
         </RouterLink>
       </nav>
 
@@ -110,6 +120,19 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-icon[data-icon="support"]  { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9a2.5 2.5 0 015 0c0 1.5-2.5 2-2.5 4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9a2.5 2.5 0 015 0c0 1.5-2.5 2-2.5 4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="accident"] { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 3l10 18H2L12 3z'/%3E%3Cpath d='M12 10v4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 3l10 18H2L12 3z'/%3E%3Cpath d='M12 10v4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="sell"]     { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6'/%3E%3C/svg%3E"); }
+
+.badge {
+  margin-left: auto;
+  background: #e53e3e;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  min-width: 18px;
+  text-align: center;
+}
 
 .logout { margin-top: auto; text-align: left; }
 
