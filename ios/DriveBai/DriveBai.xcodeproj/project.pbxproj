@@ -93,6 +93,9 @@
 		E00000010000000000000361 /* SupportChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000360 /* SupportChatViewModel.swift */; };
 		E00000010000000000000371 /* SupportChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000370 /* SupportChatView.swift */; };
 		E000000100000000000003A1 /* SupportInboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003A0 /* SupportInboxStore.swift */; };
+		E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003B0 /* AccidentAPIModels.swift */; };
+		E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003C0 /* AccidentReportViewModel.swift */; };
+		E000000100000000000003D1 /* AccidentReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003D0 /* AccidentReportView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -183,6 +186,9 @@
 		E00000010000000000000360 /* SupportChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportChatViewModel.swift; sourceTree = "<group>"; };
 		E00000010000000000000370 /* SupportChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportChatView.swift; sourceTree = "<group>"; };
 		E000000100000000000003A0 /* SupportInboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportInboxStore.swift; sourceTree = "<group>"; };
+		E000000100000000000003B0 /* AccidentAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentAPIModels.swift; sourceTree = "<group>"; };
+		E000000100000000000003C0 /* AccidentReportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportViewModel.swift; sourceTree = "<group>"; };
+		E000000100000000000003D0 /* AccidentReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -266,6 +272,7 @@
 				E000000100000000000000FC /* TodayActionsAPIModels.swift */,
 				E00000010000000000000340 /* NotificationAPIModels.swift */,
 				E00000010000000000000350 /* SupportAPIModels.swift */,
+				E000000100000000000003B0 /* AccidentAPIModels.swift */,
 			);
 			path = API;
 			sourceTree = "<group>";
@@ -291,6 +298,7 @@
 				E0000001000000000000009F /* Discover */,
 				E000000100000000000000E7 /* Chat */,
 				E00000010000000000000380 /* Support */,
+				E000000100000000000003C2 /* Accidents */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -305,6 +313,7 @@
 				E00000010000000000000089 /* MyCars */,
 				E000000100000000000000E8 /* Chat */,
 				E00000010000000000000390 /* Support */,
+				E000000100000000000003D2 /* Accidents */,
 				E00000010000000000000048 /* Components */,
 			);
 			path = Views;
@@ -514,6 +523,22 @@
 			path = Support;
 			sourceTree = "<group>";
 		};
+		E000000100000000000003C2 /* Accidents */ = {
+			isa = PBXGroup;
+			children = (
+				E000000100000000000003C0 /* AccidentReportViewModel.swift */,
+			);
+			path = Accidents;
+			sourceTree = "<group>";
+		};
+		E000000100000000000003D2 /* Accidents */ = {
+			isa = PBXGroup;
+			children = (
+				E000000100000000000003D0 /* AccidentReportView.swift */,
+			);
+			path = Accidents;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -670,6 +695,9 @@
 				E00000010000000000000361 /* SupportChatViewModel.swift in Sources */,
 				E00000010000000000000371 /* SupportChatView.swift in Sources */,
 				E000000100000000000003A1 /* SupportInboxStore.swift in Sources */,
+				E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */,
+				E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */,
+				E000000100000000000003D1 /* AccidentReportView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

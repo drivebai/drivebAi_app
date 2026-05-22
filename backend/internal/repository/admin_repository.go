@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -790,4 +791,192 @@ func (r *AdminRepository) GetRentDetail(ctx context.Context, id uuid.UUID) (*Adm
 		return nil, err
 	}
 	return &rent, nil
+}
+
+// ========== ACCIDENTS ==========
+
+// AdminAccidentRow is the shaped response for admin list + detail views.
+type AdminAccidentRow struct {
+	ID                  uuid.UUID              `json:"id"`
+	ReporterID          uuid.UUID              `json:"reporter_id"`
+	ReporterName        string                 `json:"reporter_name"`
+	ReporterEmail       string                 `json:"reporter_email"`
+	RelatedChatID       *uuid.UUID             `json:"related_chat_id,omitempty"`
+	RelatedCarID        *uuid.UUID             `json:"related_car_id,omitempty"`
+	CarTitle            *string                `json:"car_title,omitempty"`
+	Status              models.AccidentStatus  `json:"status"`
+	Driver1Info         *models.DriverInfo     `json:"driver1_info,omitempty"`
+	Driver2Info         *models.DriverInfo     `json:"driver2_info,omitempty"`
+	VehicleDamage       *models.VehicleDamage  `json:"vehicle_damage,omitempty"`
+	AccidentDescription string                 `json:"accident_description"`
+	InsuranceInfo       *models.InsuranceInfo  `json:"insurance_info,omitempty"`
+	OtherInfo           *models.OtherInfo      `json:"other_info,omitempty"`
+	SignatureURL        string                 `json:"signature_url"`
+	SignatureSignedAt   *time.Time             `json:"signature_signed_at,omitempty"`
+	SubmittedAt         *time.Time             `json:"submitted_at,omitempty"`
+	Attachments         []models.AccidentAttachment `json:"attachments"`
+	CreatedAt           time.Time              `json:"created_at"`
+	UpdatedAt           time.Time              `json:"updated_at"`
+}
+
+type AdminAccidentsPage struct {
+	Items []AdminAccidentRow `json:"items"`
+	Total int                `json:"total"`
+	Page  int                `json:"page"`
+	Limit int                `json:"limit"`
+}
+
+func (r *AdminRepository) ListAccidents(ctx context.Context, page, limit int, status string) (*AdminAccidentsPage, error) {
+	offset := (page - 1) * limit
+
+	var totalCount int
+	countQuery := `SELECT COUNT(*) FROM accidents`
+	args := []any{}
+	argIdx := 1
+	if status != "" {
+		countQuery += fmt.Sprintf(" WHERE status = $%d", argIdx)
+		args = append(args, status)
+		argIdx++
+	}
+	if err := r.db.Pool.QueryRow(ctx, countQuery, args...).Scan(&totalCount); err != nil {
+		return nil, fmt.Errorf("count accidents: %w", err)
+	}
+
+	query := `
+		SELECT a.id, a.reporter_id,
+		       COALESCE(u.first_name || ' ' || u.last_name, u.email) AS reporter_name,
+		       u.email AS reporter_email,
+		       a.related_chat_id, a.related_car_id,
+		       c.make || ' ' || c.model || ' ' || c.year::text AS car_title,
+		       a.status, a.driver1_info, a.submitted_at, a.created_at, a.updated_at
+		FROM accidents a
+		JOIN users u ON u.id = a.reporter_id
+		LEFT JOIN cars c ON c.id = a.related_car_id`
+
+	if status != "" {
+		query += fmt.Sprintf(" WHERE a.status = $%d", argIdx)
+		args = append(args, status)
+		argIdx++
+	}
+	args = append(args, limit, offset)
+	query += fmt.Sprintf(" ORDER BY a.created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+
+	rows, err := r.db.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list accidents: %w", err)
+	}
+	defer rows.Close()
+
+	items := []AdminAccidentRow{}
+	for rows.Next() {
+		var a AdminAccidentRow
+		var d1 []byte
+		var carTitle *string
+		err := rows.Scan(
+			&a.ID, &a.ReporterID, &a.ReporterName, &a.ReporterEmail,
+			&a.RelatedChatID, &a.RelatedCarID, &carTitle,
+			&a.Status, &d1, &a.SubmittedAt, &a.CreatedAt, &a.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		a.CarTitle = carTitle
+		if d1 != nil {
+			a.Driver1Info = new(models.DriverInfo)
+			jsonUnmarshal(d1, a.Driver1Info)
+		}
+		items = append(items, a)
+	}
+
+	return &AdminAccidentsPage{Items: items, Total: totalCount, Page: page, Limit: limit}, nil
+}
+
+func (r *AdminRepository) GetAccident(ctx context.Context, id uuid.UUID) (*AdminAccidentRow, error) {
+	var a AdminAccidentRow
+	var d1, d2, vd, ins, oth []byte
+	var carTitle *string
+
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT a.id, a.reporter_id,
+		       COALESCE(u.first_name || ' ' || u.last_name, u.email),
+		       u.email,
+		       a.related_chat_id, a.related_car_id,
+		       c.make || ' ' || c.model || ' ' || c.year::text,
+		       a.status, a.driver1_info, a.driver2_info, a.vehicle_damage,
+		       COALESCE(a.accident_description, ''),
+		       a.insurance_info, a.other_info,
+		       COALESCE(a.signature_url, ''),
+		       a.signature_signed_at, a.submitted_at,
+		       a.created_at, a.updated_at
+		FROM accidents a
+		JOIN users u ON u.id = a.reporter_id
+		LEFT JOIN cars c ON c.id = a.related_car_id
+		WHERE a.id = $1
+	`, id).Scan(
+		&a.ID, &a.ReporterID, &a.ReporterName, &a.ReporterEmail,
+		&a.RelatedChatID, &a.RelatedCarID, &carTitle,
+		&a.Status, &d1, &d2, &vd,
+		&a.AccidentDescription, &ins, &oth,
+		&a.SignatureURL, &a.SignatureSignedAt, &a.SubmittedAt,
+		&a.CreatedAt, &a.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	a.CarTitle = carTitle
+	if d1 != nil {
+		a.Driver1Info = new(models.DriverInfo)
+		jsonUnmarshal(d1, a.Driver1Info)
+	}
+	if d2 != nil {
+		a.Driver2Info = new(models.DriverInfo)
+		jsonUnmarshal(d2, a.Driver2Info)
+	}
+	if vd != nil {
+		a.VehicleDamage = new(models.VehicleDamage)
+		jsonUnmarshal(vd, a.VehicleDamage)
+	}
+	if ins != nil {
+		a.InsuranceInfo = new(models.InsuranceInfo)
+		jsonUnmarshal(ins, a.InsuranceInfo)
+	}
+	if oth != nil {
+		a.OtherInfo = new(models.OtherInfo)
+		jsonUnmarshal(oth, a.OtherInfo)
+	}
+
+	// Load attachments
+	attRows, err := r.db.Pool.Query(ctx, `
+		SELECT id, accident_id, slot, file_url, file_size, mime_type, created_at
+		FROM accident_attachments
+		WHERE accident_id = $1
+		ORDER BY created_at ASC
+	`, id)
+	if err == nil {
+		defer attRows.Close()
+		for attRows.Next() {
+			var att models.AccidentAttachment
+			attRows.Scan(&att.ID, &att.AccidentID, &att.Slot, &att.FileURL, &att.FileSize, &att.MimeType, &att.CreatedAt)
+			a.Attachments = append(a.Attachments, att)
+		}
+	}
+	if a.Attachments == nil {
+		a.Attachments = []models.AccidentAttachment{}
+	}
+
+	return &a, nil
+}
+
+func (r *AdminRepository) UpdateAccidentStatus(ctx context.Context, id uuid.UUID, status models.AccidentStatus) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE accidents SET status = $1, updated_at = NOW() WHERE id = $2
+	`, string(status), id)
+	return err
+}
+
+// jsonUnmarshal is a nil-safe json.Unmarshal helper for JSONB columns.
+func jsonUnmarshal(data []byte, v any) {
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, v)
+	}
 }

@@ -129,13 +129,93 @@ export interface AdminSupportMessage {
   created_at: string
 }
 
-// Stub types reserved for future migrations.
+export interface AccidentAttachment {
+  id: string
+  accident_id: string
+  slot: string
+  file_url: string
+  file_size: number
+  mime_type: string
+  created_at: string
+}
+
+export interface DriverInfo {
+  driver_license_id?: string
+  state_of_license?: string
+  driver_name?: string
+  address?: string
+  city?: string
+  state?: string
+  zip?: string
+  dob?: string
+  people_in_vehicle?: string
+  public_property_damaged?: string
+  injuries?: string
+  registrant_name?: string
+  registrant_address?: string
+  registrant_city?: string
+  registrant_state?: string
+  registrant_zip?: string
+  plate_number?: string
+  state_of_reg?: string
+  vehicle_year_make?: string
+  vehicle_type?: string
+  ins_code?: string
+}
+
+export interface VehicleDamage {
+  description?: string
+  diagram?: number
+}
+
+export interface InsuranceInfo {
+  insurance_company?: string
+  vin?: string
+  policy_number?: string
+  policy_period_from?: string
+  policy_period_to?: string
+}
+
+export interface OtherInfo {
+  month?: string
+  day?: string
+  year?: string
+  day_of_week?: string
+  time?: string
+  num_vehicles?: string
+  num_injured?: string
+  num_killed?: string
+  police_investigated?: string
+}
+
 export interface AdminAccident {
   id: string
-  driver_name?: string
-  owner_name?: string
+  reporter_id: string
+  reporter_name: string
+  reporter_email: string
+  related_chat_id?: string
+  related_car_id?: string
   car_title?: string
+  status: 'draft' | 'submitted' | 'in_review' | 'resolved'
+  driver1_info?: DriverInfo
+  driver2_info?: DriverInfo
+  vehicle_damage?: VehicleDamage
+  accident_description?: string
+  insurance_info?: InsuranceInfo
+  other_info?: OtherInfo
+  signature_url?: string
+  signature_signed_at?: string
+  submitted_at?: string
+  attachments: AccidentAttachment[]
   created_at: string
+  updated_at: string
+}
+
+export interface AdminAccidentsPage {
+  items: AdminAccident[]
+  total: number
+  page: number
+  limit: number
 }
 export interface AdminCarSell {
   id: string

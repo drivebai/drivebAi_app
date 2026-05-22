@@ -377,9 +377,55 @@ func emptyPage(w http.ResponseWriter) {
 	})
 }
 
-func (h *AdminHandler) ListAccidents(w http.ResponseWriter, r *http.Request) { emptyPage(w) }
+func (h *AdminHandler) ListAccidents(w http.ResponseWriter, r *http.Request) {
+	page, limit := parsePage(r)
+	status := r.URL.Query().Get("status")
+	result, err := h.adminRepo.ListAccidents(r.Context(), page, limit, status)
+	if err != nil {
+		h.logger.Error("admin list accidents", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, result)
+}
+
 func (h *AdminHandler) GetAccident(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "accidents module not yet implemented"))
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	accident, err := h.adminRepo.GetAccident(r.Context(), id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "accident not found"))
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, accident)
+}
+
+func (h *AdminHandler) UpdateAccidentStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Status == "" {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("status is required"))
+		return
+	}
+	validStatuses := map[string]bool{"draft": true, "submitted": true, "in_review": true, "resolved": true}
+	if !validStatuses[body.Status] {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid status"))
+		return
+	}
+	if err := h.adminRepo.UpdateAccidentStatus(r.Context(), id, models.AccidentStatus(body.Status)); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 func (h *AdminHandler) ListCarSells(w http.ResponseWriter, r *http.Request) { emptyPage(w) }
 func (h *AdminHandler) GetCarSell(w http.ResponseWriter, r *http.Request) {

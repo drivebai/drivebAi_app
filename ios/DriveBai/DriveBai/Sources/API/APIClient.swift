@@ -665,6 +665,50 @@ final class APIClient: APIClientProtocol {
         )
     }
 
+    // MARK: - Accidents
+
+    func createAccident(relatedChatId: UUID?, relatedCarId: UUID?) async throws -> AccidentAPIResponse {
+        let body = CreateAccidentRequest(relatedChatId: relatedChatId, relatedCarId: relatedCarId)
+        return try await post(path: "accidents", body: body, authenticated: true)
+    }
+
+    func listAccidents() async throws -> AccidentListResponse {
+        return try await get(path: "accidents", authenticated: true)
+    }
+
+    func getAccident(id: UUID) async throws -> AccidentAPIResponse {
+        return try await get(path: "accidents/\(id.uuidString)", authenticated: true)
+    }
+
+    func patchAccident(id: UUID, patch: AccidentPatchRequest) async throws -> AccidentAPIResponse {
+        return try await self.patch(path: "accidents/\(id.uuidString)", body: patch, authenticated: true)
+    }
+
+    func uploadAccidentAttachment(accidentId: UUID, slot: String, data: Data, filename: String, mimeType: String) async throws -> AccidentAttachmentAPI {
+        return try await uploadMultipartWithFields(
+            path: "accidents/\(accidentId.uuidString)/attachments",
+            fileData: data, filename: filename, mimeType: mimeType,
+            fields: ["slot": slot],
+            authenticated: true
+        )
+    }
+
+    func deleteAccidentAttachment(accidentId: UUID, attachmentId: UUID) async throws {
+        let _: MessageResponse = try await delete(path: "accidents/\(accidentId.uuidString)/attachments/\(attachmentId.uuidString)", authenticated: true)
+    }
+
+    func uploadAccidentSignature(accidentId: UUID, imageData: Data) async throws -> SignatureUploadResponse {
+        return try await uploadMultipart(
+            path: "accidents/\(accidentId.uuidString)/sign",
+            fileData: imageData, filename: "signature.png", mimeType: "image/png",
+            authenticated: true
+        )
+    }
+
+    func submitAccident(id: UUID) async throws -> AccidentAPIResponse {
+        return try await postEmpty(path: "accidents/\(id.uuidString)/submit", authenticated: true)
+    }
+
     // MARK: - Private Request Methods
 
     private func post<T: Encodable, R: Decodable>(

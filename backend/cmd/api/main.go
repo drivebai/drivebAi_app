@@ -124,8 +124,10 @@ func main() {
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, notifHandler, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
+	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
+	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, logger)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -281,6 +283,20 @@ func main() {
 			r.Post("/lease-requests/{id}/payments/intent", leaseHandler.CreatePaymentIntent)
 			r.Post("/lease-requests/{id}/payments/sync", leaseHandler.SyncPaymentStatus)
 
+			// Accident reports (user-facing)
+			r.Route("/accidents", func(r chi.Router) {
+				r.Post("/", accidentHandler.Create)
+				r.Get("/", accidentHandler.List)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", accidentHandler.Get)
+					r.Patch("/", accidentHandler.Patch)
+					r.Post("/attachments", accidentHandler.Upload)
+					r.Delete("/attachments/{attachId}", accidentHandler.DeleteAttachment)
+					r.Post("/sign", accidentHandler.Sign)
+					r.Post("/submit", accidentHandler.Submit)
+				})
+			})
+
 			// Support chat (user-facing)
 			r.Route("/support", func(r chi.Router) {
 				r.Post("/chats", supportHandler.GetOrCreate)
@@ -317,6 +333,7 @@ func main() {
 
 				r.Get("/accidents", adminHandler.ListAccidents)
 				r.Get("/accidents/{id}", adminHandler.GetAccident)
+				r.Patch("/accidents/{id}/status", adminHandler.UpdateAccidentStatus)
 
 				r.Get("/car-sells", adminHandler.ListCarSells)
 				r.Get("/car-sells/{id}", adminHandler.GetCarSell)

@@ -4,7 +4,7 @@
 import { api, qs } from './client'
 import type {
   AdminUser, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
-  AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminCarSell, Page,
+  AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
 } from './types'
 
 const BASE = '/api/v1/admin'
@@ -46,7 +46,11 @@ export const adminApi = {
   markSupportRead: (id: string) =>
     api.post<{ ok: boolean }>(`${BASE}/support/chats/${id}/read`, {}),
 
-  // ---- Accidents / Car sell (stubs until tables exist) ----
-  listAccidents: () => api.get<Page<AdminAccident>>(`${BASE}/accidents`),
+  // ---- Accidents / Car sell ----
+  listAccidents: (q: { status?: string; page?: number; limit?: number }) =>
+    api.get<AdminAccidentsPage>(`${BASE}/accidents${qs(q)}`),
+  getAccident: (id: string) => api.get<AdminAccident>(`${BASE}/accidents/${id}`),
+  updateAccidentStatus: (id: string, status: string) =>
+    api.patch<{ ok: boolean }>(`${BASE}/accidents/${id}/status`, { status }),
   listCarSells: () => api.get<Page<AdminCarSell>>(`${BASE}/car-sells`),
 }
