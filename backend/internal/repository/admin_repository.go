@@ -829,16 +829,15 @@ type AdminAccidentsPage struct {
 func (r *AdminRepository) ListAccidents(ctx context.Context, page, limit int, status string) (*AdminAccidentsPage, error) {
 	offset := (page - 1) * limit
 
+	// Count query uses its own arg slice so it never contaminates the main query args.
 	var totalCount int
 	countQuery := `SELECT COUNT(*) FROM accidents`
-	args := []any{}
-	argIdx := 1
+	countArgs := []any{}
 	if status != "" {
-		countQuery += fmt.Sprintf(" WHERE status = $%d", argIdx)
-		args = append(args, status)
-		argIdx++
+		countQuery += ` WHERE status = $1`
+		countArgs = append(countArgs, status)
 	}
-	if err := r.db.Pool.QueryRow(ctx, countQuery, args...).Scan(&totalCount); err != nil {
+	if err := r.db.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("count accidents: %w", err)
 	}
 
@@ -853,15 +852,17 @@ func (r *AdminRepository) ListAccidents(ctx context.Context, page, limit int, st
 		JOIN users u ON u.id = a.reporter_id
 		LEFT JOIN cars c ON c.id = a.related_car_id`
 
+	mainArgs := []any{}
+	argIdx := 1
 	if status != "" {
 		query += fmt.Sprintf(" WHERE a.status = $%d", argIdx)
-		args = append(args, status)
+		mainArgs = append(mainArgs, status)
 		argIdx++
 	}
-	args = append(args, limit, offset)
+	mainArgs = append(mainArgs, limit, offset)
 	query += fmt.Sprintf(" ORDER BY a.created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 
-	rows, err := r.db.Pool.Query(ctx, query, args...)
+	rows, err := r.db.Pool.Query(ctx, query, mainArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("list accidents: %w", err)
 	}

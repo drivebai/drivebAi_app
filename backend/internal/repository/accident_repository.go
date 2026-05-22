@@ -35,6 +35,7 @@ func (r *AccidentRepository) Create(ctx context.Context, reporterID uuid.UUID, c
 	if err != nil {
 		return nil, fmt.Errorf("create accident: %w", err)
 	}
+	a.Attachments = []models.AccidentAttachment{}
 	return &a, nil
 }
 
@@ -215,7 +216,7 @@ func (r *AccidentRepository) ListAttachments(ctx context.Context, accidentID uui
 	}
 	defer rows.Close()
 
-	var out []models.AccidentAttachment
+	out := []models.AccidentAttachment{}
 	for rows.Next() {
 		var a models.AccidentAttachment
 		if err := rows.Scan(&a.ID, &a.AccidentID, &a.Slot, &a.FileURL, &a.FileSize, &a.MimeType, &a.CreatedAt); err != nil {
@@ -233,6 +234,7 @@ type scanRow interface {
 
 func scanAccident(row scanRow) (*models.Accident, error) {
 	var a models.Accident
+	a.Attachments = []models.AccidentAttachment{}
 	var d1, d2, vd, ins, oth []byte
 	err := row.Scan(
 		&a.ID, &a.ReporterID, &a.RelatedChatID, &a.RelatedCarID, &a.Status,

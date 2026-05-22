@@ -40,6 +40,27 @@ struct AccidentAPIResponse: Codable, Identifiable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        reporterId = try c.decode(UUID.self, forKey: .reporterId)
+        relatedChatId = try c.decodeIfPresent(UUID.self, forKey: .relatedChatId)
+        relatedCarId = try c.decodeIfPresent(UUID.self, forKey: .relatedCarId)
+        status = try c.decode(String.self, forKey: .status)
+        driver1Info = try c.decodeIfPresent(DriverInfoAPI.self, forKey: .driver1Info)
+        driver2Info = try c.decodeIfPresent(DriverInfoAPI.self, forKey: .driver2Info)
+        vehicleDamage = try c.decodeIfPresent(VehicleDamageAPI.self, forKey: .vehicleDamage)
+        accidentDescription = try c.decodeIfPresent(String.self, forKey: .accidentDescription)
+        insuranceInfo = try c.decodeIfPresent(InsuranceInfoAPI.self, forKey: .insuranceInfo)
+        otherInfo = try c.decodeIfPresent(OtherInfoAPI.self, forKey: .otherInfo)
+        signatureUrl = try c.decodeIfPresent(String.self, forKey: .signatureUrl)
+        signatureSignedAt = try c.decodeIfPresent(Date.self, forKey: .signatureSignedAt)
+        submittedAt = try c.decodeIfPresent(Date.self, forKey: .submittedAt)
+        attachments = try c.decodeIfPresent([AccidentAttachmentAPI].self, forKey: .attachments) ?? []
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+    }
 }
 
 struct AccidentListResponse: Codable {

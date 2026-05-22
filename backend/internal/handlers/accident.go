@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -185,6 +186,9 @@ func (h *AccidentHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	if attachments, e := h.accidentRepo.ListAttachments(r.Context(), accidentID); e == nil {
+		accident.Attachments = attachments
+	}
 	httputil.WriteJSON(w, http.StatusOK, accident)
 }
 
@@ -275,8 +279,12 @@ func (h *AccidentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	filePath := filepath.Join(dir, filename)
 
 	// Write to disk
-	data := make([]byte, header.Size)
-	file.Read(data)
+	data, err := io.ReadAll(file)
+	if err != nil {
+		h.logger.Error("read accident file", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		h.logger.Error("write accident file", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
@@ -285,7 +293,7 @@ func (h *AccidentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	fileURL := fmt.Sprintf("/uploads/accidents/%s/%s", accidentID.String(), filename)
 
-	att, err := h.accidentRepo.AddAttachment(r.Context(), accidentID, slot, fileURL, filePath, header.Size, contentType)
+	att, err := h.accidentRepo.AddAttachment(r.Context(), accidentID, slot, fileURL, filePath, int64(len(data)), contentType)
 	if err != nil {
 		os.Remove(filePath)
 		h.logger.Error("save attachment record", "error", err)
@@ -372,8 +380,11 @@ func (h *AccidentHandler) Sign(w http.ResponseWriter, r *http.Request) {
 	filename := fmt.Sprintf("signature_%s.png", uuid.New().String())
 	filePath := filepath.Join(dir, filename)
 
-	data := make([]byte, header.Size)
-	file.Read(data)
+	data, err := io.ReadAll(file)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
@@ -410,6 +421,9 @@ func (h *AccidentHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("submit accident", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
+	}
+	if attachments, e := h.accidentRepo.ListAttachments(r.Context(), accidentID); e == nil {
+		accident.Attachments = attachments
 	}
 
 	// Broadcast to all admins so the panel updates in real-time

@@ -88,7 +88,7 @@ type Accident struct {
 	SignatureURL        string         `json:"signature_url,omitempty"`
 	SignatureSignedAt   *time.Time     `json:"signature_signed_at,omitempty"`
 	SubmittedAt         *time.Time     `json:"submitted_at,omitempty"`
-	Attachments         []AccidentAttachment `json:"attachments,omitempty"`
+	Attachments         []AccidentAttachment `json:"attachments"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }
