@@ -1,6 +1,20 @@
 import SwiftUI
 import PhotosUI
 
+// MARK: – Design tokens
+
+private enum AD {
+    static let radius: CGFloat    = 14
+    static let cardPad: CGFloat   = 16
+    static let sectionGap: CGFloat = 22
+    static let fieldGap: CGFloat  = 12
+    static let thumbSize: CGFloat = 96
+    static let ctaHeight: CGFloat = 52
+    static let progressH: CGFloat = 8
+}
+
+// MARK: – Root view
+
 struct AccidentReportView: View {
     @StateObject private var vm: AccidentReportViewModel
     @Environment(\.dismiss) private var dismiss
@@ -13,13 +27,16 @@ struct AccidentReportView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if vm.isLoading {
-                    ProgressView("Creating report…")
-                } else if vm.isSubmitted {
-                    submittedView
-                } else {
-                    stepView
+            ZStack {
+                Color(.systemGroupedBackground).ignoresSafeArea()
+                Group {
+                    if vm.isLoading {
+                        loadingView
+                    } else if vm.isSubmitted {
+                        submittedView
+                    } else {
+                        stepView
+                    }
                 }
             }
             .navigationTitle(vm.currentStep.title)
@@ -27,9 +44,6 @@ struct AccidentReportView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if vm.isSaving { ProgressView().scaleEffect(0.7) }
                 }
             }
             .alert("Error", isPresented: Binding(
@@ -42,250 +56,431 @@ struct AccidentReportView: View {
         .task { await vm.loadOrCreate() }
     }
 
-    // MARK: - Step content
+    // MARK: Loading
+
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ProgressView().scaleEffect(1.3)
+            Text("Creating report…")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    // MARK: Step wrapper
 
     @ViewBuilder
     private var stepView: some View {
         VStack(spacing: 0) {
-            // Progress bar
-            GeometryReader { geo in
-                let total = AccidentStep.allCases.count
-                let progress = Double(vm.currentStep.rawValue + 1) / Double(total)
-                ZStack(alignment: .leading) {
-                    Rectangle().fill(Color(.systemGray5)).frame(height: 3)
-                    Rectangle().fill(Color.driveBaiPrimary).frame(width: geo.size.width * progress, height: 3)
-                }
-            }
-            .frame(height: 3)
-
+            progressHeader
+            Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    switch vm.currentStep {
-                    case .photos:      PhotosStepView(vm: vm)
-                    case .driver1:     DriverInfoStepView(info: $vm.driver1Info, label: "Driver 1")
-                    case .driver2:     Driver2StepView(vm: vm)
-                    case .damage:      DamageStepView(vm: vm)
-                    case .description: DescriptionStepView(text: $vm.accidentDescription)
-                    case .insurance:   InsuranceStepView(info: $vm.insuranceInfo)
-                    case .other:       OtherInfoStepView(info: $vm.otherInfo)
-                    case .signature:   SignatureStepView(vm: vm)
-                    case .review:      ReviewStepView(vm: vm)
-                    }
+                VStack(alignment: .leading, spacing: AD.sectionGap) {
+                    stepContent
                 }
-                .padding()
+                .padding(.horizontal, AD.cardPad)
+                .padding(.vertical, AD.sectionGap)
+                // extra bottom padding so content isn't hidden behind the CTA bar
+                .padding(.bottom, AD.ctaHeight + 40)
             }
-
-            // Nav buttons
-            HStack(spacing: 12) {
-                if vm.canGoBack {
-                    Button("Back") { vm.goBack() }
-                        .buttonStyle(.bordered)
-                }
-                Spacer()
-                if vm.currentStep == .review {
-                    Button(vm.isSubmitting ? "Submitting…" : "Submit Report") {
-                        Task { await vm.submit() }
-                    }
-                    .buttonStyle(DriveBaiButtonStyle())
-                    .disabled(vm.isSubmitting)
-                } else {
-                    Button(vm.isSaving ? "Saving…" : "Next") {
-                        Task { await vm.goForward() }
-                    }
-                    .buttonStyle(DriveBaiButtonStyle())
-                    .disabled(vm.isSaving)
-                }
-            }
-            .padding()
-            .background(Color(.systemBackground))
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ctaBar
         }
     }
 
+    @ViewBuilder
+    private var stepContent: some View {
+        switch vm.currentStep {
+        case .photos:      PhotosStepView(vm: vm)
+        case .driver1:     DriverInfoStepView(info: $vm.driver1Info, label: "Driver 1")
+        case .driver2:     Driver2StepView(vm: vm)
+        case .damage:      DamageStepView(vm: vm)
+        case .description: DescriptionStepView(text: $vm.accidentDescription)
+        case .insurance:   InsuranceStepView(info: $vm.insuranceInfo)
+        case .other:       OtherInfoStepView(info: $vm.otherInfo)
+        case .signature:   SignatureStepView(vm: vm)
+        case .review:      ReviewStepView(vm: vm)
+        }
+    }
+
+    // MARK: Progress header
+
+    private var progressHeader: some View {
+        let total = AccidentStep.allCases.count
+        let current = vm.currentStep.rawValue + 1
+        let pct = CGFloat(current) / CGFloat(total)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Step \(current) of \(total)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                if vm.isSaving {
+                    HStack(spacing: 5) {
+                        ProgressView().scaleEffect(0.75)
+                        Text("Saving…").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: AD.progressH / 2)
+                        .fill(Color.driveBaiPrimary.opacity(0.15))
+                        .frame(height: AD.progressH)
+                    RoundedRectangle(cornerRadius: AD.progressH / 2)
+                        .fill(Color.driveBaiPrimary)
+                        .frame(width: geo.size.width * pct, height: AD.progressH)
+                        .animation(.easeInOut(duration: 0.28), value: vm.currentStep.rawValue)
+                }
+            }
+            .frame(height: AD.progressH)
+        }
+        .padding(.horizontal, AD.cardPad)
+        .padding(.vertical, 12)
+        .background(Color(.systemBackground))
+    }
+
+    // MARK: CTA bar
+
+    private var ctaBar: some View {
+        let isLast = vm.currentStep == .review
+        let busy   = vm.isSaving || vm.isSubmitting
+        return HStack(spacing: 12) {
+            if vm.canGoBack {
+                Button("Back") { vm.goBack() }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.driveBaiPrimary)
+                    .frame(maxWidth: .infinity, minHeight: AD.ctaHeight)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AD.radius)
+                            .stroke(Color.driveBaiPrimary, lineWidth: 1.5)
+                    )
+            }
+
+            Button {
+                Task {
+                    if isLast { await vm.submit() }
+                    else      { await vm.goForward() }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if busy { ProgressView().tint(.white).scaleEffect(0.8) }
+                    Text(isLast
+                         ? (vm.isSubmitting ? "Submitting…" : "Submit Report")
+                         : (vm.isSaving     ? "Saving…"    : "Next"))
+                        .font(.subheadline.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity, minHeight: AD.ctaHeight)
+                .background(busy ? Color.driveBaiPrimary.opacity(0.6) : Color.driveBaiPrimary)
+                .foregroundColor(.white)
+                .cornerRadius(AD.radius)
+            }
+            .disabled(busy)
+        }
+        .padding(.horizontal, AD.cardPad)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(
+            Color(.systemBackground)
+                .shadow(color: .black.opacity(0.07), radius: 10, x: 0, y: -4)
+                .ignoresSafeArea(edges: .bottom)
+        )
+    }
+
+    // MARK: Submitted view
+
     private var submittedView: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 28) {
             Spacer()
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 72))
-                .foregroundColor(.driveBaiPrimary)
-            Text("Report Submitted")
-                .font(.title2.bold())
-            Text("Your accident report has been submitted. Our team will review it shortly.")
-                .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 32)
+            ZStack {
+                Circle()
+                    .fill(Color.driveBaiPrimary.opacity(0.12))
+                    .frame(width: 130, height: 130)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 68))
+                    .foregroundColor(.driveBaiPrimary)
+            }
+            VStack(spacing: 10) {
+                Text("Report Submitted")
+                    .font(.title2.bold())
+                Text("Your accident report has been submitted.\nOur team will review it shortly.")
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(.secondary)
+                    .font(.subheadline)
+                    .padding(.horizontal, 20)
+            }
             Button("Close") { dismiss() }
-                .buttonStyle(DriveBaiButtonStyle())
-                .padding(.horizontal, 40)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: 220, minHeight: AD.ctaHeight)
+                .background(Color.driveBaiPrimary)
+                .cornerRadius(AD.radius)
             Spacer()
         }
     }
 }
 
-// MARK: - Photos Step
+// MARK: – Photos Step
+
+private struct SlotConfig {
+    let slot: String
+    let label: String
+    let subtitle: String
+    let icon: String
+    let isVideo: Bool
+}
 
 private struct PhotosStepView: View {
     @ObservedObject var vm: AccidentReportViewModel
 
-    private let slots = [
-        ("accident_photo", "Accident Photos"),
-        ("accident_video", "Accident Video"),
-        ("driver1_license", "Driver 1 License"),
-        ("driver2_plate", "Plate of Second Vehicle"),
-        ("second_vehicle_docs", "Second Vehicle Documents"),
+    private let slots: [SlotConfig] = [
+        SlotConfig(slot: "accident_photo",      label: "Accident Photos",
+                   subtitle: "Photos of vehicles and the scene",
+                   icon: "camera.fill",         isVideo: false),
+        SlotConfig(slot: "accident_video",      label: "Accident Video",
+                   subtitle: "Dashcam or bystander footage",
+                   icon: "video.fill",          isVideo: true),
+        SlotConfig(slot: "driver1_license",     label: "Driver 1 License",
+                   subtitle: "Front of the driver's licence",
+                   icon: "creditcard.fill",     isVideo: false),
+        SlotConfig(slot: "driver2_plate",       label: "Second Vehicle Plate",
+                   subtitle: "Clear photo of the plate number",
+                   icon: "car.rear.fill",       isVideo: false),
+        SlotConfig(slot: "second_vehicle_docs", label: "Second Vehicle Documents",
+                   subtitle: "Registration or insurance card",
+                   icon: "doc.text.fill",       isVideo: false),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Upload photos, videos, and documents related to the accident.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-
-            ForEach(slots, id: \.0) { slot, label in
-                let attachments = vm.accident?.attachments.filter { $0.slot == slot } ?? []
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(label).font(.subheadline.bold())
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(attachments) { att in
-                                if att.mimeType.hasPrefix("image/") {
-                                    AsyncImage(url: URL(string: AppConfig.serverBaseURL.absoluteString + att.fileUrl)) { phase in
-                                        switch phase {
-                                        case .success(let img):
-                                            img.resizable().scaledToFill()
-                                                .frame(width: 80, height: 80).clipped()
-                                                .cornerRadius(8)
-                                        default:
-                                            Color(.systemGray5).frame(width: 80, height: 80).cornerRadius(8)
-                                        }
-                                    }
-                                    .overlay(alignment: .topTrailing) {
-                                        Button {
-                                            Task { await vm.deleteAttachment(id: att.id) }
-                                        } label: {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .foregroundColor(.red)
-                                                .background(Color.white.clipShape(Circle()))
-                                        }
-                                        .padding(4)
-                                    }
-                                } else {
-                                    HStack {
-                                        Image(systemName: "doc.fill").foregroundColor(.driveBaiPrimary)
-                                        Text(att.mimeType.contains("video") ? "Video" : "Doc")
-                                            .font(.caption)
-                                    }
-                                    .padding(8)
-                                    .background(Color(.systemGray6))
-                                    .cornerRadius(8)
-                                }
-                            }
-                            // Add button
-                            PhotoPickerButton(slot: slot, vm: vm)
-                        }
-                        .padding(.horizontal, 2)
-                    }
-                }
-                Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Evidence & Documentation").font(.headline)
+                Text("Upload photos, videos, and documents related to the accident.")
+                    .font(.subheadline).foregroundColor(.secondary)
             }
 
             if vm.isUploadingAttachment {
-                HStack {
+                HStack(spacing: 10) {
                     ProgressView()
                     Text("Uploading…").font(.subheadline).foregroundColor(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color.driveBaiPrimary.opacity(0.08))
+                .cornerRadius(10)
+            }
+
+            ForEach(slots, id: \.slot) { config in
+                SlotRowCard(config: config, vm: vm)
             }
         }
     }
 }
 
-// MARK: - Photo Picker Button
-
-private struct PhotoPickerButton: View {
-    let slot: String
+private struct SlotRowCard: View {
+    let config: SlotConfig
     @ObservedObject var vm: AccidentReportViewModel
 
+    private var attachments: [AccidentAttachmentAPI] {
+        vm.accident?.attachments.filter { $0.slot == config.slot } ?? []
+    }
+
     var body: some View {
-        ZStack {
-            Image(systemName: "plus")
-                .font(.title2)
-                .foregroundColor(.driveBaiPrimary)
-                .frame(width: 80, height: 80)
+        VStack(alignment: .leading, spacing: 12) {
+            // Header row
+            HStack(spacing: 12) {
+                Image(systemName: config.icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.driveBaiPrimary)
+                    .frame(width: 34, height: 34)
+                    .background(Color.driveBaiPrimary.opacity(0.10))
+                    .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(config.label).font(.subheadline.weight(.semibold))
+                    Text(attachments.isEmpty
+                         ? config.subtitle
+                         : "\(attachments.count) file\(attachments.count == 1 ? "" : "s") added")
+                        .font(.caption)
+                        .foregroundColor(attachments.isEmpty ? .secondary : .driveBaiPrimary)
+                }
+
+                Spacer()
+
+                SlotAddButton(config: config, vm: vm)
+            }
+
+            // Content area
+            if attachments.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: config.isVideo ? "video.badge.plus" : "photo.badge.plus")
+                        .font(.title2)
+                        .foregroundColor(Color(.systemGray3))
+                    Text("Tap \"Add\" to upload a file")
+                        .font(.caption)
+                        .foregroundColor(Color(.systemGray3))
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(height: 52)
                 .background(Color(.systemGray6))
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.driveBaiPrimary.opacity(0.4), lineWidth: 1))
-            PhotoPickerOverlay(slot: slot, vm: vm)
+                .cornerRadius(10)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(attachments) { att in
+                            AttachmentThumbnail(att: att, vm: vm)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 1)
+                }
+            }
         }
+        .padding(AD.cardPad)
+        .background(Color(.systemBackground))
+        .cornerRadius(AD.radius)
+        .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
     }
 }
 
-private struct PhotoPickerOverlay: View {
-    let slot: String
+private struct SlotAddButton: View {
+    let config: SlotConfig
     @ObservedObject var vm: AccidentReportViewModel
     @State private var selectedItem: PhotosPickerItem?
 
     var body: some View {
         PhotosPicker(
             selection: $selectedItem,
-            matching: slot == "accident_video" ? .videos : .images
+            matching: config.isVideo ? .videos : .images
         ) {
-            Color.clear
+            HStack(spacing: 4) {
+                Image(systemName: "plus").font(.caption.weight(.bold))
+                Text("Add").font(.caption.weight(.semibold))
+            }
+            .foregroundColor(.driveBaiPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Color.driveBaiPrimary.opacity(0.10))
+            .cornerRadius(20)
         }
         .onChange(of: selectedItem) { _, item in
             guard let item else { return }
             Task {
                 guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-                let isVideo = slot == "accident_video"
-                let filename = isVideo ? "video.mov" : "photo.jpg"
-                let mime = isVideo ? "video/quicktime" : "image/jpeg"
-                await vm.uploadAttachment(slot: slot, data: data, filename: filename, mimeType: mime)
+                let filename = config.isVideo ? "video.mov" : "photo.jpg"
+                let mime     = config.isVideo ? "video/quicktime" : "image/jpeg"
+                await vm.uploadAttachment(slot: config.slot, data: data, filename: filename, mimeType: mime)
                 selectedItem = nil
             }
         }
     }
 }
 
-// MARK: - Driver Info Step
+private struct AttachmentThumbnail: View {
+    let att: AccidentAttachmentAPI
+    @ObservedObject var vm: AccidentReportViewModel
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            thumbnailBody
+            deleteButton
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnailBody: some View {
+        if att.mimeType.hasPrefix("image/") {
+            AsyncImage(url: URL(string: AppConfig.serverBaseURL.absoluteString + att.fileUrl)) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable().scaledToFill()
+                default:
+                    Color(.systemGray5)
+                        .overlay(Image(systemName: "photo").foregroundColor(.secondary))
+                }
+            }
+            .frame(width: AD.thumbSize, height: AD.thumbSize)
+            .clipped()
+            .cornerRadius(10)
+        } else {
+            VStack(spacing: 6) {
+                Image(systemName: att.mimeType.contains("video") ? "play.rectangle.fill" : "doc.fill")
+                    .font(.title2)
+                    .foregroundColor(.driveBaiPrimary)
+                Text(att.mimeType.contains("video") ? "Video" : "Doc")
+                    .font(.caption2.weight(.medium))
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: AD.thumbSize, height: AD.thumbSize)
+            .background(Color(.systemGray6))
+            .cornerRadius(10)
+        }
+    }
+
+    private var deleteButton: some View {
+        Button {
+            Task { await vm.deleteAttachment(id: att.id) }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color(.systemBackground))
+                    .frame(width: 24, height: 24)
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(Color(.systemGray2))
+            }
+        }
+        .offset(x: 5, y: -5)
+    }
+}
+
+// MARK: – Driver Info Step
 
 struct DriverInfoStepView: View {
     @Binding var info: DriverInfoAPI
     let label: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("\(label) — Driver Info").font(.headline)
-            Group {
-                FormField("Driver License ID Number", text: $info.driverLicenseId)
-                FormField("State of License", text: $info.stateOfLicense)
-                FormField("Driver Name (Last, First, M.I.)", text: $info.driverName)
-                FormField("Address", text: $info.address)
-                HStack(spacing: 8) {
-                    FormField("City", text: $info.city)
-                    FormField("State", text: $info.state)
-                    FormField("ZIP", text: $info.zip)
+        VStack(alignment: .leading, spacing: AD.sectionGap) {
+            SectionCard(title: "\(label) — Driver Info") {
+                VStack(spacing: AD.fieldGap) {
+                    FormField("Driver License ID", text: $info.driverLicenseId)
+                    FormField("State of License", text: $info.stateOfLicense)
+                    FormField("Driver Name (Last, First, M.I.)", text: $info.driverName)
+                    FormField("Address", text: $info.address)
+                    HStack(spacing: 8) {
+                        FormField("City", text: $info.city)
+                        FormField("St.", text: $info.state).frame(maxWidth: 60)
+                        FormField("ZIP", text: $info.zip).frame(maxWidth: 84)
+                    }
+                    FormField("Date of Birth (mm.dd.yyyy)", text: $info.dob)
+                    FormField("People in Vehicle", text: $info.peopleInVehicle)
+                        .keyboardType(.numberPad)
+                    FormPicker("Public Property Damaged?",
+                               selection: $info.publicPropertyDamaged,
+                               options: ["", "Yes", "No"])
+                    FormField("Injuries", text: $info.injuries, axis: .vertical)
                 }
-                FormField("Date of Birth (mm.dd.yyyy)", text: $info.dob)
-                FormField("Number of People in Vehicle", text: $info.peopleInVehicle)
-                    .keyboardType(.numberPad)
-                FormPicker("Public Property Damaged", selection: $info.publicPropertyDamaged,
-                           options: ["", "Yes", "No"])
-                FormField("Injuries", text: $info.injuries, axis: .vertical)
             }
-            Text("\(label) — Registrant").font(.headline).padding(.top, 8)
-            Group {
-                FormField("Name (as on registration)", text: $info.registrantName)
-                FormField("Address", text: $info.registrantAddress)
-                HStack(spacing: 8) {
-                    FormField("City", text: $info.registrantCity)
-                    FormField("State", text: $info.registrantState)
-                    FormField("ZIP", text: $info.registrantZip)
+
+            SectionCard(title: "\(label) — Registrant") {
+                VStack(spacing: AD.fieldGap) {
+                    FormField("Name (as on registration)", text: $info.registrantName)
+                    FormField("Address", text: $info.registrantAddress)
+                    HStack(spacing: 8) {
+                        FormField("City", text: $info.registrantCity)
+                        FormField("St.", text: $info.registrantState).frame(maxWidth: 60)
+                        FormField("ZIP", text: $info.registrantZip).frame(maxWidth: 84)
+                    }
+                    HStack(spacing: 8) {
+                        FormField("Plate Number", text: $info.plateNumber)
+                        FormField("State of Reg.", text: $info.stateOfReg).frame(maxWidth: 110)
+                    }
+                    FormField("Vehicle Year & Make", text: $info.vehicleYearMake)
+                    FormField("Vehicle Type", text: $info.vehicleType)
+                    FormField("Insurance Code", text: $info.insCode)
                 }
-                HStack(spacing: 8) {
-                    FormField("Plate Number", text: $info.plateNumber)
-                    FormField("State of Reg.", text: $info.stateOfReg)
-                }
-                FormField("Vehicle Year & Make", text: $info.vehicleYearMake)
-                FormField("Vehicle Type", text: $info.vehicleType)
-                FormField("Ins. Code", text: $info.insCode)
             }
         }
     }
@@ -295,62 +490,91 @@ private struct Driver2StepView: View {
     @ObservedObject var vm: AccidentReportViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Toggle("Second driver involved?", isOn: $vm.hasSecondDriver)
-                .font(.subheadline.bold())
-                .tint(.driveBaiPrimary)
+        VStack(alignment: .leading, spacing: AD.sectionGap) {
+            // Toggle card
+            Toggle(isOn: $vm.hasSecondDriver) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Second driver involved?").font(.subheadline.weight(.semibold))
+                    Text("Enable if another vehicle was in the accident")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .tint(.driveBaiPrimary)
+            .padding(AD.cardPad)
+            .background(Color(.systemBackground))
+            .cornerRadius(AD.radius)
+            .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
+
             if vm.hasSecondDriver {
                 DriverInfoStepView(info: $vm.driver2Info, label: "Driver 2")
             } else {
-                Text("Skip this step if there was no second driver.")
-                    .foregroundColor(.secondary)
-                    .font(.subheadline)
+                HStack(spacing: 14) {
+                    Image(systemName: "person.badge.minus")
+                        .font(.title2).foregroundColor(Color(.systemGray3))
+                    Text("No second driver — skip to the next step.")
+                        .font(.subheadline).foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(AD.cardPad)
+                .background(Color(.systemBackground))
+                .cornerRadius(AD.radius)
             }
         }
     }
 }
 
-// MARK: - Damage Step
+// MARK: – Damage Step
 
 private struct DamageStepView: View {
     @ObservedObject var vm: AccidentReportViewModel
 
-    private let diagrams = [
-        (0, "Left Turn"), (1, "Rear End"), (2, "Sideswipe (same)"),
-        (3, "Left Turn ↓"), (4, "Right Angle"), (5, "Right Turn"),
-        (6, "Right Turn ↓"), (7, "Head On"), (8, "Sideswipe (opp.)"),
+    private let diagrams: [(Int, String)] = [
+        (0, "Left Turn"),  (1, "Rear End"),         (2, "Sideswipe (same)"),
+        (3, "Left Turn ↓"),(4, "Right Angle"),       (5, "Right Turn"),
+        (6, "Right Turn ↓"),(7, "Head On"),          (8, "Sideswipe (opp.)"),
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Describe damage to vehicle 1")
-                .font(.subheadline.bold())
-            TextEditor(text: $vm.vehicleDamage.description)
-                .frame(minHeight: 100)
-                .padding(8)
-                .background(Color(.systemGray6))
-                .cornerRadius(10)
-
-            Text("Accident Diagram (0–8)")
-                .font(.subheadline.bold())
-            LazyVGrid(columns: Array(repeating: .init(.flexible()), count: 3), spacing: 10) {
-                ForEach(diagrams, id: \.0) { num, label in
-                    Button {
-                        vm.vehicleDamage.diagram = num
-                    } label: {
-                        VStack(spacing: 4) {
-                            Text("\(num)")
-                                .font(.title3.bold())
-                                .foregroundColor(vm.vehicleDamage.diagram == num ? .white : .primary)
-                            Text(label)
-                                .font(.caption2)
-                                .foregroundColor(vm.vehicleDamage.diagram == num ? .white.opacity(0.85) : .secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(vm.vehicleDamage.diagram == num ? Color.driveBaiPrimary : Color(.systemGray6))
+        VStack(alignment: .leading, spacing: AD.sectionGap) {
+            SectionCard(title: "Vehicle Damage Description") {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $vm.vehicleDamage.description)
+                        .font(.subheadline)
+                        .frame(minHeight: 110)
+                        .padding(10)
+                        .background(Color(.systemGray6))
                         .cornerRadius(10)
+                    if vm.vehicleDamage.description.isEmpty {
+                        Text("Describe the damage to vehicle 1…")
+                            .font(.subheadline)
+                            .foregroundColor(Color(.systemGray3))
+                            .padding(14)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+
+            SectionCard(title: "Accident Diagram") {
+                LazyVGrid(columns: Array(repeating: .init(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                    ForEach(diagrams, id: \.0) { num, lbl in
+                        let selected = vm.vehicleDamage.diagram == num
+                        Button { vm.vehicleDamage.diagram = num } label: {
+                            VStack(spacing: 6) {
+                                Text("\(num)")
+                                    .font(.title3.bold())
+                                    .foregroundColor(selected ? .white : .primary)
+                                Text(lbl)
+                                    .font(.caption2)
+                                    .foregroundColor(selected ? .white.opacity(0.9) : .secondary)
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(2)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(selected ? Color.driveBaiPrimary : Color(.systemGray6))
+                            .cornerRadius(10)
+                        }
+                        .animation(.easeInOut(duration: 0.15), value: selected)
                     }
                 }
             }
@@ -358,142 +582,199 @@ private struct DamageStepView: View {
     }
 }
 
-// MARK: - Description Step
+// MARK: – Description Step
 
 private struct DescriptionStepView: View {
     @Binding var text: String
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("How did the accident happen?").font(.subheadline.bold())
-            TextEditor(text: $text)
-                .frame(minHeight: 180)
-                .padding(8)
-                .background(Color(.systemGray6))
-                .cornerRadius(10)
+        SectionCard(title: "How did the accident happen?") {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $text)
+                    .font(.subheadline)
+                    .frame(minHeight: 200)
+                    .padding(10)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                if text.isEmpty {
+                    Text("Describe the sequence of events leading to the collision…")
+                        .font(.subheadline)
+                        .foregroundColor(Color(.systemGray3))
+                        .padding(14)
+                        .allowsHitTesting(false)
+                }
+            }
         }
     }
 }
 
-// MARK: - Insurance Step
+// MARK: – Insurance Step
 
 private struct InsuranceStepView: View {
     @Binding var info: InsuranceInfoAPI
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Insurance — Vehicle 1").font(.headline)
-            FormField("Insurance Company Name", text: $info.insuranceCompany)
-            FormField("VIN", text: $info.vin)
-            FormField("Policy Number", text: $info.policyNumber)
-            HStack(spacing: 8) {
-                FormField("Period From", text: $info.policyPeriodFrom)
-                FormField("Period To", text: $info.policyPeriodTo)
+        SectionCard(title: "Insurance — Vehicle 1") {
+            VStack(spacing: AD.fieldGap) {
+                FormField("Insurance Company Name", text: $info.insuranceCompany)
+                FormField("VIN", text: $info.vin)
+                FormField("Policy Number", text: $info.policyNumber)
+                HStack(spacing: 8) {
+                    FormField("Period From", text: $info.policyPeriodFrom)
+                    FormField("Period To",   text: $info.policyPeriodTo)
+                }
             }
         }
     }
 }
 
-// MARK: - Other Info Step
+// MARK: – Other Info Step
 
 private struct OtherInfoStepView: View {
     @Binding var info: OtherInfoAPI
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Accident Details").font(.headline)
-            HStack(spacing: 8) {
-                FormField("Month", text: $info.month).keyboardType(.numberPad)
-                FormField("Day", text: $info.day).keyboardType(.numberPad)
-                FormField("Year", text: $info.year).keyboardType(.numberPad)
+        SectionCard(title: "Accident Details") {
+            VStack(spacing: AD.fieldGap) {
+                HStack(spacing: 8) {
+                    FormField("Month", text: $info.month).keyboardType(.numberPad)
+                    FormField("Day",   text: $info.day).keyboardType(.numberPad)
+                    FormField("Year",  text: $info.year).keyboardType(.numberPad)
+                }
+                FormField("Day of Week", text: $info.dayOfWeek)
+                FormField("Time (e.g. 02:30 PM)", text: $info.time)
+                HStack(spacing: 8) {
+                    FormField("Vehicles", text: $info.numVehicles).keyboardType(.numberPad)
+                    FormField("Injured",  text: $info.numInjured).keyboardType(.numberPad)
+                    FormField("Killed",   text: $info.numKilled).keyboardType(.numberPad)
+                }
+                FormPicker("Police Investigated?",
+                           selection: $info.policeInvestigated,
+                           options: ["", "Yes", "No", "Unknown"])
             }
-            FormField("Day of Week", text: $info.dayOfWeek)
-            FormField("Time (HH:MM AM/PM)", text: $info.time)
-            FormField("Number of Vehicles", text: $info.numVehicles).keyboardType(.numberPad)
-            FormField("Number Injured", text: $info.numInjured).keyboardType(.numberPad)
-            FormField("Number Killed", text: $info.numKilled).keyboardType(.numberPad)
-            FormPicker("Police Investigated?", selection: $info.policeInvestigated,
-                       options: ["", "Yes", "No", "Unknown"])
         }
     }
 }
 
-// MARK: - Signature Step
+// MARK: – Signature Step
 
 private struct SignatureStepView: View {
     @ObservedObject var vm: AccidentReportViewModel
     @State private var lines: [[CGPoint]] = []
     @State private var currentLine: [CGPoint] = []
 
+    private var isEmpty: Bool { lines.isEmpty && currentLine.isEmpty }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AD.sectionGap) {
             Text("Draw your signature below with your finger.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                .font(.subheadline).foregroundColor(.secondary)
 
+            // Canvas card
             ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(.systemBackground))
-                    .frame(height: 200)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(.systemGray4), lineWidth: 1))
+                // Outer card background
+                RoundedRectangle(cornerRadius: AD.radius + 2)
+                    .fill(Color(.systemGray6))
+                    .padding(4)
 
+                // Drawing surface
+                RoundedRectangle(cornerRadius: AD.radius)
+                    .fill(Color(.systemBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AD.radius)
+                            .stroke(isEmpty ? Color(.systemGray4) : Color.driveBaiPrimary.opacity(0.5),
+                                    lineWidth: isEmpty ? 1 : 1.5)
+                    )
+
+                // Ink
                 Canvas { ctx, _ in
                     for line in lines + [currentLine] {
                         guard line.count > 1 else { continue }
                         var path = Path()
                         path.move(to: line[0])
                         for pt in line.dropFirst() { path.addLine(to: pt) }
-                        ctx.stroke(path, with: .color(.primary), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        ctx.stroke(path, with: .color(.primary),
+                                   style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
                     }
                 }
                 .gesture(
                     DragGesture(minimumDistance: 0)
-                        .onChanged { val in
-                            currentLine.append(val.location)
-                        }
-                        .onEnded { _ in
-                            lines.append(currentLine)
-                            currentLine = []
-                        }
+                        .onChanged { val in currentLine.append(val.location) }
+                        .onEnded   { _   in lines.append(currentLine); currentLine = [] }
                 )
+                .cornerRadius(AD.radius)
 
-                if lines.isEmpty && currentLine.isEmpty {
-                    Text("Sign here").foregroundColor(Color(.systemGray4)).font(.body)
+                // Placeholder
+                if isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "pencil.line")
+                            .font(.system(size: 38))
+                            .foregroundColor(Color(.systemGray4))
+                        Text("Sign here")
+                            .font(.subheadline)
+                            .foregroundColor(Color(.systemGray3))
+                    }
+                    .allowsHitTesting(false)
                 }
             }
+            .frame(height: 220)
 
-            HStack {
-                Button("Clear") {
+            // Action buttons — same height
+            HStack(spacing: 12) {
+                Button {
                     lines = []
                     currentLine = []
                     vm.signatureImageData = nil
+                } label: {
+                    Text("Clear")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: AD.ctaHeight)
+                        .foregroundColor(isEmpty ? Color(.systemGray3) : .driveBaiPrimary)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AD.radius)
+                                .stroke(isEmpty ? Color(.systemGray4) : Color.driveBaiPrimary, lineWidth: 1.5)
+                        )
                 }
-                .buttonStyle(.bordered)
+                .disabled(isEmpty)
 
-                Spacer()
-
-                Button(vm.isSaving ? "Saving…" : "Save Signature") {
-                    let imgData = renderSignature(lines: lines, size: CGSize(width: 340, height: 200))
-                    if let data = imgData {
+                Button {
+                    if let data = renderSignature(lines: lines, size: CGSize(width: 340, height: 220)) {
                         Task { await vm.uploadSignature(imageData: data) }
                     }
+                } label: {
+                    HStack(spacing: 6) {
+                        if vm.isSaving { ProgressView().tint(.white).scaleEffect(0.8) }
+                        Text(vm.isSaving ? "Saving…" : "Save Signature")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: AD.ctaHeight)
+                    .background((isEmpty || vm.isSaving) ? Color(.systemGray4) : Color.driveBaiPrimary)
+                    .foregroundColor(.white)
+                    .cornerRadius(AD.radius)
                 }
-                .buttonStyle(DriveBaiButtonStyle())
-                .disabled(lines.isEmpty || vm.isSaving)
+                .disabled(isEmpty || vm.isSaving)
             }
 
+            // Confirmation banner
             if vm.accident?.signatureUrl != nil {
-                Label("Signature saved", systemImage: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                    .font(.subheadline)
+                Label("Signature saved", systemImage: "checkmark.seal.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.driveBaiPrimary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(12)
+                    .background(Color.driveBaiPrimary.opacity(0.08))
+                    .cornerRadius(AD.radius)
             }
         }
     }
 
     private func renderSignature(lines: [[CGPoint]], size: CGSize) -> Data? {
         let renderer = UIGraphicsImageRenderer(size: size)
-        let uiImage = renderer.image { ctx in
+        return renderer.image { ctx in
             UIColor.white.setFill()
             ctx.fill(CGRect(origin: .zero, size: size))
             UIColor.black.setStroke()
-            ctx.cgContext.setLineWidth(2)
+            ctx.cgContext.setLineWidth(2.5)
             ctx.cgContext.setLineCap(.round)
             ctx.cgContext.setLineJoin(.round)
             for line in lines {
@@ -503,51 +784,85 @@ private struct SignatureStepView: View {
                 for pt in line.dropFirst() { ctx.cgContext.addLine(to: pt) }
                 ctx.cgContext.strokePath()
             }
-        }
-        return uiImage.pngData()
+        }.pngData()
     }
 }
 
-// MARK: - Review Step
+// MARK: – Review Step
 
 private struct ReviewStepView: View {
     @ObservedObject var vm: AccidentReportViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: AD.fieldGap) {
             Text("Review your report before submitting.")
                 .font(.subheadline).foregroundColor(.secondary)
 
-            AccidentReviewRow(label:"Attachments", value: "\(vm.accident?.attachments.count ?? 0) file(s) uploaded")
-            AccidentReviewRow(label:"Driver 1 Name", value: vm.driver1Info.driverName.isEmpty ? "Not filled" : vm.driver1Info.driverName)
-            AccidentReviewRow(label:"Second Driver", value: vm.hasSecondDriver ? "Yes" : "No")
-            AccidentReviewRow(label:"Damage Diagram", value: "Diagram \(vm.vehicleDamage.diagram)")
-            AccidentReviewRow(label:"Description", value: vm.accidentDescription.isEmpty ? "Not provided" : String(vm.accidentDescription.prefix(60)) + (vm.accidentDescription.count > 60 ? "…" : ""))
-            AccidentReviewRow(label:"Signature", value: vm.accident?.signatureUrl != nil ? "Signed ✓" : "Not signed")
+            VStack(spacing: 0) {
+                AccidentReviewRow(icon: "paperclip",     label: "Files",
+                                  value: "\(vm.accident?.attachments.count ?? 0) uploaded")
+                AccidentReviewRow(icon: "person.fill",   label: "Driver 1 Name",
+                                  value: vm.driver1Info.driverName.isEmpty
+                                    ? "Not filled" : vm.driver1Info.driverName)
+                AccidentReviewRow(icon: "person.2.fill", label: "Second Driver",
+                                  value: vm.hasSecondDriver ? "Yes" : "No")
+                AccidentReviewRow(icon: "car.side.fill", label: "Damage Diagram",
+                                  value: "Diagram \(vm.vehicleDamage.diagram)")
+                AccidentReviewRow(icon: "text.quote",    label: "Description",
+                                  value: vm.accidentDescription.isEmpty
+                                    ? "Not provided"
+                                    : String(vm.accidentDescription.prefix(70)) + (vm.accidentDescription.count > 70 ? "…" : ""))
+                AccidentReviewRow(icon: "pencil.line",   label: "Signature",
+                                  value: vm.accident?.signatureUrl != nil ? "Signed ✓" : "Not signed",
+                                  isLast: true)
+            }
+            .background(Color(.systemBackground))
+            .cornerRadius(AD.radius)
+            .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
 
             Text("By submitting, you confirm this report is accurate to the best of your knowledge.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .padding(.top, 8)
+                .font(.caption).foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
         }
     }
 }
 
 private struct AccidentReviewRow: View {
+    let icon: String
     let label: String
     let value: String
+    var isLast: Bool = false
+
     var body: some View {
-        HStack(alignment: .top) {
-            Text(label).font(.subheadline).foregroundColor(.secondary).frame(width: 130, alignment: .leading)
-            Text(value).font(.subheadline).foregroundColor(.primary)
-            Spacer()
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.driveBaiPrimary)
+                    .frame(width: 22, alignment: .center)
+                Text(label)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(minWidth: 110, alignment: .leading)
+                Spacer()
+                Text(value)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.trailing)
+            }
+            .padding(.horizontal, AD.cardPad)
+            .padding(.vertical, 13)
+
+            if !isLast {
+                Divider().padding(.leading, 48)
+            }
         }
-        .padding(.vertical, 4)
-        Divider()
     }
 }
 
-// MARK: - Reusable form components
+// MARK: – Reusable Form Components
 
 struct FormField: View {
     let label: String
@@ -562,12 +877,16 @@ struct FormField: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundColor(.secondary)
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
             TextField(label, text: $text, axis: axis)
+                .font(.subheadline)
                 .lineLimit(axis == .vertical ? 3...6 : 1...1)
-                .padding(10)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
                 .background(Color(.systemGray6))
-                .cornerRadius(8)
+                .cornerRadius(9)
         }
     }
 }
@@ -585,16 +904,46 @@ struct FormPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundColor(.secondary)
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
             Picker(label, selection: $selection) {
                 ForEach(options, id: \.self) { opt in
-                    Text(opt.isEmpty ? "Choose an option" : opt).tag(opt)
+                    Text(opt.isEmpty ? "Select…" : opt).tag(opt)
                 }
             }
             .pickerStyle(.menu)
-            .padding(8)
+            .font(.subheadline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .background(Color(.systemGray6))
-            .cornerRadius(8)
+            .cornerRadius(9)
         }
+    }
+}
+
+// MARK: – Section card
+
+private struct SectionCard<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.primary)
+            content
+        }
+        .padding(AD.cardPad)
+        .background(Color(.systemBackground))
+        .cornerRadius(AD.radius)
+        .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
     }
 }
