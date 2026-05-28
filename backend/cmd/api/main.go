@@ -96,6 +96,11 @@ func main() {
 	wsHub := ws.NewHub(logger)
 	go wsHub.Run()
 
+	// Rate limiter for auth endpoints: 10 requests per minute per IP.
+	// Internally starts a background cleanup goroutine.
+	authRateLimiter := middleware.NewRateLimiter(10, time.Minute)
+	defer authRateLimiter.Stop()
+
 	// Initialize Stripe service
 	stripeSvc := stripeService.NewService(cfg.StripeSecretKey, cfg.StripePublishableKey, cfg.StripeWebhookSecret, cfg.PlatformFeeBPS, logger)
 
@@ -162,8 +167,9 @@ func main() {
 		// Public listings endpoint (for drivers to browse available cars)
 		r.Get("/listings", carHandler.ListAvailableListings)
 
-		// Auth routes (public)
+		// Auth routes (public) — rate limited: 10 req/min per IP
 		r.Route("/auth", func(r chi.Router) {
+			r.Use(middleware.RateLimit(authRateLimiter))
 			r.Post("/register", authHandler.Register)
 			r.Post("/verify-email", authHandler.VerifyEmail)
 			r.Post("/login", authHandler.Login)

@@ -42,6 +42,20 @@ tags:
     description: Document upload and management
   - name: Onboarding
     description: User onboarding flow
+  - name: Listings
+    description: Public car listings and favorites
+  - name: Cars
+    description: Car management for owners
+  - name: Chats
+    description: Real-time chat between drivers and owners
+  - name: LeaseRequests
+    description: Lease request lifecycle and payments
+  - name: Accidents
+    description: Accident report filing
+  - name: Notifications
+    description: In-app notifications
+  - name: Admin
+    description: Admin-only management endpoints
 
 paths:
   /auth/register:
@@ -492,6 +506,1244 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  # ─── Listings ────────────────────────────────────────────────────────────────
+
+  /listings:
+    get:
+      tags: [Listings]
+      summary: List available car listings
+      description: Public endpoint. Returns paginated, approved car listings with optional filters.
+      operationId: listListings
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: body_type
+          in: query
+          schema:
+            type: string
+            enum: [sedan, suv, hatchback, coupe, convertible, pickup, van, minivan, wagon]
+        - name: fuel_type
+          in: query
+          schema:
+            type: string
+            enum: [petrol, diesel, electric, hybrid]
+        - name: min_price
+          in: query
+          schema:
+            type: number
+        - name: max_price
+          in: query
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Paginated list of car listings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+
+  /listings/{listingId}/like:
+    post:
+      tags: [Listings]
+      summary: Like a listing
+      operationId: likeListing
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/listingId'
+      responses:
+        '200':
+          description: Listing liked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Listings]
+      summary: Unlike a listing
+      operationId: unlikeListing
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/listingId'
+      responses:
+        '200':
+          description: Listing unliked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /me/likes:
+    get:
+      tags: [Listings]
+      summary: Get liked listings
+      operationId: getLikedListings
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of liked car listings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CarListing'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /listings/{listingId}/lease-requests:
+    post:
+      tags: [Listings]
+      summary: Create a lease request for a listing
+      operationId: createLeaseRequestFromListing
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/listingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLeaseRequest'
+      responses:
+        '201':
+          description: Lease request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── Cars ─────────────────────────────────────────────────────────────────────
+
+  /cars:
+    get:
+      tags: [Cars]
+      summary: List my cars
+      operationId: listMyCars
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of cars owned by the authenticated user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CarListing'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Cars]
+      summary: Create a car listing
+      operationId: createCar
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCarRequest'
+      responses:
+        '201':
+          description: Car listing created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarListing'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /cars/{carId}:
+    get:
+      tags: [Cars]
+      summary: Get a specific car
+      operationId: getCar
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      responses:
+        '200':
+          description: Car details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarListing'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Cars]
+      summary: Update a car listing
+      operationId: updateCar
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCarRequest'
+      responses:
+        '200':
+          description: Car updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarListing'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [Cars]
+      summary: Delete a car listing
+      operationId: deleteCar
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      responses:
+        '200':
+          description: Car deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /cars/{carId}/pause:
+    post:
+      tags: [Cars]
+      summary: Toggle pause status
+      description: Pauses an active listing or resumes a paused one.
+      operationId: pauseCar
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      responses:
+        '200':
+          description: Pause status toggled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /cars/{carId}/location:
+    put:
+      tags: [Cars]
+      summary: Update car location
+      operationId: updateCarLocation
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - latitude
+                - longitude
+              properties:
+                latitude:
+                  type: number
+                  format: double
+                  example: 51.509865
+                longitude:
+                  type: number
+                  format: double
+                  example: -0.118092
+                area:
+                  type: string
+                  example: "Central London"
+      responses:
+        '200':
+          description: Location updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /cars/{carId}/photos:
+    get:
+      tags: [Cars]
+      summary: List car photos
+      operationId: listCarPhotos
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      responses:
+        '200':
+          description: List of car photos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CarPhoto'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Cars]
+      summary: Upload a car photo
+      operationId: uploadCarPhoto
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - slot_type
+              properties:
+                file:
+                  type: string
+                  format: binary
+                slot_type:
+                  type: string
+                  enum: [cover_front, right, left, back, dashboard]
+      responses:
+        '201':
+          description: Photo uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarPhoto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /cars/{carId}/photos/{photoId}:
+    delete:
+      tags: [Cars]
+      summary: Delete a car photo
+      operationId: deleteCarPhoto
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/carId'
+        - name: photoId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Photo deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─── Chats ───────────────────────────────────────────────────────────────────
+
+  /chats:
+    get:
+      tags: [Chats]
+      summary: List my chats
+      operationId: listChats
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of chats for the authenticated user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Chat'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Chats]
+      summary: Find or create a chat for a car
+      operationId: findOrCreateChat
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - car_id
+              properties:
+                car_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Existing or newly created chat
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Chat'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /chats/{chatId}:
+    get:
+      tags: [Chats]
+      summary: Get chat details
+      operationId: getChat
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+      responses:
+        '200':
+          description: Chat details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Chat'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /chats/{chatId}/messages:
+    get:
+      tags: [Chats]
+      summary: List messages in a chat
+      operationId: listMessages
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+        - name: before
+          in: query
+          description: Cursor — return messages before this message ID (for pagination)
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Chats]
+      summary: Send a message
+      operationId: sendMessage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - body
+              properties:
+                body:
+                  type: string
+                  example: "Is the car available next week?"
+      responses:
+        '201':
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /chats/{chatId}/requests:
+    get:
+      tags: [Chats]
+      summary: List in-chat requests
+      operationId: listChatRequests
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+      responses:
+        '200':
+          description: List of in-chat action requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /chats/{chatId}/lease-requests:
+    get:
+      tags: [Chats]
+      summary: List lease requests in a chat
+      operationId: listChatLeaseRequests
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+      responses:
+        '200':
+          description: Lease requests for this chat
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LeaseRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── Lease Requests ──────────────────────────────────────────────────────────
+
+  /lease-requests/{id}/accept:
+    post:
+      tags: [LeaseRequests]
+      summary: Accept a lease request
+      operationId: acceptLeaseRequest
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      responses:
+        '200':
+          description: Lease request accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /lease-requests/{id}/decline:
+    post:
+      tags: [LeaseRequests]
+      summary: Decline a lease request
+      operationId: declineLeaseRequest
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      responses:
+        '200':
+          description: Lease request declined
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /lease-requests/{id}/cancel:
+    post:
+      tags: [LeaseRequests]
+      summary: Cancel a lease request
+      operationId: cancelLeaseRequest
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      responses:
+        '200':
+          description: Lease request cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /lease-requests/{id}/price:
+    patch:
+      tags: [LeaseRequests]
+      summary: Update offered price
+      operationId: updateLeasePrice
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - offered_weekly_price
+              properties:
+                offered_weekly_price:
+                  type: number
+                  example: 350.00
+      responses:
+        '200':
+          description: Price updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /lease-requests/{id}/payments/intent:
+    post:
+      tags: [LeaseRequests]
+      summary: Create Stripe payment intent
+      description: Creates a Stripe PaymentIntent for the lease. Returns client_secret for the iOS SDK.
+      operationId: createPaymentIntent
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      responses:
+        '200':
+          description: Payment intent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client_secret:
+                    type: string
+                  publishable_key:
+                    type: string
+                  amount:
+                    type: integer
+                    description: Amount in smallest currency unit (e.g. cents)
+                  currency:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── Accidents ───────────────────────────────────────────────────────────────
+
+  /accidents:
+    post:
+      tags: [Accidents]
+      summary: Create accident report (draft)
+      operationId: createAccident
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lease_request_id:
+                  type: string
+                  format: uuid
+                accident_description:
+                  type: string
+                driver1_info:
+                  type: object
+                  description: Driver 1 contact and license info
+                driver2_info:
+                  type: object
+                  description: Driver 2 contact and license info
+                vehicle_damage:
+                  type: string
+      responses:
+        '201':
+          description: Accident report created as draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccidentReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      tags: [Accidents]
+      summary: List my accident reports
+      operationId: listAccidents
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: List of accident reports
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AccidentReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accidents/{id}:
+    get:
+      tags: [Accidents]
+      summary: Get accident report
+      operationId: getAccident
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/accidentId'
+      responses:
+        '200':
+          description: Accident report details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccidentReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Accidents]
+      summary: Update accident report fields
+      operationId: patchAccident
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/accidentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accident_description:
+                  type: string
+                driver1_info:
+                  type: object
+                driver2_info:
+                  type: object
+                vehicle_damage:
+                  type: string
+      responses:
+        '200':
+          description: Accident report updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccidentReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accidents/{id}/attachments:
+    post:
+      tags: [Accidents]
+      summary: Upload photo attachment
+      operationId: uploadAccidentAttachment
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/accidentId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Attachment uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  file_url:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accidents/{id}/sign:
+    post:
+      tags: [Accidents]
+      summary: Add signature to report
+      operationId: signAccident
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/accidentId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Signature image (PNG)
+      responses:
+        '200':
+          description: Signature saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accidents/{id}/submit:
+    post:
+      tags: [Accidents]
+      summary: Submit accident report
+      description: Transitions the report from draft to submitted status. Cannot be edited after submission.
+      operationId: submitAccident
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/accidentId'
+      responses:
+        '200':
+          description: Report submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccidentReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── Notifications ───────────────────────────────────────────────────────────
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      operationId: listNotifications
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: List of notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Notification'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/{id}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark a notification as read
+      operationId: markNotificationRead
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notification marked read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all notifications as read
+      operationId: markAllNotificationsRead
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: All notifications marked read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── Admin ───────────────────────────────────────────────────────────────────
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users
+      operationId: adminListUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: q
+          in: query
+          description: Search by email or name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/users/{id}:
+    get:
+      tags: [Admin]
+      summary: Get user detail
+      operationId: adminGetUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      responses:
+        '200':
+          description: User detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/block:
+    patch:
+      tags: [Admin]
+      summary: Block or unblock a user
+      operationId: adminBlockUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - blocked
+              properties:
+                blocked:
+                  type: boolean
+      responses:
+        '200':
+          description: Block status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/cars:
+    get:
+      tags: [Admin]
+      summary: List all car listings
+      operationId: adminListCars
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, paused, rejected]
+      responses:
+        '200':
+          description: Paginated car listing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/cars/{id}/approve:
+    patch:
+      tags: [Admin]
+      summary: Approve a car listing
+      operationId: adminApproveCar
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - approved
+              properties:
+                approved:
+                  type: boolean
+                reason:
+                  type: string
+                  description: Rejection reason (when approved=false)
+      responses:
+        '200':
+          description: Approval status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/rents:
+    get:
+      tags: [Admin]
+      summary: List all active rentals
+      operationId: adminListRents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Paginated rental list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/accidents:
+    get:
+      tags: [Admin]
+      summary: List all accident reports
+      operationId: adminListAccidents
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, submitted, under_review, resolved]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Paginated accident report list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/accidents/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Update accident report status
+      operationId: adminUpdateAccidentStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/accidentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [under_review, resolved, rejected]
+                note:
+                  type: string
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -499,6 +1751,76 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: JWT access token
+
+  parameters:
+    carId:
+      name: carId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    chatId:
+      name: chatId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    listingId:
+      name: listingId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    leaseId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    accidentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    userId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
 
   schemas:
     RegisterRequest:
@@ -706,3 +2028,316 @@ components:
             message:
               type: string
               example: Email is required
+
+    CarListing:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          example: "2022 Toyota Camry — Great Condition"
+        make:
+          type: string
+          example: Toyota
+        model:
+          type: string
+          example: Camry
+        year:
+          type: integer
+          example: 2022
+        body_type:
+          type: string
+          enum: [sedan, suv, hatchback, coupe, convertible, pickup, van, minivan, wagon]
+        fuel_type:
+          type: string
+          enum: [petrol, diesel, electric, hybrid]
+        weekly_rent_price:
+          type: number
+          example: 400.00
+        currency:
+          type: string
+          example: AED
+        status:
+          type: string
+          enum: [pending, approved, paused, rejected]
+        latitude:
+          type: number
+          format: double
+          nullable: true
+        longitude:
+          type: number
+          format: double
+          nullable: true
+        area:
+          type: string
+          nullable: true
+          example: "Dubai Marina"
+        created_at:
+          type: string
+          format: date-time
+
+    CreateCarRequest:
+      type: object
+      required:
+        - title
+        - make
+        - model
+        - year
+        - body_type
+        - fuel_type
+        - weekly_rent_price
+        - currency
+      properties:
+        title:
+          type: string
+          example: "2022 Toyota Camry — Great Condition"
+        make:
+          type: string
+          example: Toyota
+        model:
+          type: string
+          example: Camry
+        year:
+          type: integer
+          example: 2022
+        body_type:
+          type: string
+          enum: [sedan, suv, hatchback, coupe, convertible, pickup, van, minivan, wagon]
+        fuel_type:
+          type: string
+          enum: [petrol, diesel, electric, hybrid]
+        mileage:
+          type: integer
+          example: 35000
+        weekly_rent_price:
+          type: number
+          example: 400.00
+        currency:
+          type: string
+          example: AED
+        deposit_amount:
+          type: number
+          nullable: true
+          example: 1000.00
+        is_for_rent:
+          type: boolean
+          default: true
+        is_for_sale:
+          type: boolean
+          default: false
+        sale_price:
+          type: number
+          nullable: true
+        min_years_licensed:
+          type: integer
+          example: 2
+
+    CarPhoto:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        car_id:
+          type: string
+          format: uuid
+        slot_type:
+          type: string
+          enum: [cover_front, right, left, back, dashboard]
+        file_url:
+          type: string
+          example: "/uploads/cars/abc123/cover_front_uuid.jpg"
+        file_size:
+          type: integer
+          example: 204800
+        mime_type:
+          type: string
+          example: image/jpeg
+
+    Chat:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        car_id:
+          type: string
+          format: uuid
+        driver_id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        last_message_at:
+          type: string
+          format: date-time
+          nullable: true
+        unread_count:
+          type: integer
+          example: 3
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        chat_id:
+          type: string
+          format: uuid
+        sender_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [text, system]
+        body:
+          type: string
+          example: "Is the car still available?"
+        created_at:
+          type: string
+          format: date-time
+
+    CreateLeaseRequest:
+      type: object
+      required:
+        - weeks
+        - weekly_price
+        - currency
+      properties:
+        weeks:
+          type: integer
+          example: 4
+        weekly_price:
+          type: number
+          example: 400.00
+        currency:
+          type: string
+          example: AED
+        message:
+          type: string
+          nullable: true
+          example: "I'd like to rent for a month, can we negotiate the price?"
+
+    LeaseRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        chat_id:
+          type: string
+          format: uuid
+        listing_id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        driver_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [requested, accepted, declined, cancelled, payment_pending, paid, expired]
+        weekly_price:
+          type: number
+          example: 400.00
+        offered_weekly_price:
+          type: number
+          nullable: true
+          example: 370.00
+        weeks:
+          type: integer
+          example: 4
+        currency:
+          type: string
+          example: AED
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AccidentReport:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        reporter_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [draft, submitted, under_review, resolved, rejected]
+        driver1_info:
+          type: object
+          nullable: true
+          description: Contact and license details for driver 1
+        driver2_info:
+          type: object
+          nullable: true
+          description: Contact and license details for driver 2
+        vehicle_damage:
+          type: string
+          nullable: true
+        accident_description:
+          type: string
+          nullable: true
+        signature_url:
+          type: string
+          nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          example: lease_accepted
+        title:
+          type: string
+          example: "Lease Request Accepted"
+        body:
+          type: string
+          example: "Your lease request for Toyota Camry has been accepted."
+        is_read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    PaginatedResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+        total:
+          type: integer
+          example: 100
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
