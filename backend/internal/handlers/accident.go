@@ -46,7 +46,8 @@ func NewAccidentHandler(
 }
 
 // Create — POST /accidents
-// Creates a new draft accident report.
+// Idempotent: returns the existing draft (200) if one already exists for the same user/chat/car,
+// otherwise creates a new draft and returns it (201).
 func (h *AccidentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, ok := httputil.GetUserID(r.Context())
 	if !ok {
@@ -72,6 +73,15 @@ func (h *AccidentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Return existing draft rather than creating a duplicate.
+	if existing, err := h.accidentRepo.GetDraftForUser(r.Context(), userID, chatID, carID); err == nil {
+		if atts, _ := h.accidentRepo.ListAttachments(r.Context(), existing.ID); atts != nil {
+			existing.Attachments = atts
+		}
+		httputil.WriteJSON(w, http.StatusOK, existing)
+		return
+	}
+
 	accident, err := h.accidentRepo.Create(r.Context(), userID, chatID, carID)
 	if err != nil {
 		h.logger.Error("create accident", "error", err)
@@ -79,6 +89,40 @@ func (h *AccidentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusCreated, accident)
+}
+
+// GetDraft — GET /accidents/draft?chat_id=&car_id=
+// Returns the most recent draft for the authenticated user, optionally scoped to a chat/car.
+// Returns 404 when no draft exists.
+func (h *AccidentHandler) GetDraft(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	var chatID, carID *uuid.UUID
+	if v := r.URL.Query().Get("chat_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			chatID = &id
+		}
+	}
+	if v := r.URL.Query().Get("car_id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			carID = &id
+		}
+	}
+
+	accident, err := h.accidentRepo.GetDraftForUser(r.Context(), userID, chatID, carID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "no draft found"))
+		return
+	}
+
+	if atts, _ := h.accidentRepo.ListAttachments(r.Context(), accident.ID); atts != nil {
+		accident.Attachments = atts
+	}
+	httputil.WriteJSON(w, http.StatusOK, accident)
 }
 
 // List — GET /accidents

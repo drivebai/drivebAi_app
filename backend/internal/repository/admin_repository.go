@@ -836,6 +836,9 @@ func (r *AdminRepository) ListAccidents(ctx context.Context, page, limit int, st
 	if status != "" {
 		countQuery += ` WHERE status = $1`
 		countArgs = append(countArgs, status)
+	} else {
+		// Exclude drafts from the default admin view — they are unsubmitted work-in-progress.
+		countQuery += ` WHERE status != 'draft'`
 	}
 	if err := r.db.Pool.QueryRow(ctx, countQuery, countArgs...).Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("count accidents: %w", err)
@@ -858,6 +861,8 @@ func (r *AdminRepository) ListAccidents(ctx context.Context, page, limit int, st
 		query += fmt.Sprintf(" WHERE a.status = $%d", argIdx)
 		mainArgs = append(mainArgs, status)
 		argIdx++
+	} else {
+		query += " WHERE a.status != 'draft'"
 	}
 	mainArgs = append(mainArgs, limit, offset)
 	query += fmt.Sprintf(" ORDER BY a.created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)

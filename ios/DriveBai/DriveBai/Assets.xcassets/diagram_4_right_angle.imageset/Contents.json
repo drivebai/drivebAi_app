@@ -1,0 +1,15 @@
+{
+  "images" : [
+    {
+      "filename" : "diagram_4_right_angle.svg",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  },
+  "properties" : {
+    "preserves-vector-representation" : true
+  }
+}

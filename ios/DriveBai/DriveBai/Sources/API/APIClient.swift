@@ -676,6 +676,14 @@ final class APIClient: APIClientProtocol {
         return try await get(path: "accidents", authenticated: true)
     }
 
+    func getAccidentDraft(chatId: UUID?, carId: UUID?) async throws -> AccidentAPIResponse {
+        var params: [String] = []
+        if let chatId { params.append("chat_id=\(chatId.uuidString)") }
+        if let carId  { params.append("car_id=\(carId.uuidString)") }
+        let query = params.isEmpty ? "" : "?" + params.joined(separator: "&")
+        return try await get(path: "accidents/draft\(query)", authenticated: true)
+    }
+
     func getAccident(id: UUID) async throws -> AccidentAPIResponse {
         return try await get(path: "accidents/\(id.uuidString)", authenticated: true)
     }

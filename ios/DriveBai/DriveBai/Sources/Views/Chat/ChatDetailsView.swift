@@ -4,6 +4,7 @@ struct ChatDetailsView: View {
     let chatId: UUID
 
     @StateObject private var viewModel: ChatDetailsViewModel
+    @State private var showAccidentReport = false
 
     init(chatId: UUID) {
         self.chatId = chatId
@@ -37,6 +38,12 @@ struct ChatDetailsView: View {
         .task {
             await viewModel.loadDetails()
             await viewModel.loadAttachments()
+        }
+        .sheet(isPresented: $showAccidentReport) {
+            AccidentReportView(
+                relatedChatId: chatId,
+                relatedCarId: viewModel.details?.car.id
+            )
         }
     }
 
@@ -172,6 +179,15 @@ struct ChatDetailsView: View {
                     Spacer()
                     Text(formatDate(details.createdAt))
                         .foregroundColor(.secondary)
+                }
+            }
+
+            Section {
+                Button {
+                    showAccidentReport = true
+                } label: {
+                    Label("Report an Accident", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
                 }
             }
         }

@@ -18,6 +18,7 @@ private enum AD {
 struct AccidentReportView: View {
     @StateObject private var vm: AccidentReportViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var showCloseConfirm = false
 
     init(relatedChatId: UUID? = nil, relatedCarId: UUID? = nil) {
         _vm = StateObject(wrappedValue: AccidentReportViewModel(
@@ -43,7 +44,13 @@ struct AccidentReportView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                    Button("Close") {
+                        if vm.isSubmitted {
+                            dismiss()
+                        } else {
+                            showCloseConfirm = true
+                        }
+                    }
                 }
             }
             .alert("Error", isPresented: Binding(
@@ -52,7 +59,14 @@ struct AccidentReportView: View {
             )) {
                 Button("OK", role: .cancel) {}
             } message: { Text(vm.error ?? "") }
+            .alert("Leave Report?", isPresented: $showCloseConfirm) {
+                Button("Discard Draft", role: .destructive) { dismiss() }
+                Button("Keep Editing", role: .cancel) {}
+            } message: {
+                Text("Your progress is saved as a draft and can be resumed from the chat.")
+            }
         }
+        .interactiveDismissDisabled(!vm.isSubmitted)
         .task { await vm.loadOrCreate() }
     }
 
@@ -523,16 +537,83 @@ private struct Driver2StepView: View {
     }
 }
 
+// MARK: – Accident Diagram Model
+
+private struct AccidentDiagramOption {
+    let id: Int
+    let title: String
+    let imageName: String
+    let accessibilityLabel: String
+
+    static let all: [AccidentDiagramOption] = [
+        AccidentDiagramOption(id: 0, title: "Left Turn",         imageName: "diagram_0_left_turn",         accessibilityLabel: "Diagram 0, Left turn collision"),
+        AccidentDiagramOption(id: 1, title: "Rear End",          imageName: "diagram_1_rear_end",          accessibilityLabel: "Diagram 1, Rear end collision"),
+        AccidentDiagramOption(id: 2, title: "Sideswipe (same)",  imageName: "diagram_2_sideswipe_same",    accessibilityLabel: "Diagram 2, Sideswipe same direction"),
+        AccidentDiagramOption(id: 3, title: "Left Turn ↓",       imageName: "diagram_3_left_turn_crossing",accessibilityLabel: "Diagram 3, Left turn crossing"),
+        AccidentDiagramOption(id: 4, title: "Right Angle",       imageName: "diagram_4_right_angle",       accessibilityLabel: "Diagram 4, Right angle T-bone"),
+        AccidentDiagramOption(id: 5, title: "Right Turn",        imageName: "diagram_5_right_turn",        accessibilityLabel: "Diagram 5, Right turn collision"),
+        AccidentDiagramOption(id: 6, title: "Right Turn ↓",      imageName: "diagram_6_right_turn_merge",  accessibilityLabel: "Diagram 6, Right turn merge"),
+        AccidentDiagramOption(id: 7, title: "Head On",           imageName: "diagram_7_head_on",           accessibilityLabel: "Diagram 7, Head on collision"),
+        AccidentDiagramOption(id: 8, title: "Sideswipe (opp.)",  imageName: "diagram_8_sideswipe_opposite",accessibilityLabel: "Diagram 8, Sideswipe opposite direction"),
+    ]
+}
+
+// MARK: – Diagram Card
+// 2-column layout gives each tile ~175pt width on standard iPhones, enough for
+// the collision diagrams to be legible without making the card excessively tall.
+
+private struct DiagramCard: View {
+    let option: AccidentDiagramOption
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 0) {
+                Image(option.imageName)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 120)
+                    .padding(8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemBackground))
+
+                // Caption strip: teal when selected, muted gray otherwise.
+                Text(option.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(isSelected ? .white : .secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 9)
+                    .background(isSelected ? Color.driveBaiPrimary : Color(.systemGray5))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: AD.radius))
+            .overlay(
+                RoundedRectangle(cornerRadius: AD.radius)
+                    .stroke(
+                        isSelected ? Color.driveBaiPrimary : Color(.systemGray4),
+                        lineWidth: isSelected ? 2.5 : 1
+                    )
+            )
+            .shadow(
+                color: isSelected ? Color.driveBaiPrimary.opacity(0.22) : .black.opacity(0.05),
+                radius: isSelected ? 8 : 3, x: 0, y: 2
+            )
+        }
+        .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
+        .accessibilityLabel("Accident diagram: \(option.title)")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
 // MARK: – Damage Step
 
 private struct DamageStepView: View {
     @ObservedObject var vm: AccidentReportViewModel
-
-    private let diagrams: [(Int, String)] = [
-        (0, "Left Turn"),  (1, "Rear End"),         (2, "Sideswipe (same)"),
-        (3, "Left Turn ↓"),(4, "Right Angle"),       (5, "Right Turn"),
-        (6, "Right Turn ↓"),(7, "Head On"),          (8, "Sideswipe (opp.)"),
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: AD.sectionGap) {
@@ -555,26 +636,16 @@ private struct DamageStepView: View {
             }
 
             SectionCard(title: "Accident Diagram") {
-                LazyVGrid(columns: Array(repeating: .init(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                    ForEach(diagrams, id: \.0) { num, lbl in
-                        let selected = vm.vehicleDamage.diagram == num
-                        Button { vm.vehicleDamage.diagram = num } label: {
-                            VStack(spacing: 6) {
-                                Text("\(num)")
-                                    .font(.title3.bold())
-                                    .foregroundColor(selected ? .white : .primary)
-                                Text(lbl)
-                                    .font(.caption2)
-                                    .foregroundColor(selected ? .white.opacity(0.9) : .secondary)
-                                    .multilineTextAlignment(.center)
-                                    .lineLimit(2)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(selected ? Color.driveBaiPrimary : Color(.systemGray6))
-                            .cornerRadius(10)
-                        }
-                        .animation(.easeInOut(duration: 0.15), value: selected)
+                LazyVGrid(
+                    columns: Array(repeating: .init(.flexible(), spacing: 10), count: 2),
+                    spacing: 10
+                ) {
+                    ForEach(AccidentDiagramOption.all, id: \.id) { option in
+                        DiagramCard(
+                            option: option,
+                            isSelected: vm.vehicleDamage.diagram == option.id,
+                            onTap: { vm.vehicleDamage.diagram = option.id }
+                        )
                     }
                 }
             }
@@ -807,7 +878,7 @@ private struct ReviewStepView: View {
                 AccidentReviewRow(icon: "person.2.fill", label: "Second Driver",
                                   value: vm.hasSecondDriver ? "Yes" : "No")
                 AccidentReviewRow(icon: "car.side.fill", label: "Damage Diagram",
-                                  value: "Diagram \(vm.vehicleDamage.diagram)")
+                                  value: "Diagram \(vm.vehicleDamage.diagram) — \(AccidentDiagramOption.all[vm.vehicleDamage.diagram].title)")
                 AccidentReviewRow(icon: "text.quote",    label: "Description",
                                   value: vm.accidentDescription.isEmpty
                                     ? "Not provided"

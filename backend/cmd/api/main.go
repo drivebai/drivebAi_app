@@ -293,6 +293,7 @@ func main() {
 			r.Route("/accidents", func(r chi.Router) {
 				r.Post("/", accidentHandler.Create)
 				r.Get("/", accidentHandler.List)
+				r.Get("/draft", accidentHandler.GetDraft)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", accidentHandler.Get)
 					r.Patch("/", accidentHandler.Patch)

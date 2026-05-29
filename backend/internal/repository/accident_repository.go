@@ -39,6 +39,33 @@ func (r *AccidentRepository) Create(ctx context.Context, reporterID uuid.UUID, c
 	return &a, nil
 }
 
+// GetDraftForUser returns the most recent draft for the user, optionally filtered by chatID and carID.
+// Returns pgx.ErrNoRows (wrapped) when no matching draft exists.
+func (r *AccidentRepository) GetDraftForUser(ctx context.Context, userID uuid.UUID, chatID, carID *uuid.UUID) (*models.Accident, error) {
+	query := `SELECT id, reporter_id, related_chat_id, related_car_id, status,
+	                 driver1_info, driver2_info, vehicle_damage,
+	                 COALESCE(accident_description, ''), insurance_info, other_info,
+	                 COALESCE(signature_url, ''), signature_signed_at, submitted_at,
+	                 created_at, updated_at
+	          FROM accidents
+	          WHERE reporter_id = $1 AND status = 'draft'`
+	args := []any{userID}
+	argIdx := 2
+	if chatID != nil {
+		query += fmt.Sprintf(" AND related_chat_id = $%d", argIdx)
+		args = append(args, *chatID)
+		argIdx++
+	}
+	if carID != nil {
+		query += fmt.Sprintf(" AND related_car_id = $%d", argIdx)
+		args = append(args, *carID)
+		argIdx++
+	}
+	_ = argIdx
+	query += " ORDER BY created_at DESC LIMIT 1"
+	return scanAccident(r.db.Pool.QueryRow(ctx, query, args...))
+}
+
 // GetByIDForUser fetches a single accident and verifies it belongs to userID.
 func (r *AccidentRepository) GetByIDForUser(ctx context.Context, accidentID, userID uuid.UUID) (*models.Accident, error) {
 	row := r.db.Pool.QueryRow(ctx, `

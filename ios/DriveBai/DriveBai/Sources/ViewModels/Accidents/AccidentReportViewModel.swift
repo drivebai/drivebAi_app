@@ -68,10 +68,16 @@ final class AccidentReportViewModel: ObservableObject {
         isLoading = true
         error = nil
         do {
-            let a = try await APIClient.shared.createAccident(
-                relatedChatId: relatedChatId,
-                relatedCarId: relatedCarId
-            )
+            // Resume existing draft when available; create a new one only on 404.
+            let a: AccidentAPIResponse
+            do {
+                a = try await APIClient.shared.getAccidentDraft(chatId: relatedChatId, carId: relatedCarId)
+            } catch {
+                a = try await APIClient.shared.createAccident(
+                    relatedChatId: relatedChatId,
+                    relatedCarId: relatedCarId
+                )
+            }
             accident = a
             populateFromAccident(a)
         } catch {

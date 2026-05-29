@@ -48,7 +48,6 @@ struct AuthenticatedProfileView: View {
     @State private var showDriverDocsSheet = false
     @State private var switchError: String?
     @State private var showSupportChat = false
-    @State private var showAccidentReport = false
 
     /// Constructs the full URL for the profile photo
     private var profilePhotoURL: URL? {
@@ -181,12 +180,6 @@ struct AuthenticatedProfileView: View {
                         badge: supportInboxStore.unreadCount,
                         action: { showSupportChat = true }
                     )
-                    Divider().padding(.leading, 56)
-                    ProfileActionRow(
-                        icon: "exclamationmark.triangle.fill",
-                        title: "Report an Accident",
-                        action: { showAccidentReport = true }
-                    )
                 }
                 .background(Color(.systemBackground))
                 .cornerRadius(12)
@@ -213,10 +206,6 @@ struct AuthenticatedProfileView: View {
             SupportChatView()
                 .environmentObject(authStore)
                 .environmentObject(supportInboxStore)
-        }
-        .sheet(isPresented: $showAccidentReport) {
-            AccidentReportView()
-                .environmentObject(authStore)
         }
         .sheet(isPresented: $showDriverDocsSheet) {
             DriverDocsRequiredSheet(
