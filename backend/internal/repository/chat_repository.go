@@ -317,6 +317,77 @@ func (r *ChatRepository) CreateMessage(ctx context.Context, msg *models.Message)
 	return tx.Commit(ctx)
 }
 
+// CreateMessageWithAttachment inserts a message and its single linked attachment
+// in one transaction, then bumps chats.last_message_at. The attachment's
+// MessageID is wired to msg.ID inside the tx so the caller does not need to
+// pre-populate it. Used by UploadAttachment.
+func (r *ChatRepository) CreateMessageWithAttachment(ctx context.Context, msg *models.Message, att *models.Attachment) error {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, client_message_id, request_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, msg.ID, msg.ChatID, msg.SenderID, msg.Type, msg.Body, msg.ClientMessageID, msg.RequestID, msg.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert attachment message: %w", err)
+	}
+
+	att.MessageID = &msg.ID
+	_, err = tx.Exec(ctx, `
+		INSERT INTO attachments (id, chat_id, message_id, request_id, uploader_id, kind, filename, mime_type, file_size, file_path, file_url, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, att.ID, att.ChatID, att.MessageID, att.RequestID, att.UploaderID, att.Kind, att.Filename, att.MimeType, att.FileSize, att.FilePath, att.FileURL, att.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert attachment row: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE chats SET last_message_at = $2 WHERE id = $1
+	`, msg.ChatID, msg.CreatedAt); err != nil {
+		return fmt.Errorf("update chat last_message_at: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// GetMessageWithAttachmentByClientID returns the existing MessageResponse (with
+// its attachments hydrated) matching a (chat, sender, client_message_id)
+// idempotency key. Used by UploadAttachment so a duplicate-key retry returns
+// the original message instead of erroring out.
+func (r *ChatRepository) GetMessageWithAttachmentByClientID(ctx context.Context, chatID, senderID, clientMessageID uuid.UUID) (*models.MessageResponse, error) {
+	var msg models.MessageResponse
+	var createdAt time.Time
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT m.id, m.chat_id, m.sender_id,
+		       (SELECT first_name || ' ' || last_name FROM users WHERE id = m.sender_id) AS sender_name,
+		       m.type, m.body, m.client_message_id, m.request_id, m.created_at, m.sender_kind
+		FROM messages m
+		WHERE m.chat_id = $1 AND m.sender_id = $2 AND m.client_message_id = $3
+		LIMIT 1
+	`, chatID, senderID, clientMessageID).Scan(
+		&msg.ID, &msg.ChatID, &msg.SenderID, &msg.SenderName,
+		&msg.Type, &msg.Body, &msg.ClientMessageID, &msg.RequestID, &createdAt, &msg.SenderKind,
+	)
+	if err != nil {
+		return nil, err
+	}
+	msg.CreatedAt = models.RFC3339Time(createdAt)
+	msg.Attachments = make([]models.AttachmentResponse, 0)
+
+	atts, err := r.getAttachmentsForMessages(ctx, []uuid.UUID{msg.ID})
+	if err != nil {
+		return nil, err
+	}
+	if list, ok := atts[msg.ID]; ok {
+		msg.Attachments = list
+	}
+	return &msg, nil
+}
+
 // MarkChatRead updates the participant's last_read_at to now.
 func (r *ChatRepository) MarkChatRead(ctx context.Context, chatID, userID uuid.UUID) error {
 	_, err := r.db.Pool.Exec(ctx, `

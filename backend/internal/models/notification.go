@@ -12,6 +12,7 @@ type NotificationType string
 const (
 	NotificationTypeLeaseRequest NotificationType = "lease_request"
 	NotificationTypePayment      NotificationType = "payment"
+	NotificationTypeKeyHandover  NotificationType = "key_handover"
 	NotificationTypeSystem       NotificationType = "system"
 )
 

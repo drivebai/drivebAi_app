@@ -404,19 +404,18 @@ private struct AttachmentThumbnail: View {
 
     @ViewBuilder
     private var thumbnailBody: some View {
-        if att.mimeType.hasPrefix("image/") {
-            AsyncImage(url: URL(string: AppConfig.serverBaseURL.absoluteString + att.fileUrl)) { phase in
-                switch phase {
-                case .success(let img):
-                    img.resizable().scaledToFill()
-                default:
-                    Color(.systemGray5)
-                        .overlay(Image(systemName: "photo").foregroundColor(.secondary))
-                }
-            }
-            .frame(width: AD.thumbSize, height: AD.thumbSize)
-            .clipped()
-            .cornerRadius(10)
+        if att.mimeType.hasPrefix("image/"),
+           let url = URL(string: AppConfig.serverBaseURL.absoluteString + att.fileUrl) {
+            RemoteImage(url: url, contentMode: .fill, maxPixelSize: 300)
+                .frame(width: AD.thumbSize, height: AD.thumbSize)
+                .clipped()
+                .cornerRadius(10)
+        } else if att.mimeType.hasPrefix("image/") {
+            Color(.systemGray5)
+                .overlay(Image(systemName: "photo").foregroundColor(.secondary))
+                .frame(width: AD.thumbSize, height: AD.thumbSize)
+                .clipped()
+                .cornerRadius(10)
         } else {
             VStack(spacing: 6) {
                 Image(systemName: att.mimeType.contains("video") ? "play.rectangle.fill" : "doc.fill")

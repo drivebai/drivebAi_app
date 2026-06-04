@@ -158,23 +158,10 @@ private struct CarPhotoTileView: View {
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .clipped()
                 } else if let fullURL = slot.fullImageURL {
-                    // Remote image from server
-                    AsyncImage(url: fullURL) { phase in
-                        switch phase {
-                        case .empty:
-                            loadingPlaceholder
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .clipped()
-                        case .failure:
-                            emptyPlaceholder
-                        @unknown default:
-                            emptyPlaceholder
-                        }
-                    }
+                    // Remote image from server — shared ImagePipeline.
+                    RemoteImage(url: fullURL, contentMode: .fill, maxPixelSize: 800)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
                 } else {
                     // Empty state
                     emptyPlaceholder

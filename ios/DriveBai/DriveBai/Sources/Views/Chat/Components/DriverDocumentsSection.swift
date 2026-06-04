@@ -112,28 +112,18 @@ private struct DriverDocumentRow: View {
         Task {
             defer { Task { @MainActor in isLoading = false } }
             do {
-                let local = try await downloadToCache(remote: url, filename: document.fileName)
+                // Reuse the shared AttachmentDownloadService — it adds Bearer
+                // auth if available AND short-circuits on cache hit, so the
+                // second tap is instant. The filename gets sanitized and the
+                // file lives in Caches/ChatAttachments/.
+                let local = try await AttachmentDownloadService.shared.download(
+                    url: url,
+                    suggestedFilename: "shared-docs-\(document.id.uuidString)-\(document.fileName)"
+                )
                 await MainActor.run { onOpen(local) }
             } catch {
                 await MainActor.run { errorMessage = "Couldn't open: \(error.localizedDescription)" }
             }
         }
-    }
-
-    /// Downloads the remote document into the app's Caches dir. QuickLook
-    /// requires a file:// URL, so we can't hand it the HTTPS URL directly.
-    private func downloadToCache(remote: URL, filename: String) async throws -> URL {
-        let (data, response) = try await URLSession.shared.data(from: remote)
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            throw NSError(domain: "DriverDocumentRow", code: http.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
-        }
-        let cacheDir = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
-                                                   appropriateFor: nil, create: true)
-        let safeName = filename.replacingOccurrences(of: "/", with: "_")
-        let destination = cacheDir.appendingPathComponent("shared-docs-\(document.id.uuidString)-\(safeName)")
-        try? FileManager.default.removeItem(at: destination)
-        try data.write(to: destination)
-        return destination
     }
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/drivebai/backend/internal/auth"
 	"github.com/drivebai/backend/internal/httputil"
@@ -698,6 +700,20 @@ func (h *ChatHandler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 }
 
 // UploadAttachment handles multipart file upload for chat attachments.
+// On success this both:
+//   - persists a messages row of type 'attachment' linked to the new attachment
+//     (so it appears in GET /chats/{id}/messages on reload), and
+//   - broadcasts a `new_message` WebSocket event to BOTH participants — the
+//     receiver so they see the bubble live, and the sender so the optimistic
+//     bubble can reconcile even if the HTTP response was lost in flight.
+//
+// Idempotency: a repeat call with the same (chat_id, sender_id,
+// client_message_id) returns the original MessageResponse instead of creating
+// a new row. NOTE: the underlying DB unique index `idx_messages_client_id` is
+// GLOBAL on client_message_id (not scoped to chat/sender), so a cross-(chat,
+// sender) reuse of the same UUID — vanishingly unlikely for a UUIDv4 minted on
+// the device, but possible if a buggy client copies a key across users —
+// surfaces as a 500 rather than silently leaking a message across boundaries.
 func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	userID, ok := httputil.GetUserID(r.Context())
 	if !ok {
@@ -719,6 +735,41 @@ func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(20 << 20); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("File too large or invalid form"))
 		return
+	}
+
+	// client_message_id is the idempotency key. Absent → generate one;
+	// present-but-malformed → 400 (matches the strict parsing pattern used for
+	// the other path parameters in this handler, and matches the contract iOS
+	// already uses for text messages).
+	var clientMessageID uuid.UUID
+	clientProvided := false
+	if raw := r.FormValue("client_message_id"); raw != "" {
+		parsed, parseErr := uuid.Parse(raw)
+		if parseErr != nil {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid client_message_id"))
+			return
+		}
+		clientMessageID = parsed
+		clientProvided = true
+	} else {
+		clientMessageID = uuid.New()
+	}
+
+	// Fast-path idempotency: if the client supplied a key AND a message with
+	// this (chat, sender, key) already exists, return it without touching disk
+	// or DB. Skipped when we generated the UUID ourselves — by construction no
+	// prior row can have it, saving a DB round-trip on first-time uploads.
+	if clientProvided {
+		existing, lookupErr := h.chatRepo.GetMessageWithAttachmentByClientID(r.Context(), chatID, userID, clientMessageID)
+		if lookupErr == nil && existing != nil {
+			httputil.WriteJSON(w, http.StatusOK, existing)
+			return
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+			// Unexpected DB error during idempotency check — log and continue.
+			// Worst case: we create a fresh row that the client may dedup later.
+			h.logger.Warn("attachment idempotency fast-path lookup failed", "error", lookupErr)
+		}
 	}
 
 	file, header, err := r.FormFile("file")
@@ -768,15 +819,34 @@ func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	written, err := io.Copy(dst, file)
 	if err != nil {
 		h.logger.Error("write attachment file", "error", err)
+		if rmErr := os.Remove(filePath); rmErr != nil {
+			h.logger.Warn("remove partial upload after io.Copy error", "error", rmErr, "file_path", filePath)
+		}
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
 
 	fileURL := fmt.Sprintf("/uploads/chats/%s/%s", chatID.String(), filename)
 
+	now := time.Now().UTC()
+	msgID := uuid.New()
+	// Chat-list previews show this verbatim — the leading paperclip keeps the
+	// preview legible when type='attachment' rather than dumping a bare filename.
+	body := "📎 " + header.Filename
+
+	msg := &models.Message{
+		ID:              msgID,
+		ChatID:          chatID,
+		SenderID:        userID,
+		Type:            models.MessageTypeAttachment,
+		Body:            body,
+		ClientMessageID: &clientMessageID,
+		CreatedAt:       now,
+	}
 	att := &models.Attachment{
 		ID:         attID,
 		ChatID:     chatID,
+		MessageID:  &msgID,
 		UploaderID: userID,
 		Kind:       kind,
 		Filename:   header.Filename,
@@ -784,26 +854,78 @@ func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		FileSize:   int(written),
 		FilePath:   filePath,
 		FileURL:    fileURL,
-		CreatedAt:  time.Now().UTC(),
+		CreatedAt:  now,
 	}
 
-	if err := h.chatRepo.CreateAttachment(r.Context(), att); err != nil {
-		h.logger.Error("save attachment record", "error", err)
+	if err := h.chatRepo.CreateMessageWithAttachment(r.Context(), msg, att); err != nil {
+		// Race recovery: another request with the same client_message_id beat us
+		// to the unique index. Return the existing row idempotently.
+		if existing, lookupErr := h.chatRepo.GetMessageWithAttachmentByClientID(r.Context(), chatID, userID, clientMessageID); lookupErr == nil && existing != nil {
+			if rmErr := os.Remove(filePath); rmErr != nil {
+				h.logger.Warn("orphan attachment file remove failed after dup recovery", "error", rmErr, "file_path", filePath)
+			}
+			httputil.WriteJSON(w, http.StatusOK, existing)
+			return
+		}
+		if rmErr := os.Remove(filePath); rmErr != nil {
+			h.logger.Warn("orphan attachment file remove failed after db error", "error", rmErr, "file_path", filePath)
+		}
+		h.logger.Error("save attachment message", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
 
-	resp := models.AttachmentResponse{
-		ID:        att.ID,
-		Kind:      att.Kind,
-		Filename:  att.Filename,
-		MimeType:  att.MimeType,
-		FileSize:  att.FileSize,
-		FileURL:   att.FileURL,
-		CreatedAt: models.RFC3339Time(att.CreatedAt),
+	senderName := h.chatRepo.GetUserFullName(r.Context(), userID)
+	if senderName == "" {
+		senderName = "Unknown"
+	}
+
+	resp := models.MessageResponse{
+		ID:              msg.ID,
+		ChatID:          msg.ChatID,
+		SenderID:        msg.SenderID,
+		SenderName:      senderName,
+		SenderKind:      "user",
+		Type:            msg.Type,
+		Body:            msg.Body,
+		ClientMessageID: msg.ClientMessageID,
+		Attachments: []models.AttachmentResponse{
+			{
+				ID:        att.ID,
+				Kind:      att.Kind,
+				Filename:  att.Filename,
+				MimeType:  att.MimeType,
+				FileSize:  att.FileSize,
+				FileURL:   att.FileURL,
+				CreatedAt: models.RFC3339Time(att.CreatedAt),
+			},
+		},
+		CreatedAt: models.RFC3339Time(msg.CreatedAt),
 	}
 
 	httputil.WriteJSON(w, http.StatusCreated, resp)
+
+	// Broadcast `new_message` to BOTH participants — including the uploader.
+	// Including the sender means:
+	//   - if the HTTP 201 response is lost mid-flight, the sender's iOS still
+	//     receives the server-confirmed message via WS and reconciles the
+	//     optimistic / .failed bubble through clientMessageId dedup, and
+	//   - the sender's secondary devices (e.g. iPad logged into same account)
+	//     pick the new bubble up without a manual reload.
+	// The iOS handleIncomingMessage path is responsible for collapsing the WS
+	// event against any in-memory row with the same clientMessageId.
+	chat, _ := h.chatRepo.GetChatByID(r.Context(), chatID)
+	if chat != nil {
+		targets := []uuid.UUID{chat.OwnerID}
+		if chat.DriverID != chat.OwnerID {
+			targets = append(targets, chat.DriverID)
+		}
+		h.wsHub.Broadcast(&ws.Event{
+			Type:          "new_message",
+			Payload:       resp,
+			TargetUserIDs: targets,
+		})
+	}
 }
 
 // --- User Profile ---

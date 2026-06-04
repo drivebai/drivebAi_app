@@ -39,6 +39,12 @@ final class OwnerTodayViewModel: ObservableObject {
     @Published var isLoadingActions = false
     @Published var actionsError: String?
 
+    /// Active key-handover tasks (pending / awaiting driver) for this user
+    @Published var keyHandovers: [KeyHandover] = []
+
+    /// ID of the handover currently being confirmed (drives the card's busy state)
+    @Published var submittingHandoverId: UUID?
+
     // MARK: - Private Properties
 
     private var timerCancellable: AnyCancellable?
@@ -55,6 +61,7 @@ final class OwnerTodayViewModel: ObservableObject {
         Task {
             await fetchActions()
             await fetchNotifications()
+            await fetchKeyHandovers()
         }
     }
 
@@ -134,6 +141,42 @@ final class OwnerTodayViewModel: ObservableObject {
         loadMockData()
         await fetchActions()
         await fetchNotifications()
+        await fetchKeyHandovers()
+    }
+
+    // MARK: - Key Handovers
+
+    func fetchKeyHandovers() async {
+        do {
+            let response = try await apiClient.fetchKeyHandoversToday()
+            keyHandovers = response.keyHandovers.map { $0.toDomain() }
+        } catch {
+            #if DEBUG
+            print("[OwnerTodayVM] fetchKeyHandovers error: \(error)")
+            #endif
+        }
+    }
+
+    /// Confirm the handover for the current viewer (owner → handed over, driver → received).
+    func confirmHandover(_ handover: KeyHandover) {
+        guard submittingHandoverId == nil else { return }
+        submittingHandoverId = handover.id
+        Task {
+            defer { submittingHandoverId = nil }
+            do {
+                if handover.viewerRole == .owner {
+                    _ = try await apiClient.ownerConfirmKeyHandover(id: handover.id)
+                } else {
+                    _ = try await apiClient.driverConfirmKeyHandover(id: handover.id)
+                }
+            } catch {
+                #if DEBUG
+                print("[OwnerTodayVM] confirmHandover error: \(error)")
+                #endif
+            }
+            // Re-sync with the server (handles success, expiry, and races uniformly).
+            await fetchKeyHandovers()
+        }
     }
 
     // MARK: - Countdown Timer
@@ -164,6 +207,12 @@ final class OwnerTodayViewModel: ObservableObject {
                 guard let self else { return }
                 self.unreadNotificationCount = unreadCount
                 Task { await self.fetchNotifications() }
+            }
+            .store(in: &wsCancellables)
+
+        ws.keyHandoverUpdatedPublisher
+            .sink { [weak self] in
+                Task { await self?.fetchKeyHandovers() }
             }
             .store(in: &wsCancellables)
     }

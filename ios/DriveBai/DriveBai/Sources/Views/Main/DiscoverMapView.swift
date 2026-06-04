@@ -205,7 +205,7 @@ struct MapPreviewCard: View {
         let coverSlot = car.photoSlots.first { $0.slotType == .coverFront }
 
         if let imageURL = coverSlot?.fullImageURL {
-            RemoteImage(url: imageURL, contentMode: .fill)
+            RemoteImage(url: imageURL, contentMode: .fill, maxPixelSize: 500)
         } else {
             Rectangle()
                 .fill(Color(.systemGray5))

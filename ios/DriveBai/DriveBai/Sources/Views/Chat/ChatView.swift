@@ -1,4 +1,6 @@
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
 import StripePaymentSheet
 
 struct ChatView: View {
@@ -16,6 +18,15 @@ struct ChatView: View {
     @State private var paymentIntentResponse: PaymentIntentAPIResponse?
     @State private var paymentLeaseRequestId: UUID?
     @State private var adjustPriceLeaseRequest: LeaseRequest?
+
+    // Plus-menu / attachment / accident state
+    @State private var showPlusMenu = false
+    @State private var pendingPlusAction: ChatPlusAction?
+    @State private var showAccidentReport = false
+    @State private var showPhotoPicker = false
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    @State private var showFileImporter = false
+    @State private var relatedCarId: UUID?
 
     init(chatId: UUID, currentUserId: UUID, counterpartyId: UUID, counterpartyName: String) {
         self.chatId = chatId
@@ -61,12 +72,37 @@ struct ChatView: View {
                 }
             }
         }
+        .sheet(isPresented: $showPlusMenu, onDismiss: handlePendingPlusAction) {
+            ChatPlusMenuSheet { pendingPlusAction = $0 }
+        }
         .sheet(isPresented: $showRequestComposer) {
             if let user = authStore.state.user {
                 RequestComposerSheet(chatId: chatId, userRole: user.role) {
                     await viewModel.loadRequests()
                 }
             }
+        }
+        .sheet(isPresented: $showAccidentReport) {
+            AccidentReportView(relatedChatId: chatId, relatedCarId: relatedCarId)
+                .environmentObject(authStore)
+        }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $photoPickerItems,
+            maxSelectionCount: 10,
+            selectionBehavior: .ordered,
+            matching: .images
+        )
+        .onChange(of: photoPickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await handlePickedPhotos(items) }
+        }
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.pdf, .image, .data, .text, .plainText, .rtf],
+            allowsMultipleSelection: false
+        ) { result in
+            Task { await handlePickedFile(result) }
         }
         .sheet(item: $adjustPriceLeaseRequest) { leaseReq in
             AdjustPriceSheet(leaseRequest: leaseReq) { newPrice in
@@ -92,7 +128,8 @@ struct ChatView: View {
             async let reqTask: () = viewModel.loadRequests()
             async let leaseTask: () = viewModel.loadLeaseRequests()
             async let sharedDocsTask: () = viewModel.loadSharedDocuments()
-            _ = await (reqTask, leaseTask, sharedDocsTask)
+            async let carIdTask: () = loadRelatedCarId()
+            _ = await (reqTask, leaseTask, sharedDocsTask, carIdTask)
             await viewModel.markAsRead()
             ChatsListViewModel.shared.markChatRead(chatId)
         }
@@ -159,7 +196,7 @@ struct ChatView: View {
             ChatInputBar(
                 text: $viewModel.messageText,
                 onSend: { Task { await viewModel.sendMessage() } },
-                onRequestTap: { showRequestComposer = true }
+                onRequestTap: { showPlusMenu = true }
             )
         }
     }
@@ -255,6 +292,66 @@ struct ChatView: View {
                     .padding()
                 }
             }
+        }
+    }
+
+    // MARK: - Plus menu / attachments
+
+    private func handlePendingPlusAction() {
+        guard let action = pendingPlusAction else { return }
+        pendingPlusAction = nil
+        switch action {
+        case .createRequest:  showRequestComposer = true
+        case .reportAccident: showAccidentReport = true
+        case .attachPhoto:    showPhotoPicker = true
+        case .attachFile:     showFileImporter = true
+        }
+    }
+
+    private func loadRelatedCarId() async {
+        if let details = try? await APIClient.shared.fetchChatDetails(chatId: chatId) {
+            relatedCarId = details.car.id
+        }
+    }
+
+    private func handlePickedPhotos(_ items: [PhotosPickerItem]) async {
+        // Clear selection up front so the picker can re-open immediately even
+        // while uploads are still running in the background.
+        defer { photoPickerItems = [] }
+
+        // Decode each item to (data, filename, mime). itemIdentifier is a
+        // PhotoKit asset id with slashes, so we mint our own UUID-based
+        // filename and derive the MIME + extension from the picker item's
+        // supportedContentTypes (HEIC/PNG/GIF correct, not always JPEG).
+        var attachments: [ChatViewModel.PendingAttachment] = []
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            let utt = item.supportedContentTypes.first
+            let mime = utt?.preferredMIMEType ?? "image/jpeg"
+            let ext = utt?.preferredFilenameExtension ?? "jpg"
+            let filename = "photo-\(UUID().uuidString.prefix(8)).\(ext)"
+            attachments.append(ChatViewModel.PendingAttachment(data: data, filename: filename, mimeType: mime))
+        }
+        guard !attachments.isEmpty else { return }
+        await viewModel.sendAttachments(attachments)
+    }
+
+    private func handlePickedFile(_ result: Result<[URL], Error>) async {
+        switch result {
+        case .failure(let err):
+            viewModel.error = err.localizedDescription
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let didStart = url.startAccessingSecurityScopedResource()
+            defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else {
+                viewModel.error = "Couldn't read the selected file."
+                return
+            }
+            let filename = url.lastPathComponent
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            await viewModel.sendAttachment(data: data, filename: filename, mimeType: mime)
         }
     }
 

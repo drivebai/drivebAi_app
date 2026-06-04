@@ -4,7 +4,7 @@ struct ChatDetailsView: View {
     let chatId: UUID
 
     @StateObject private var viewModel: ChatDetailsViewModel
-    @State private var showAccidentReport = false
+    @State private var keyHandover: KeyHandover?
 
     init(chatId: UUID) {
         self.chatId = chatId
@@ -38,12 +38,16 @@ struct ChatDetailsView: View {
         .task {
             await viewModel.loadDetails()
             await viewModel.loadAttachments()
+            await loadKeyHandover()
         }
-        .sheet(isPresented: $showAccidentReport) {
-            AccidentReportView(
-                relatedChatId: chatId,
-                relatedCarId: viewModel.details?.car.id
-            )
+    }
+
+    /// Resolve an active key handover linked to this chat, if any.
+    private func loadKeyHandover() async {
+        if let list = try? await APIClient.shared.fetchKeyHandoversToday() {
+            keyHandover = list.keyHandovers
+                .map { $0.toDomain() }
+                .first { $0.chatId == chatId }
         }
     }
 
@@ -53,7 +57,7 @@ struct ChatDetailsView: View {
             Section("Car") {
                 HStack(spacing: 12) {
                     if let url = ImageURLHelper.fullURL(for: details.car.coverPhotoURL) {
-                        RemoteImage(url: url)
+                        RemoteImage(url: url, maxPixelSize: 240)
                             .frame(width: 60, height: 60)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     } else {
@@ -85,7 +89,7 @@ struct ChatDetailsView: View {
             Section("Counterparty") {
                 HStack(spacing: 12) {
                     if let url = ImageURLHelper.fullURL(for: details.counterparty.avatarURL) {
-                        RemoteImage(url: url)
+                        RemoteImage(url: url, maxPixelSize: 180)
                             .frame(width: 44, height: 44)
                             .clipShape(Circle())
                     } else {
@@ -163,10 +167,29 @@ struct ChatDetailsView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 80))], spacing: 8) {
                         ForEach(viewModel.media.prefix(9)) { item in
                             if let url = item.fullFileURL {
-                                RemoteImage(url: url)
+                                RemoteImage(url: url, maxPixelSize: 320)
                                     .frame(width: 80, height: 80)
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
                             }
+                        }
+                    }
+                }
+            }
+
+            // Key handover (only when an active handover is linked to this chat)
+            if let handover = keyHandover {
+                Section("Key handover") {
+                    NavigationLink {
+                        KeyHandoverDetailView(handover: handover)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Label("Key handover", systemImage: "key.fill")
+                                .foregroundColor(.driveBaiPrimary)
+                            Spacer()
+                            Text(handover.isOwner && handover.status == .pending ? "Action needed"
+                                 : (!handover.isOwner && handover.status == .ownerConfirmed ? "Action needed" : "View"))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
@@ -182,14 +205,6 @@ struct ChatDetailsView: View {
                 }
             }
 
-            Section {
-                Button {
-                    showAccidentReport = true
-                } label: {
-                    Label("Report an Accident", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red)
-                }
-            }
         }
     }
 

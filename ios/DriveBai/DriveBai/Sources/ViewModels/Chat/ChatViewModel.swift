@@ -32,6 +32,10 @@ final class ChatViewModel: ObservableObject {
     @Published var selectedTab: ChatTab = .messages
     @Published var error: String?
 
+    /// True while an attachment is uploading. Used to disable the + button so
+    /// the user can't double-fire a picker mid-upload.
+    @Published var isUploadingAttachment = false
+
     private let apiClient: APIClient
     private var cancellables = Set<AnyCancellable>()
 
@@ -162,12 +166,111 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// A single file the user has picked but not yet uploaded.
+    struct PendingAttachment {
+        let data: Data
+        let filename: String
+        let mimeType: String
+    }
+
+    /// Uploads a single attachment. Convenience wrapper over `sendAttachments`
+    /// kept for the file-picker path (one PDF/doc at a time).
+    func sendAttachment(data: Data, filename: String, mimeType: String) async {
+        await sendAttachments([PendingAttachment(data: data, filename: filename, mimeType: mimeType)])
+    }
+
+    /// Uploads N attachments. Optimistic bubbles are appended UP FRONT, in
+    /// picked order, so the user sees the full batch immediately; uploads then
+    /// run sequentially against the existing per-message idempotency contract.
+    /// A per-item failure marks that one bubble `.failed`; the rest still
+    /// upload.
+    func sendAttachments(_ items: [PendingAttachment]) async {
+        guard !items.isEmpty else { return }
+        guard !isUploadingAttachment else { return }
+        isUploadingAttachment = true
+        defer { isUploadingAttachment = false }
+
+        // 1. Append every optimistic bubble up front so the picked order is
+        //    visually preserved before any network call has returned.
+        let clientIds: [UUID] = items.map { _ in UUID() }
+        for (idx, item) in items.enumerated() {
+            appendOptimisticAttachment(
+                clientId: clientIds[idx],
+                data: item.data,
+                filename: item.filename,
+                mimeType: item.mimeType
+            )
+        }
+
+        // 2. Upload sequentially against the existing endpoint. The backend's
+        //    idempotency key is per (chat, sender, clientMessageId), so even if
+        //    the user re-picks the same image twice it lands as two distinct
+        //    bubbles (different clientIds), which matches user expectation.
+        for (idx, item) in items.enumerated() {
+            await uploadAttachment(
+                clientId: clientIds[idx],
+                data: item.data,
+                filename: item.filename,
+                mimeType: item.mimeType
+            )
+        }
+    }
+
+    private func appendOptimisticAttachment(clientId: UUID, data: Data, filename: String, mimeType: String) {
+        let kind: AttachmentType =
+            mimeType.hasPrefix("image/") ? .image :
+            mimeType.hasPrefix("video/") ? .video : .document
+        let placeholder = ChatAttachment(
+            id: clientId, kind: kind, filename: filename,
+            fileURL: "", fileSize: data.count, mimeType: mimeType
+        )
+        let optimistic = ChatMessage(
+            id: clientId, clientMessageId: clientId, chatId: chatId,
+            senderId: currentUserId, senderName: "Me", senderKind: "user",
+            direction: .sent, messageType: "attachment",
+            body: filename, attachments: [placeholder], createdAt: Date(),
+            status: .sending
+        )
+        messages.append(optimistic)
+    }
+
+    private func uploadAttachment(clientId: UUID, data: Data, filename: String, mimeType: String) async {
+        do {
+            let response = try await apiClient.uploadChatAttachment(
+                chatId: chatId, fileData: data, filename: filename, mimeType: mimeType,
+                clientMessageId: clientId
+            )
+            // Replace optimistic with server-derived message (same clientId).
+            if let idx = messages.firstIndex(where: { $0.clientMessageId == clientId }) {
+                messages[idx] = response.toChatMessage(currentUserId: currentUserId)
+            }
+        } catch {
+            if let idx = messages.firstIndex(where: { $0.clientMessageId == clientId }) {
+                messages[idx].status = .failed(error.localizedDescription)
+            }
+            self.error = "Failed to upload attachment: \(error.localizedDescription)"
+        }
+    }
+
     private func handleIncomingMessage(_ apiMsg: ChatMessageAPIResponse) {
         let msg = apiMsg.toChatMessage(currentUserId: currentUserId)
-        // Deduplicate by clientMessageId or id
-        if !messages.contains(where: { $0.id == msg.id || $0.clientMessageId == msg.clientMessageId }) {
-            messages.append(msg)
+
+        // If we already have a local row with the same clientMessageId, the
+        // server has confirmed something the sender already optimistically
+        // appended. If the local row is still `.sending` (no HTTP response yet)
+        // or `.failed` (HTTP response lost mid-flight but the server actually
+        // committed), REPLACE it with the server-confirmed message so the bubble
+        // is reconciled instead of staying stuck. If it's already `.sent` (HTTP
+        // round-trip succeeded first), skip — the WS event is redundant.
+        if let idx = messages.firstIndex(where: { $0.clientMessageId == msg.clientMessageId }) {
+            if case .sent = messages[idx].status { return }
+            messages[idx] = msg
+            return
         }
+
+        // Plain dedup by id (covers messages without a clientMessageId).
+        if messages.contains(where: { $0.id == msg.id }) { return }
+        messages.append(msg)
     }
 
     // MARK: - Requests

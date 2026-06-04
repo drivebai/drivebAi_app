@@ -13,6 +13,7 @@ struct OwnerTodayView: View {
     @State private var showChat = false
     @State private var notificationChatId: UUID?
     @State private var showNotificationChat = false
+    @State private var selectedHandover: KeyHandover?
 
     /// Get listings from OwnerCarsStore (single source of truth)
     private var listings: [ListingSummary] {
@@ -32,6 +33,9 @@ struct OwnerTodayView: View {
 
                     // Section 1: Active Listings
                     activeListingsSection
+
+                    // Section: Key Handover (shown only when active)
+                    keyHandoverSection
 
                     // Section 2: Actions to Take
                     actionsSection
@@ -92,6 +96,9 @@ struct OwnerTodayView: View {
                         counterpartyName: task.counterpartyName ?? task.requestedBy
                     )
                 }
+            }
+            .navigationDestination(item: $selectedHandover) { handover in
+                KeyHandoverDetailView(handover: handover)
             }
             .task {
                 await carsStore.fetchCars()
@@ -156,6 +163,33 @@ struct OwnerTodayView: View {
                 // Empty state
                 EmptyListingCard(isOwner: true) {
                     showCreateListing = true
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+            }
+        }
+    }
+
+    // MARK: - Key Handover Section
+
+    @ViewBuilder
+    private var keyHandoverSection: some View {
+        if !viewModel.keyHandovers.isEmpty {
+            VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
+                Text("Key handover")
+                    .font(TodayLayout.sectionTitleFont)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    ForEach(viewModel.keyHandovers) { handover in
+                        KeyHandoverCard(
+                            handover: handover,
+                            currentTime: viewModel.currentTime,
+                            isSubmitting: viewModel.submittingHandoverId == handover.id,
+                            onAct: { viewModel.confirmHandover(handover) },
+                            onOpen: { selectedHandover = handover }
+                        )
+                    }
                 }
                 .padding(.horizontal, TodayLayout.horizontalPadding)
             }

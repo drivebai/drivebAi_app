@@ -7,7 +7,7 @@ struct ChatRowView: View {
         HStack(spacing: 12) {
             // Car thumbnail
             if let url = chat.carCoverFullURL {
-                RemoteImage(url: url)
+                RemoteImage(url: url, maxPixelSize: 200)
                     .frame(width: 50, height: 50)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {

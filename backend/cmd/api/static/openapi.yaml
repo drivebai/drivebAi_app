@@ -1027,6 +1027,99 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /chats/{chatId}/attachments:
+    get:
+      tags: [Chats]
+      summary: List attachments uploaded in a chat
+      description: Returns every attachment for the chat (images, videos, documents) — used to populate the "Shared Files" view in chat details.
+      operationId: listChatAttachments
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+        - name: kind
+          in: query
+          description: Optional filter by attachment kind
+          required: false
+          schema:
+            type: string
+            enum: [image, video, document]
+      responses:
+        '200':
+          description: List of attachments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attachments:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        kind: { type: string, enum: [image, video, document] }
+                        filename: { type: string }
+                        mime_type: { type: string }
+                        file_size: { type: integer }
+                        file_url: { type: string, description: "Relative path; prepend AppConfig.serverBaseURL on the client." }
+                        created_at: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Chats]
+      summary: Upload an attachment as a chat message
+      description: |
+        Uploads a file (image / video / document) and persists it as a chat
+        `messages` row of type `attachment` linked to the new attachment record.
+        Returns the full message so the bubble can render immediately, and
+        broadcasts a `new_message` WebSocket event to the other participant(s).
+
+        `client_message_id` is an idempotency key — if the same key is reused
+        for the same (chat, sender) the original message is returned instead of
+        creating a duplicate.
+      operationId: uploadChatAttachment
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/chatId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to upload (max 20 MB).
+                client_message_id:
+                  type: string
+                  format: uuid
+                  description: Optional idempotency key. If omitted, the server generates one.
+      responses:
+        '200':
+          description: Idempotent retry — the message already exists; returns the original.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '201':
+          description: Attachment uploaded and message persisted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /chats/{chatId}/requests:
     get:
       tags: [Chats]

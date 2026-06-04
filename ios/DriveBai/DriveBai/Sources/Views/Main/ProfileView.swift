@@ -90,24 +90,9 @@ struct AuthenticatedProfileView: View {
                 VStack(spacing: 16) {
                     // Avatar - shows photo if available, otherwise initials
                     if let photoURL = profilePhotoURL {
-                        AsyncImage(url: photoURL) { phase in
-                            switch phase {
-                            case .empty:
-                                ProgressView()
-                                    .frame(width: 100, height: 100)
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 100, height: 100)
-                                    .clipShape(Circle())
-                            case .failure:
-                                // Fallback to initials on failure
-                                profileInitialsView
-                            @unknown default:
-                                profileInitialsView
-                            }
-                        }
+                        RemoteImage(url: photoURL, contentMode: .fill, maxPixelSize: 300)
+                            .frame(width: 100, height: 100)
+                            .clipShape(Circle())
                     } else {
                         profileInitialsView
                     }

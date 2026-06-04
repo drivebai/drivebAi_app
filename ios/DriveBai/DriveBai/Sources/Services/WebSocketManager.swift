@@ -26,6 +26,9 @@ final class WebSocketManager: ObservableObject {
     // Notification events — payload is the new unread count
     let notificationCreatedPublisher = PassthroughSubject<Int, Never>()
 
+    // Key handover events (created / confirmed / completed / expired) — triggers Today refresh
+    let keyHandoverUpdatedPublisher = PassthroughSubject<Void, Never>()
+
     // Support chat events — admin reply arrives in real-time
     let supportMessageCreatedPublisher = PassthroughSubject<SupportMessageAPIResponse, Never>()
 
@@ -202,6 +205,8 @@ final class WebSocketManager: ObservableObject {
             leaseRequestCreatedPublisher.send()
         case "lease_request_updated":
             leaseRequestUpdatedPublisher.send()
+        case "key_handover_created", "key_handover_owner_confirmed", "key_handover_completed", "key_handover_expired":
+            keyHandoverUpdatedPublisher.send()
         case "notification_created":
             // Payload: { "unread_count": Int }
             if let unread = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: Int])?["unread_count"] {

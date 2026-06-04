@@ -11,8 +11,9 @@ import (
 type MessageType string
 
 const (
-	MessageTypeText   MessageType = "text"
-	MessageTypeSystem MessageType = "system"
+	MessageTypeText       MessageType = "text"
+	MessageTypeSystem     MessageType = "system"
+	MessageTypeAttachment MessageType = "attachment"
 )
 
 type RequestType string

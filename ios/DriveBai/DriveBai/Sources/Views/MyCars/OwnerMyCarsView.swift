@@ -235,25 +235,9 @@ struct CarListRow: View {
         #endif
 
         if let imageURL = coverSlot?.fullImageURL {
-            AsyncImage(url: imageURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 100, height: 80)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                case .failure(let error):
-                    #if DEBUG
-                    let _ = print("[CarListRow] AsyncImage FAILED for '\(car.title)': \(error)")
-                    #endif
-                    thumbnailPlaceholder
-                case .empty:
-                    thumbnailLoading
-                @unknown default:
-                    thumbnailPlaceholder
-                }
-            }
+            RemoteImage(url: imageURL, contentMode: .fill, maxPixelSize: 300)
+                .frame(width: 100, height: 80)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
         } else if let localData = coverSlot?.localImageData,
                   let uiImage = UIImage(data: localData) {
             Image(uiImage: uiImage)

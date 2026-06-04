@@ -46,7 +46,7 @@ struct ChatMessage: Identifiable, Equatable {
     let senderName: String
     let senderKind: String // "user" | "admin"
     let direction: MessageDirection
-    let messageType: String // "text" or "system"
+    let messageType: String // "text" | "system" | "attachment"
     let body: String
     let attachments: [ChatAttachment]
     let createdAt: Date

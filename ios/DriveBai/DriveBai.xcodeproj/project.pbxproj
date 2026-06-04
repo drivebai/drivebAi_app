@@ -7,7 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		45654D34BFC6ABF9CF913E01 /* PDFViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDD4815B08438F162E135F0 /* PDFViewerView.swift */; };
+		54E443D88905DEFADDA91C81 /* KeyHandoverModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */; };
+		55D64DD7996CF8236139E437 /* ChatPlusMenuSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */; };
+		5EE64C21ADCC1B7F4BAD52BD /* KeyHandoverDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A636497A8CDE4FC742D3A54D /* KeyHandoverDetailViewModel.swift */; };
+		60C04585A9729812B968FB0F /* KeyHandoverAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */; };
+		7485489E8184FFB21A7BECB7 /* ImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F23642CA82731C1438425E6D /* ImagePipeline.swift */; };
+		78B045CEB9F2C8D9A9F3605E /* KeyHandoverCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */; };
+		84294759824B8DC261EF2FAE /* KeyHandoverDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */; };
 		8787D9FF2F5590E9001618B0 /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = 8787D9FE2F5590E9001618B0 /* StripePaymentSheet */; };
+		880A42098D3B87B5D861CA75 /* ImageAttachmentViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */; };
 		E0000001000000000000001A /* DriveBaiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000A /* DriveBaiApp.swift */; };
 		E0000001000000000000001B /* User.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000B /* User.swift */; };
 		E0000001000000000000001C /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000C /* KeychainService.swift */; };
@@ -96,9 +105,19 @@
 		E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003B0 /* AccidentAPIModels.swift */; };
 		E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003C0 /* AccidentReportViewModel.swift */; };
 		E000000100000000000003D1 /* AccidentReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003D0 /* AccidentReportView.swift */; };
+		E7B54F0BB3AB2C0B9F1A7246 /* PhotoLibrarySaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */; };
+		EF0F482AB376D092D87C86B8 /* AttachmentDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */; };
+		F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PDFKitRepresentedView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/PDFKitRepresentedView.swift; sourceTree = SOURCE_ROOT; };
+		87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PhotoLibrarySaver.swift; path = DriveBai/Sources/Services/PhotoLibrarySaver.swift; sourceTree = SOURCE_ROOT; };
+		A636497A8CDE4FC742D3A54D /* KeyHandoverDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailViewModel.swift; path = DriveBai/Sources/ViewModels/KeyHandover/KeyHandoverDetailViewModel.swift; sourceTree = SOURCE_ROOT; };
+		AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverAPIModels.swift; path = DriveBai/Sources/API/KeyHandoverAPIModels.swift; sourceTree = SOURCE_ROOT; };
+		CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AttachmentDownloadService.swift; path = DriveBai/Sources/Services/AttachmentDownloadService.swift; sourceTree = SOURCE_ROOT; };
+		CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverCard.swift; path = DriveBai/Sources/Views/Today/Components/KeyHandoverCard.swift; sourceTree = SOURCE_ROOT; };
+		D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImageAttachmentViewerView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/ImageAttachmentViewerView.swift; sourceTree = SOURCE_ROOT; };
 		E00000010000000000000001 /* DriveBai.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DriveBai.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E0000001000000000000000A /* DriveBaiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveBaiApp.swift; sourceTree = "<group>"; };
 		E0000001000000000000000B /* User.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = User.swift; sourceTree = "<group>"; };
@@ -189,6 +208,11 @@
 		E000000100000000000003B0 /* AccidentAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentAPIModels.swift; sourceTree = "<group>"; };
 		E000000100000000000003C0 /* AccidentReportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportViewModel.swift; sourceTree = "<group>"; };
 		E000000100000000000003D0 /* AccidentReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportView.swift; sourceTree = "<group>"; };
+		E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatPlusMenuSheet.swift; path = DriveBai/Sources/Views/Chat/Components/ChatPlusMenuSheet.swift; sourceTree = SOURCE_ROOT; };
+		EFDD4815B08438F162E135F0 /* PDFViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PDFViewerView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/PDFViewerView.swift; sourceTree = SOURCE_ROOT; };
+		F23642CA82731C1438425E6D /* ImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImagePipeline.swift; path = DriveBai/Sources/Services/ImagePipeline.swift; sourceTree = SOURCE_ROOT; };
+		F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverModels.swift; path = DriveBai/Sources/Models/KeyHandover/KeyHandoverModels.swift; sourceTree = SOURCE_ROOT; };
+		F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailView.swift; path = DriveBai/Sources/Views/KeyHandover/KeyHandoverDetailView.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -216,6 +240,18 @@
 				E00000010000000000000004 /* DriveBai */,
 				8787D9FB2F5590C6001618B0 /* Frameworks */,
 				E00000010000000000000005 /* Products */,
+				F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */,
+				AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */,
+				CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */,
+				A636497A8CDE4FC742D3A54D /* KeyHandoverDetailViewModel.swift */,
+				F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */,
+				E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */,
+				CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */,
+				702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */,
+				EFDD4815B08438F162E135F0 /* PDFViewerView.swift */,
+				87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */,
+				D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */,
+				F23642CA82731C1438425E6D /* ImagePipeline.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -698,6 +734,18 @@
 				E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */,
 				E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */,
 				E000000100000000000003D1 /* AccidentReportView.swift in Sources */,
+				54E443D88905DEFADDA91C81 /* KeyHandoverModels.swift in Sources */,
+				60C04585A9729812B968FB0F /* KeyHandoverAPIModels.swift in Sources */,
+				78B045CEB9F2C8D9A9F3605E /* KeyHandoverCard.swift in Sources */,
+				5EE64C21ADCC1B7F4BAD52BD /* KeyHandoverDetailViewModel.swift in Sources */,
+				84294759824B8DC261EF2FAE /* KeyHandoverDetailView.swift in Sources */,
+				55D64DD7996CF8236139E437 /* ChatPlusMenuSheet.swift in Sources */,
+				EF0F482AB376D092D87C86B8 /* AttachmentDownloadService.swift in Sources */,
+				F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */,
+				45654D34BFC6ABF9CF913E01 /* PDFViewerView.swift in Sources */,
+				E7B54F0BB3AB2C0B9F1A7246 /* PhotoLibrarySaver.swift in Sources */,
+				880A42098D3B87B5D861CA75 /* ImageAttachmentViewerView.swift in Sources */,
+				7485489E8184FFB21A7BECB7 /* ImagePipeline.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

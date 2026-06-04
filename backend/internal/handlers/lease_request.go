@@ -19,16 +19,17 @@ import (
 )
 
 type LeaseRequestHandler struct {
-	leaseRepo      *repository.LeaseRequestRepository
-	carRepo        *repository.CarRepository
-	userRepo       *repository.UserRepository
-	chatRepo       *repository.ChatRepository
-	docRepo        *repository.DocumentRepository
-	sharedDocsRepo *repository.SharedDocumentRepository
-	stripe         *stripeService.Service
-	wsHub          *ws.Hub
-	notifHandler   *NotificationHandler
-	logger         *slog.Logger
+	leaseRepo       *repository.LeaseRequestRepository
+	carRepo         *repository.CarRepository
+	userRepo        *repository.UserRepository
+	chatRepo        *repository.ChatRepository
+	docRepo         *repository.DocumentRepository
+	sharedDocsRepo  *repository.SharedDocumentRepository
+	keyHandoverRepo *repository.KeyHandoverRepository
+	stripe          *stripeService.Service
+	wsHub           *ws.Hub
+	notifHandler    *NotificationHandler
+	logger          *slog.Logger
 }
 
 func NewLeaseRequestHandler(
@@ -38,22 +39,24 @@ func NewLeaseRequestHandler(
 	chatRepo *repository.ChatRepository,
 	docRepo *repository.DocumentRepository,
 	sharedDocsRepo *repository.SharedDocumentRepository,
+	keyHandoverRepo *repository.KeyHandoverRepository,
 	stripe *stripeService.Service,
 	wsHub *ws.Hub,
 	notifHandler *NotificationHandler,
 	logger *slog.Logger,
 ) *LeaseRequestHandler {
 	return &LeaseRequestHandler{
-		leaseRepo:      leaseRepo,
-		carRepo:        carRepo,
-		userRepo:       userRepo,
-		chatRepo:       chatRepo,
-		docRepo:        docRepo,
-		sharedDocsRepo: sharedDocsRepo,
-		stripe:         stripe,
-		wsHub:          wsHub,
-		notifHandler:   notifHandler,
-		logger:         logger,
+		leaseRepo:       leaseRepo,
+		carRepo:         carRepo,
+		userRepo:        userRepo,
+		chatRepo:        chatRepo,
+		docRepo:         docRepo,
+		sharedDocsRepo:  sharedDocsRepo,
+		keyHandoverRepo: keyHandoverRepo,
+		stripe:          stripe,
+		wsHub:           wsHub,
+		notifHandler:    notifHandler,
+		logger:          logger,
 	}
 }
 
@@ -525,6 +528,9 @@ func (h *LeaseRequestHandler) SyncPaymentStatus(w http.ResponseWriter, r *http.R
 				"Payment confirmed",
 				fmt.Sprintf("Payment confirmed for %s — wait for pickup instructions from the owner", carTitle),
 				&chatID, &lrID)
+
+			// Create the key-handover task (idempotent with the webhook path).
+			h.ensureKeyHandover(r, lr)
 		}
 	}
 
@@ -667,6 +673,47 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 	driverBody := fmt.Sprintf("Payment confirmed for %s — wait for pickup instructions from the owner", carTitle)
 	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
 		"Payment confirmed", driverBody, &chatID, &leaseID)
+
+	// Create the key-handover task so both parties can coordinate the meetup.
+	h.ensureKeyHandover(r, lr)
+}
+
+// ensureKeyHandover creates the key-handover task for a freshly paid lease
+// (idempotent on lease_request_id) and broadcasts it so both parties' Today
+// tabs pick it up. Pickup location is snapshotted from the car listing.
+func (h *LeaseRequestHandler) ensureKeyHandover(r *http.Request, lr *models.LeaseRequest) {
+	if h.keyHandoverRepo == nil {
+		return
+	}
+
+	var lat, lng *float64
+	var area *string
+	if car, err := h.carRepo.GetByID(r.Context(), lr.ListingID); err == nil {
+		if car.Latitude.Valid {
+			v := car.Latitude.Float64
+			lat = &v
+		}
+		if car.Longitude.Valid {
+			v := car.Longitude.Float64
+			lng = &v
+		}
+		if car.Area.Valid && car.Area.String != "" {
+			v := car.Area.String
+			area = &v
+		}
+	}
+
+	kh, err := h.keyHandoverRepo.CreateForLease(r.Context(), lr, lat, lng, area)
+	if err != nil {
+		h.logger.Error("create key handover", "error", err, "lease_request_id", lr.ID)
+		return
+	}
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "key_handover_created",
+		Payload:       map[string]any{"id": kh.ID, "lease_request_id": kh.LeaseRequestID, "status": kh.Status},
+		TargetUserIDs: []uuid.UUID{lr.OwnerID, lr.DriverID},
+	})
 }
 
 func (h *LeaseRequestHandler) handlePaymentFailed(r *http.Request, intentID string) {

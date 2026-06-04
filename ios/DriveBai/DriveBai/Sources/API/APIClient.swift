@@ -180,7 +180,7 @@ protocol APIClientProtocol {
     func updateChatSettings(chatId: UUID, request: UpdateChatSettingsAPIRequest) async throws -> ChatDetailsAPIResponse
     func archiveChat(chatId: UUID, request: ArchiveChatAPIRequest) async throws -> MessageResponse
     func fetchChatAttachments(chatId: UUID, kind: String?) async throws -> AttachmentsListAPIResponse
-    func uploadChatAttachment(chatId: UUID, fileData: Data, filename: String, mimeType: String) async throws -> ChatAttachmentAPIResponse
+    func uploadChatAttachment(chatId: UUID, fileData: Data, filename: String, mimeType: String, clientMessageId: UUID) async throws -> ChatMessageAPIResponse
     func fetchCounterpartyProfile(userId: UUID) async throws -> CounterpartyProfileAPIResponse
 
     // Lease Requests
@@ -198,6 +198,12 @@ protocol APIClientProtocol {
     // Today actions (lease requests)
     func fetchTodayActions() async throws -> TodayActionsAPIResponse
     func markTodayActionsSeen() async throws -> MessageResponse
+
+    // Key handovers
+    func fetchKeyHandoversToday() async throws -> KeyHandoversListAPIResponse
+    func fetchKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel
+    func ownerConfirmKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel
+    func driverConfirmKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel
 
     // Payments (Stripe)
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
@@ -542,10 +548,16 @@ final class APIClient: APIClientProtocol {
         return try await get(path: path, authenticated: true)
     }
 
-    func uploadChatAttachment(chatId: UUID, fileData: Data, filename: String, mimeType: String) async throws -> ChatAttachmentAPIResponse {
-        try await uploadMultipart(
+    /// Uploads a chat attachment and returns the persisted attachment-message.
+    /// The server creates a `messages` row of type "attachment" linked to the
+    /// attachment, so the bubble survives refresh and is broadcast to the
+    /// receiver via WebSocket. `clientMessageId` is the idempotency key; the
+    /// server echoes it back so the sender can dedup against its optimistic row.
+    func uploadChatAttachment(chatId: UUID, fileData: Data, filename: String, mimeType: String, clientMessageId: UUID) async throws -> ChatMessageAPIResponse {
+        try await uploadMultipartWithFields(
             path: "chats/\(chatId.uuidString)/attachments",
             fileData: fileData, filename: filename, mimeType: mimeType,
+            fields: ["client_message_id": clientMessageId.uuidString],
             authenticated: true
         )
     }
@@ -568,6 +580,24 @@ final class APIClient: APIClientProtocol {
 
     func markTodayActionsSeen() async throws -> MessageResponse {
         try await postEmpty(path: "today/actions/seen", authenticated: true)
+    }
+
+    // MARK: - Key Handovers
+
+    func fetchKeyHandoversToday() async throws -> KeyHandoversListAPIResponse {
+        try await get(path: "key-handovers/today", authenticated: true)
+    }
+
+    func fetchKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel {
+        try await get(path: "key-handovers/\(id.uuidString)", authenticated: true)
+    }
+
+    func ownerConfirmKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel {
+        try await postEmpty(path: "key-handovers/\(id.uuidString)/owner-confirm", authenticated: true)
+    }
+
+    func driverConfirmKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel {
+        try await postEmpty(path: "key-handovers/\(id.uuidString)/driver-confirm", authenticated: true)
     }
 
     // MARK: - Lease Request Methods

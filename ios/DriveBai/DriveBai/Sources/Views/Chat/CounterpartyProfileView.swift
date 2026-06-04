@@ -45,7 +45,7 @@ struct CounterpartyProfileView: View {
                 // Avatar + name
                 VStack(spacing: 12) {
                     if let url = ImageURLHelper.fullURL(for: profile.avatarURL) {
-                        RemoteImage(url: url)
+                        RemoteImage(url: url, maxPixelSize: 400)
                             .frame(width: 100, height: 100)
                             .clipShape(Circle())
                     } else {

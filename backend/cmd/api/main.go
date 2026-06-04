@@ -127,12 +127,14 @@ func main() {
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
 	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
-	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, stripeSvc, wsHub, notifHandler, logger)
+	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
+	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, logger)
+	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -288,6 +290,12 @@ func main() {
 			// Payments (Stripe)
 			r.Post("/lease-requests/{id}/payments/intent", leaseHandler.CreatePaymentIntent)
 			r.Post("/lease-requests/{id}/payments/sync", leaseHandler.SyncPaymentStatus)
+
+			// Key handovers (post-payment owner→driver key exchange)
+			r.Get("/key-handovers/today", keyHandoverHandler.Today)
+			r.Get("/key-handovers/{id}", keyHandoverHandler.Get)
+			r.Post("/key-handovers/{id}/owner-confirm", keyHandoverHandler.OwnerConfirm)
+			r.Post("/key-handovers/{id}/driver-confirm", keyHandoverHandler.DriverConfirm)
 
 			// Accident reports (user-facing)
 			r.Route("/accidents", func(r chi.Router) {
