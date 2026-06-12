@@ -8,9 +8,16 @@ struct LeaseRequestCardView: View {
     let onPay: () -> Void
     let onCancel: () -> Void
     let onAdjustPrice: () -> Void
+    let onConfirmPickup: () -> Void
+    /// Owner-only: invoked with one of LeaseRequest.allowedPickupExtensionMinutes.
+    let onExtendPickup: (Int) -> Void
 
     private var isOwner: Bool { currentUserId == leaseRequest.ownerId }
     private var isDriver: Bool { currentUserId == leaseRequest.driverId }
+
+    /// Shown when the owner taps "Add more time" — surfaces only the
+    /// presets that still fit within the 120-minute cap.
+    @State private var showingExtendDialog = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -122,6 +129,20 @@ struct LeaseRequestCardView: View {
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+        .confirmationDialog(
+            "Add more time?",
+            isPresented: $showingExtendDialog,
+            titleVisibility: .visible
+        ) {
+            ForEach(leaseRequest.availableExtensionPresets, id: \.self) { minutes in
+                Button("+\(minutes) minutes") {
+                    onExtendPickup(minutes)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Gives the driver more time to pick up the car before the automatic refund. Up to \(leaseRequest.pickupExtensionRemainingMinutes) minutes left to add.")
+        }
     }
 
     // MARK: - Status Badge
@@ -155,6 +176,50 @@ struct LeaseRequestCardView: View {
             return ("Payment Pending", .orange)
         case .paid: return ("Paid", .green)
         case .expired: return ("Expired", .gray)
+        case .expiredRefunded: return ("Refunded", .gray)
+        }
+    }
+
+    // MARK: - Owner extension UI
+
+    /// Subline shown under the owner's countdown. Reads either as "tap to add
+    /// more time" while extensions are still available, or as a hard stop
+    /// when the cap is hit.
+    private var ownerSubline: String {
+        if leaseRequest.canOwnerExtendPickup() {
+            if leaseRequest.pickupExtensionCount > 0 {
+                return "You've added \(leaseRequest.pickupExtensionTotalMinutes) min so far. Up to \(leaseRequest.pickupExtensionRemainingMinutes) min still available."
+            }
+            return "If the driver is on the way, give them a few more minutes before the auto-refund kicks in."
+        }
+        if leaseRequest.pickupExtensionTotalMinutes > 0 {
+            return "Pickup deadline already extended by \(leaseRequest.pickupExtensionTotalMinutes) min — no more time can be added."
+        }
+        return ""
+    }
+
+    /// Owner's "Add more time" CTA. Disabled (hidden) when the lease has
+    /// hit the cap or the deadline has already lapsed.
+    @ViewBuilder
+    private var extendButton: some View {
+        if leaseRequest.canOwnerExtendPickup() {
+            Button {
+                showingExtendDialog = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus.circle.fill")
+                    Text("Add time")
+                }
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.driveBaiPrimary)
+                .foregroundColor(.white)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        } else {
+            EmptyView()
         }
     }
 
@@ -198,16 +263,62 @@ struct LeaseRequestCardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
+        } else if isDriver && leaseRequest.isAwaitingPickupConfirmation,
+                  let deadline = leaseRequest.pickupDeadlineAt {
+            // Driver: countdown + confirm-pickup CTA.
+            VStack(spacing: 10) {
+                PickupCountdownView(
+                    deadline: deadline,
+                    headline: "Pick up the car before",
+                    subline: leaseRequest.pickupExtensionCount > 0
+                        ? "Owner added \(leaseRequest.pickupExtensionTotalMinutes) min to your deadline. Confirm pickup or you'll be auto-refunded."
+                        : "Confirm pickup or you'll be auto-refunded when the timer hits zero."
+                )
+
+                Button(action: onConfirmPickup) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "key.fill")
+                        Text("I've picked up the car")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.driveBaiPrimary)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        } else if isOwner && leaseRequest.isAwaitingPickupConfirmation,
+                  let deadline = leaseRequest.pickupDeadlineAt {
+            // Owner: same countdown + "Add more time" accessory when allowed.
+            PickupCountdownView(
+                deadline: deadline,
+                headline: "Waiting for driver pickup",
+                subline: ownerSubline,
+                accessory: { AnyView(extendButton) }
+            )
         } else if isDriver && (leaseRequest.status == .paid || leaseRequest.isPaymentSucceededAwaitingWebhook) {
-            // Payment succeeded — show confirmation
+            // Paid + pickup already confirmed (deadline cleared).
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
-                Text("Payment Complete")
+                Text(leaseRequest.pickupConfirmedAt != nil ? "Pickup Confirmed" : "Payment Complete")
             }
             .font(.subheadline.weight(.medium))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .foregroundColor(.green)
+        } else if leaseRequest.status == .expiredRefunded {
+            // Terminal: deadline missed, payment refunded, car back on market.
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.backward.circle.fill")
+                Text(isDriver
+                    ? "Pickup deadline missed — payment refunded"
+                    : "Driver missed pickup — rental cancelled")
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .foregroundColor(.secondary)
         } else if isDriver && leaseRequest.isPaymentProcessing {
             // Payment in-flight — show processing indicator
             HStack(spacing: 6) {

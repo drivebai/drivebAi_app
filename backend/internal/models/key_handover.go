@@ -56,15 +56,21 @@ const (
 )
 
 var (
-	ErrKeyHandoverNotFound   = &APIError{Code: ErrCodeKeyHandoverNotFound, Message: "Key handover not found"}
-	ErrInvalidHandoverAction = &APIError{Code: ErrCodeInvalidHandoverAction, Message: "Invalid action for the current handover status"}
-	ErrHandoverExpired       = &APIError{Code: ErrCodeHandoverExpired, Message: "The key handover confirmation window has expired"}
+	ErrKeyHandoverNotFound    = &APIError{Code: ErrCodeKeyHandoverNotFound, Message: "Key handover not found"}
+	ErrInvalidHandoverAction  = &APIError{Code: ErrCodeInvalidHandoverAction, Message: "Invalid action for the current handover status"}
+	ErrHandoverExpired        = &APIError{Code: ErrCodeHandoverExpired, Message: "The key handover confirmation window has expired"}
+	ErrHandoverNotDismissable = &APIError{Code: "HANDOVER_NOT_DISMISSABLE", Message: "This card can only be dismissed once the pickup deadline has been refunded/cancelled"}
 )
 
 // --- API response types ---
 
 // KeyHandoverResponse is the per-viewer API shape. ViewerRole tells the client
 // which confirmation CTA to render without needing to compare user IDs locally.
+//
+// Pickup deadline fields (Pickup*) are mirrored from the underlying lease so
+// the Today tab can render the pickup countdown + owner extension CTA without
+// an extra round-trip to /lease-requests/{id}. They're nil for handovers
+// whose lease has already moved past the awaiting-pickup state.
 type KeyHandoverResponse struct {
 	ID                   uuid.UUID         `json:"id"`
 	LeaseRequestID       uuid.UUID         `json:"lease_request_id"`
@@ -85,8 +91,17 @@ type KeyHandoverResponse struct {
 	DriverConfirmedAt    *RFC3339Time      `json:"driver_confirmed_at,omitempty"`
 	ConfirmationDeadline *RFC3339Time      `json:"confirmation_deadline,omitempty"`
 	StartedAt            *RFC3339Time      `json:"started_at,omitempty"`
-	CreatedAt            RFC3339Time       `json:"created_at"`
-	UpdatedAt            RFC3339Time       `json:"updated_at"`
+	// Mirrored from lease_requests so the Today tab can render the pickup
+	// countdown + extension CTA in one fetch.
+	LeaseStatus                 *LeaseRequestStatus `json:"lease_status,omitempty"`
+	PickupDeadlineAt            *RFC3339Time        `json:"pickup_deadline_at,omitempty"`
+	PickupConfirmedAt           *RFC3339Time        `json:"pickup_confirmed_at,omitempty"`
+	PickupExtensionTotalMinutes int                 `json:"pickup_extension_total_minutes"`
+	PickupExtensionCount        int                 `json:"pickup_extension_count"`
+	PickupExtensionRemainingMin int                 `json:"pickup_extension_remaining_minutes"`
+	PickupLastExtendedAt        *RFC3339Time        `json:"pickup_last_extended_at,omitempty"`
+	CreatedAt                   RFC3339Time         `json:"created_at"`
+	UpdatedAt                   RFC3339Time         `json:"updated_at"`
 }
 
 // KeyHandoversListResponse is the API response for GET /key-handovers/today.

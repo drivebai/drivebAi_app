@@ -179,6 +179,45 @@ final class OwnerTodayViewModel: ObservableObject {
         }
     }
 
+    /// Owner adds `minutes` to the pickup deadline backing this handover.
+    /// Backend guards against double-extend / cap / race-with-scanner; we just
+    /// fire-and-refetch so the timer + button-disabled state reflect truth.
+    func extendPickup(handover: KeyHandover, minutes: Int) {
+        Task {
+            do {
+                _ = try await apiClient.extendPickupDeadline(leaseRequestId: handover.leaseRequestId, minutes: minutes)
+            } catch {
+                #if DEBUG
+                print("[OwnerTodayVM] extendPickup error: \(error)")
+                #endif
+            }
+            await fetchKeyHandovers()
+        }
+    }
+
+    /// "Got it" on a terminal refunded card. Optimistically removes the
+    /// card; on backend failure we refetch so the row reappears.
+    func dismissHandover(_ handover: KeyHandover) {
+        let originalIndex = keyHandovers.firstIndex(where: { $0.id == handover.id })
+        keyHandovers.removeAll { $0.id == handover.id }
+
+        Task {
+            do {
+                _ = try await apiClient.dismissKeyHandover(id: handover.id)
+            } catch {
+                #if DEBUG
+                print("[OwnerTodayVM] dismissHandover error: \(error)")
+                #endif
+                // Restore at the original slot so card order doesn't jump.
+                if let i = originalIndex,
+                   !self.keyHandovers.contains(where: { $0.id == handover.id }) {
+                    self.keyHandovers.insert(handover, at: min(i, self.keyHandovers.count))
+                }
+                await fetchKeyHandovers()
+            }
+        }
+    }
+
     // MARK: - Countdown Timer
 
     private func startCountdownTimer() {
@@ -210,7 +249,14 @@ final class OwnerTodayViewModel: ObservableObject {
             }
             .store(in: &wsCancellables)
 
+        // Today key-handovers depend on BOTH handover state changes AND lease
+        // state changes (the card's pickup countdown + extension fields come
+        // from the lease). Merging the two publishers here closes the gap
+        // where the owner extends the deadline and the driver's Today timer
+        // would otherwise wait for the 60s tick. Combine's default merging
+        // already collapses bursts, so no extra debounce is needed.
         ws.keyHandoverUpdatedPublisher
+            .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchKeyHandovers() }
             }

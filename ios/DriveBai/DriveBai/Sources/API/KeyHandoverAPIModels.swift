@@ -22,6 +22,15 @@ struct KeyHandoverAPIModel: Codable {
     let driverConfirmedAt: Date?
     let confirmationDeadline: Date?
     let startedAt: Date?
+    // Lease-side mirror (added so the Today tab can render the pickup
+    // countdown + owner extension UI without a second fetch).
+    let leaseStatus: String?
+    let pickupDeadlineAt: Date?
+    let pickupConfirmedAt: Date?
+    let pickupExtensionTotalMinutes: Int?
+    let pickupExtensionCount: Int?
+    let pickupExtensionRemainingMinutes: Int?
+    let pickupLastExtendedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -44,6 +53,13 @@ struct KeyHandoverAPIModel: Codable {
         case driverConfirmedAt = "driver_confirmed_at"
         case confirmationDeadline = "confirmation_deadline"
         case startedAt = "started_at"
+        case leaseStatus = "lease_status"
+        case pickupDeadlineAt = "pickup_deadline_at"
+        case pickupConfirmedAt = "pickup_confirmed_at"
+        case pickupExtensionTotalMinutes = "pickup_extension_total_minutes"
+        case pickupExtensionCount = "pickup_extension_count"
+        case pickupExtensionRemainingMinutes = "pickup_extension_remaining_minutes"
+        case pickupLastExtendedAt = "pickup_last_extended_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -69,6 +85,13 @@ struct KeyHandoverAPIModel: Codable {
             driverConfirmedAt: driverConfirmedAt,
             confirmationDeadline: confirmationDeadline,
             startedAt: startedAt,
+            leaseStatus: leaseStatus.flatMap { LeaseRequestStatus(rawValue: $0) },
+            pickupDeadlineAt: pickupDeadlineAt,
+            pickupConfirmedAt: pickupConfirmedAt,
+            pickupExtensionTotalMinutes: pickupExtensionTotalMinutes ?? 0,
+            pickupExtensionCount: pickupExtensionCount ?? 0,
+            pickupExtensionRemainingMinutes: pickupExtensionRemainingMinutes ?? LeaseRequest.maxPickupExtensionMinutes,
+            pickupLastExtendedAt: pickupLastExtendedAt,
             createdAt: createdAt,
             updatedAt: updatedAt
         )
@@ -81,4 +104,11 @@ struct KeyHandoversListAPIResponse: Codable {
     enum CodingKeys: String, CodingKey {
         case keyHandovers = "key_handovers"
     }
+}
+
+/// Response body of POST /key-handovers/{id}/dismiss. Always `"dismissed"`
+/// on success; kept as a struct (not just a string) so we can extend it
+/// later without breaking the call site.
+struct DismissAPIResponse: Codable {
+    let status: String
 }

@@ -223,6 +223,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 		WHERE c.is_paused = false
 		  AND c.is_approved = true
 		  AND u.is_blocked = false
+		  AND c.reserved_by_lease_request_id IS NULL
 	`
 
 	args := []interface{}{}

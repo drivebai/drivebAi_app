@@ -2,14 +2,17 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/drivebai/backend/internal/httputil"
 	"github.com/drivebai/backend/internal/models"
@@ -30,6 +33,10 @@ type LeaseRequestHandler struct {
 	wsHub           *ws.Hub
 	notifHandler    *NotificationHandler
 	logger          *slog.Logger
+	// pickupDeadline is the grace window after payment_intent.succeeded in
+	// which the driver must confirm pickup. Past this point a background
+	// scanner will refund the payment and unreserve the car.
+	pickupDeadline time.Duration
 }
 
 func NewLeaseRequestHandler(
@@ -43,8 +50,12 @@ func NewLeaseRequestHandler(
 	stripe *stripeService.Service,
 	wsHub *ws.Hub,
 	notifHandler *NotificationHandler,
+	pickupDeadline time.Duration,
 	logger *slog.Logger,
 ) *LeaseRequestHandler {
+	if pickupDeadline <= 0 {
+		pickupDeadline = 2 * time.Hour
+	}
 	return &LeaseRequestHandler{
 		leaseRepo:       leaseRepo,
 		carRepo:         carRepo,
@@ -56,9 +67,14 @@ func NewLeaseRequestHandler(
 		stripe:          stripe,
 		wsHub:           wsHub,
 		notifHandler:    notifHandler,
+		pickupDeadline:  pickupDeadline,
 		logger:          logger,
 	}
 }
+
+// PickupDeadline exposes the configured grace window. Used by the expiry
+// worker (started from main.go) to size its ticker and for tests.
+func (h *LeaseRequestHandler) PickupDeadline() time.Duration { return h.pickupDeadline }
 
 // CreateLeaseRequest handles POST /api/v1/listings/{listingId}/lease-requests
 func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.Request) {
@@ -335,7 +351,7 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 			PaymentIntentClientSecret: *existingPayment.ClientSecret,
 			PaymentIntentID:           *existingPayment.PaymentIntentID,
 			PublishableKey:            h.stripe.PublishableKey(),
-			CustomerID:               customerID,
+			CustomerID:                customerID,
 			EphemeralKeySecret:        ephemeralKeySecret,
 			Amount:                    existingPayment.Amount,
 			Currency:                  existingPayment.Currency,
@@ -424,7 +440,7 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		PaymentIntentClientSecret: pi.ClientSecret,
 		PaymentIntentID:           pi.ID,
 		PublishableKey:            h.stripe.PublishableKey(),
-		CustomerID:               customer.ID,
+		CustomerID:                customer.ID,
 		EphemeralKeySecret:        ephemeralKey.Secret,
 		Amount:                    totalCents,
 		Currency:                  lr.Currency,
@@ -531,6 +547,10 @@ func (h *LeaseRequestHandler) SyncPaymentStatus(w http.ResponseWriter, r *http.R
 
 			// Create the key-handover task (idempotent with the webhook path).
 			h.ensureKeyHandover(r, lr)
+
+			// Arm the pickup deadline (idempotent — guarded by status='paid'
+			// AND pickup_deadline_at IS NULL inside the repo).
+			h.armPickupDeadline(r.Context(), lr)
 		}
 	}
 
@@ -676,6 +696,10 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 
 	// Create the key-handover task so both parties can coordinate the meetup.
 	h.ensureKeyHandover(r, lr)
+
+	// Arm the pickup deadline. Webhook retries are safe — the repo guard
+	// (status='paid' AND pickup_deadline_at IS NULL) makes this idempotent.
+	h.armPickupDeadline(r.Context(), lr)
 }
 
 // ensureKeyHandover creates the key-handover task for a freshly paid lease
@@ -764,6 +788,165 @@ func (h *LeaseRequestHandler) handlePaymentCanceled(r *http.Request, intentID st
 	h.logger.Info("payment canceled", "lease_request_id", payment.LeaseRequestID, "payment_id", payment.ID, "intent_id", intentID)
 }
 
+// --- Pickup expiry scanner ---
+
+// StartPickupExpiryScanner runs a background loop that polls for paid lease
+// requests whose pickup deadline has elapsed without confirmation. For each
+// match it atomically claims the row (UPDATE...RETURNING guarded by status +
+// pickup_confirmed_at IS NULL), issues a Stripe refund with a stable
+// idempotency key, persists the outcome, and broadcasts WS events so both
+// parties' UIs flip immediately.
+//
+// Multi-instance safe: ClaimForExpiry is the serialization point — losers of
+// the race see pgx.ErrNoRows and skip the row.
+//
+// Crash safe: the claim moves the row to status=expired_refunded with
+// refund_status='pending' BEFORE the Stripe call. On restart the next tick
+// will retry from FinalizeRefund (Stripe dedupes on the idempotency key, so
+// no double refund). The car is unreserved by the claim itself, so listings
+// return to discovery even if the Stripe call hangs.
+func (h *LeaseRequestHandler) StartPickupExpiryScanner(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	h.logger.Info("pickup expiry scanner started", "interval", interval.String(), "deadline", h.pickupDeadline.String())
+
+	for {
+		select {
+		case <-ctx.Done():
+			h.logger.Info("pickup expiry scanner stopped")
+			return
+		case <-ticker.C:
+			h.runExpirySweep(ctx)
+		}
+	}
+}
+
+func (h *LeaseRequestHandler) runExpirySweep(ctx context.Context) {
+	now := time.Now().UTC()
+	candidates, err := h.leaseRepo.ListExpiredAwaitingPickup(ctx, now, 50)
+	if err != nil {
+		h.logger.Error("expiry sweep: list", "error", err)
+		return
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	h.logger.Info("expiry sweep: candidates", "count", len(candidates))
+
+	for _, c := range candidates {
+		h.processExpiredLease(ctx, c.ID)
+	}
+}
+
+func (h *LeaseRequestHandler) processExpiredLease(ctx context.Context, leaseID uuid.UUID) {
+	// Step 1: atomically claim the row. Losers (concurrent worker / already-
+	// confirmed driver / status moved on) get ErrNoRows and we skip.
+	lr, err := h.leaseRepo.ClaimForExpiry(ctx, leaseID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return
+		}
+		h.logger.Error("expiry: claim", "error", err, "lease_request_id", leaseID)
+		return
+	}
+
+	h.logger.Info("expiry: claimed", "lease_request_id", lr.ID)
+
+	// Step 2: broadcast the cancel + notify so the UI flips immediately,
+	// regardless of the Stripe call latency.
+	h.broadcastLeaseUpdate(ctx, lr)
+	h.notifyExpiry(ctx, lr)
+
+	// Step 3: issue the refund. We need the PaymentIntent ID from the
+	// payment row. If there's no PI yet (shouldn't happen for status=paid),
+	// mark refund_status=failed and bail so an operator can intervene.
+	payment, err := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID)
+	if err != nil || payment == nil || payment.PaymentIntentID == nil {
+		h.logger.Error("expiry: payment lookup failed", "error", err, "lease_request_id", lr.ID)
+		if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, "", models.RefundStatusFailed); ferr != nil {
+			h.logger.Error("expiry: finalize refund (no PI)", "error", ferr, "lease_request_id", lr.ID)
+		}
+		return
+	}
+
+	idemKey := fmt.Sprintf("refund-%s", lr.ID.String())
+	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer")
+	if err != nil {
+		h.logger.Error("expiry: stripe refund", "error", err, "lease_request_id", lr.ID, "intent_id", *payment.PaymentIntentID)
+		if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, "", models.RefundStatusFailed); ferr != nil {
+			h.logger.Error("expiry: finalize refund (stripe failed)", "error", ferr, "lease_request_id", lr.ID)
+		}
+		return
+	}
+
+	// Step 4: persist the Stripe outcome. Stripe statuses we care about:
+	// "succeeded" → done. "pending" → not final yet, but we record the ID
+	// so we don't re-issue (idem key would already block dupes anyway).
+	// Anything else (failed/canceled/requires_action) → leave as failed for
+	// an operator to inspect.
+	status := models.RefundStatusFailed
+	switch refund.Status {
+	case "succeeded", "pending":
+		status = models.RefundStatusSucceeded
+	}
+	if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, refund.ID, status); ferr != nil {
+		h.logger.Error("expiry: finalize refund", "error", ferr, "lease_request_id", lr.ID, "refund_id", refund.ID)
+		return
+	}
+
+	h.logger.Info("expiry: refund completed",
+		"lease_request_id", lr.ID,
+		"refund_id", refund.ID,
+		"stripe_status", refund.Status,
+		"persisted_status", status)
+
+	// Re-broadcast with the now-populated refund fields.
+	if updated, err := h.leaseRepo.GetByID(ctx, lr.ID); err == nil && updated != nil {
+		h.broadcastLeaseUpdate(ctx, updated)
+	}
+}
+
+// broadcastLeaseUpdate sends a lease_request_updated WS event to both
+// participants. Uses a background request-less context — no http.Request is
+// available from inside the worker.
+func (h *LeaseRequestHandler) broadcastLeaseUpdate(ctx context.Context, lr *models.LeaseRequest) {
+	resp := h.buildLeaseRequestResponseCtx(ctx, lr, nil)
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{lr.DriverID, lr.OwnerID},
+	})
+}
+
+// notifyExpiry sends in-app + push notifications to both parties announcing
+// that the pickup deadline elapsed and the rental was refunded.
+func (h *LeaseRequestHandler) notifyExpiry(ctx context.Context, lr *models.LeaseRequest) {
+	carTitle := "the car"
+	if car, err := h.carRepo.GetByID(ctx, lr.ListingID); err == nil {
+		carTitle = car.Title
+	}
+	driverName := "The driver"
+	if d, err := h.userRepo.GetByID(ctx, lr.DriverID); err == nil {
+		driverName = d.FullName()
+	}
+
+	chatID := lr.ChatID
+	lrID := lr.ID
+
+	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+		"Pickup deadline missed",
+		fmt.Sprintf("You didn't confirm pickup of %s in time. Your payment has been refunded to your card.", carTitle),
+		&chatID, &lrID)
+	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
+		"Pickup deadline missed",
+		fmt.Sprintf("%s didn't pick up %s in time. The rental was cancelled, the payment refunded, and your listing is back on the market.", driverName, carTitle),
+		&chatID, &lrID)
+}
+
 // UpdateOfferedPrice handles PATCH /api/v1/lease-requests/{id}/price
 // Allows the owner to set a custom weekly price before accepting the request.
 func (h *LeaseRequestHandler) UpdateOfferedPrice(w http.ResponseWriter, r *http.Request) {
@@ -817,37 +1000,255 @@ func (h *LeaseRequestHandler) UpdateOfferedPrice(w http.ResponseWriter, r *http.
 	})
 }
 
+// --- Pickup deadline / confirmation ---
+
+// armPickupDeadline persists the deadline computed from h.pickupDeadline. The
+// repo call is guarded (status='paid' AND pickup_deadline_at IS NULL) so it's
+// safe to invoke from both the webhook and the polling path even when both
+// fire for the same lease — only the first one wins, subsequent calls are
+// silent no-ops. Failure here is logged but never propagated: a missing
+// deadline only delays cleanup until the next ticker run picks the row up.
+func (h *LeaseRequestHandler) armPickupDeadline(ctx context.Context, lr *models.LeaseRequest) {
+	if lr == nil || h.pickupDeadline <= 0 {
+		return
+	}
+	if lr.Status != models.LeaseStatusPaid {
+		return
+	}
+	if lr.PickupDeadlineAt != nil {
+		return
+	}
+	deadline := time.Now().UTC().Add(h.pickupDeadline)
+	if err := h.leaseRepo.SetPickupDeadline(ctx, lr.ID, deadline); err != nil {
+		h.logger.Error("arm pickup deadline", "error", err, "lease_request_id", lr.ID)
+		return
+	}
+	lr.PickupDeadlineAt = &deadline
+}
+
+// ConfirmPickup handles POST /api/v1/lease-requests/{id}/pickup-confirm.
+// Driver-only. Marks the rental as picked up so the expiry scanner stops
+// considering it. Idempotent: calling twice returns the same confirmation
+// timestamp. Returns 409 with PICKUP_DEADLINE_PASSED if the worker already
+// claimed this lease for refund.
+func (h *LeaseRequestHandler) ConfirmPickup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	lr, err := h.leaseRepo.ConfirmPickup(r.Context(), leaseID, userID)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			status := http.StatusBadRequest
+			switch apiErr.Code {
+			case models.ErrCodeLeaseRequestNotFound:
+				status = http.StatusNotFound
+			case "FORBIDDEN":
+				status = http.StatusForbidden
+			case models.ErrCodeInvalidLeaseAction:
+				status = http.StatusConflict
+			case "PICKUP_DEADLINE_PASSED":
+				status = http.StatusConflict
+			}
+			httputil.WriteError(w, status, apiErr)
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, models.ErrLeaseRequestNotFound)
+			return
+		}
+		h.logger.Error("confirm pickup", "error", err, "lease_request_id", leaseID, "user_id", userID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resp := h.buildLeaseRequestResponse(r, lr, nil)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{lr.DriverID, lr.OwnerID},
+	})
+
+	chatID := lr.ChatID
+	lrID := lr.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "the car"
+	}
+	driverName := resp.DriverName
+	if driverName == "" {
+		driverName = "The driver"
+	}
+	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
+		"Pickup confirmed",
+		fmt.Sprintf("%s confirmed pickup of %s — the rental is now active.", driverName, carTitle),
+		&chatID, &lrID)
+	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypeLeaseRequest,
+		"Pickup confirmed",
+		fmt.Sprintf("You confirmed pickup of %s. Have a great rental!", carTitle),
+		&chatID, &lrID)
+}
+
+// ExtendPickupDeadline handles POST /api/v1/lease-requests/{id}/pickup-deadline/extend.
+// Owner-only. Adds 15/30/60 minutes to pickup_deadline_at via a single
+// guarded UPDATE — the same predicate the expiry scanner uses to claim the
+// row, so the two never both succeed for the same lease. Total minutes
+// added across all extensions is capped at PickupMaxExtensionMinutes
+// (enforced inline by the UPDATE plus a DB CHECK in migration 000025).
+func (h *LeaseRequestHandler) ExtendPickupDeadline(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	var body models.ExtendPickupDeadlineBody
+	if err := httputil.DecodeJSON(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+	if !models.IsAllowedPickupExtensionMinutes(body.Minutes) {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrInvalidExtensionMin)
+		return
+	}
+
+	lr, err := h.leaseRepo.ExtendPickupDeadline(r.Context(), leaseID, userID, body.Minutes)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			status := http.StatusBadRequest
+			switch apiErr.Code {
+			case models.ErrCodeLeaseRequestNotFound:
+				status = http.StatusNotFound
+			case models.ErrCodeInvalidLeaseAction:
+				// "Only the owner can extend" → 403; other invalid actions → 409.
+				if apiErr.Message == "Only the car owner can extend the pickup deadline" {
+					status = http.StatusForbidden
+				} else {
+					status = http.StatusConflict
+				}
+			case "PICKUP_DEADLINE_PASSED", "PICKUP_EXTENSION_CAP_REACHED":
+				status = http.StatusConflict
+			case "INVALID_EXTENSION_MINUTES":
+				status = http.StatusBadRequest
+			}
+			httputil.WriteError(w, status, apiErr)
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, models.ErrLeaseRequestNotFound)
+			return
+		}
+		h.logger.Error("extend pickup deadline", "error", err, "lease_request_id", leaseID, "user_id", userID, "minutes", body.Minutes)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resp := h.buildLeaseRequestResponse(r, lr, nil)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{lr.DriverID, lr.OwnerID},
+	})
+
+	chatID := lr.ChatID
+	lrID := lr.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "the car"
+	}
+	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypeLeaseRequest,
+		"Pickup deadline extended",
+		fmt.Sprintf("The owner added %d minutes to your pickup deadline for %s.", body.Minutes, carTitle),
+		&chatID, &lrID)
+	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
+		"Pickup deadline extended",
+		fmt.Sprintf("You added %d minutes to the pickup deadline for %s.", body.Minutes, carTitle),
+		&chatID, &lrID)
+
+	h.logger.Info("pickup deadline extended",
+		"lease_request_id", lr.ID,
+		"by_minutes", body.Minutes,
+		"total_extended_minutes", lr.PickupExtensionTotalMinutes,
+		"new_deadline", lr.PickupDeadlineAt,
+	)
+}
+
 // --- Helpers ---
 
 func (h *LeaseRequestHandler) buildLeaseRequestResponse(r *http.Request, lr *models.LeaseRequest, payment *models.Payment) models.LeaseRequestResponse {
+	return h.buildLeaseRequestResponseCtx(r.Context(), lr, payment)
+}
+
+// buildLeaseRequestResponseCtx is the request-less variant used by background
+// workers (expiry scanner) that have no http.Request to pass through.
+func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, lr *models.LeaseRequest, payment *models.Payment) models.LeaseRequestResponse {
 	resp := models.LeaseRequestResponse{
-		ID:                 lr.ID,
-		ChatID:             lr.ChatID,
-		ListingID:          lr.ListingID,
-		OwnerID:            lr.OwnerID,
-		DriverID:           lr.DriverID,
-		Status:             lr.Status,
-		WeeklyPrice:        lr.WeeklyPrice,
-		OfferedWeeklyPrice: lr.OfferedWeeklyPrice,
-		TotalAmount:        float64(lr.TotalAmountCents()) / 100.0,
-		Currency:           lr.Currency,
-		Weeks:              lr.Weeks,
-		Message:            lr.Message,
-		ExpiresAt:          models.RFC3339Time(lr.ExpiresAt),
-		CreatedAt:          models.RFC3339Time(lr.CreatedAt),
-		UpdatedAt:          models.RFC3339Time(lr.UpdatedAt),
+		ID:                          lr.ID,
+		ChatID:                      lr.ChatID,
+		ListingID:                   lr.ListingID,
+		OwnerID:                     lr.OwnerID,
+		DriverID:                    lr.DriverID,
+		Status:                      lr.Status,
+		WeeklyPrice:                 lr.WeeklyPrice,
+		OfferedWeeklyPrice:          lr.OfferedWeeklyPrice,
+		TotalAmount:                 float64(lr.TotalAmountCents()) / 100.0,
+		Currency:                    lr.Currency,
+		Weeks:                       lr.Weeks,
+		Message:                     lr.Message,
+		ExpiresAt:                   models.RFC3339Time(lr.ExpiresAt),
+		CreatedAt:                   models.RFC3339Time(lr.CreatedAt),
+		UpdatedAt:                   models.RFC3339Time(lr.UpdatedAt),
+		RefundID:                    lr.RefundID,
+		RefundStatus:                lr.RefundStatus,
+		PickupExtensionTotalMinutes: lr.PickupExtensionTotalMinutes,
+		PickupExtensionCount:        lr.PickupExtensionCount,
+		PickupExtensionRemainingMin: lr.RemainingExtensionMinutes(),
+	}
+	if lr.PickupDeadlineAt != nil {
+		t := models.RFC3339Time(*lr.PickupDeadlineAt)
+		resp.PickupDeadlineAt = &t
+	}
+	if lr.PickupConfirmedAt != nil {
+		t := models.RFC3339Time(*lr.PickupConfirmedAt)
+		resp.PickupConfirmedAt = &t
+	}
+	if lr.RefundedAt != nil {
+		t := models.RFC3339Time(*lr.RefundedAt)
+		resp.RefundedAt = &t
+	}
+	if lr.PickupLastExtendedAt != nil {
+		t := models.RFC3339Time(*lr.PickupLastExtendedAt)
+		resp.PickupLastExtendedAt = &t
 	}
 
 	// Look up names
-	if driver, err := h.userRepo.GetByID(r.Context(), lr.DriverID); err == nil {
+	if driver, err := h.userRepo.GetByID(ctx, lr.DriverID); err == nil {
 		resp.DriverName = driver.FullName()
 	}
-	if owner, err := h.userRepo.GetByID(r.Context(), lr.OwnerID); err == nil {
+	if owner, err := h.userRepo.GetByID(ctx, lr.OwnerID); err == nil {
 		resp.OwnerName = owner.FullName()
 	}
 
 	// Car title
-	if car, err := h.carRepo.GetByID(r.Context(), lr.ListingID); err == nil {
+	if car, err := h.carRepo.GetByID(ctx, lr.ListingID); err == nil {
 		resp.CarTitle = car.Title
 	}
 
@@ -863,7 +1264,7 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponse(r *http.Request, lr *mod
 		}
 	} else {
 		// Try to load payment
-		if p, err := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), lr.ID); err == nil && p != nil {
+		if p, err := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID); err == nil && p != nil {
 			resp.Payment = &models.PaymentSummary{
 				ID:                p.ID,
 				PaymentIntentID:   p.PaymentIntentID,

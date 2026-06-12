@@ -87,6 +87,7 @@
 		E000000100000000000000F4 /* LeaseRequestAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F0 /* LeaseRequestAPIModels.swift */; };
 		E000000100000000000000F5 /* LeaseRequestModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F1 /* LeaseRequestModels.swift */; };
 		E000000100000000000000F6 /* LeaseRequestCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F2 /* LeaseRequestCardView.swift */; };
+		E00000010000000000000401 /* PickupCountdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000400 /* PickupCountdownView.swift */; };
 		E000000100000000000000F7 /* PaymentSheetPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F3 /* PaymentSheetPresenter.swift */; };
 		E000000100000000000000FA /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F8 /* LocationManager.swift */; };
 		E000000100000000000000FB /* CarPickupLocationPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000F9 /* CarPickupLocationPickerView.swift */; };
@@ -190,6 +191,7 @@
 		E000000100000000000000F0 /* LeaseRequestAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeaseRequestAPIModels.swift; sourceTree = "<group>"; };
 		E000000100000000000000F1 /* LeaseRequestModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeaseRequestModels.swift; sourceTree = "<group>"; };
 		E000000100000000000000F2 /* LeaseRequestCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeaseRequestCardView.swift; sourceTree = "<group>"; };
+		E00000010000000000000400 /* PickupCountdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickupCountdownView.swift; sourceTree = "<group>"; };
 		E000000100000000000000F3 /* PaymentSheetPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaymentSheetPresenter.swift; sourceTree = "<group>"; };
 		E000000100000000000000F8 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		E000000100000000000000F9 /* CarPickupLocationPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPickupLocationPickerView.swift; sourceTree = "<group>"; };
@@ -538,6 +540,7 @@
 				E000000100000000000000F3 /* PaymentSheetPresenter.swift */,
 				E00000010000000000000320 /* DriverDocumentsSection.swift */,
 				E00000010000000000000330 /* AdjustPriceSheet.swift */,
+				E00000010000000000000400 /* PickupCountdownView.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -717,6 +720,7 @@
 				E000000100000000000000F4 /* LeaseRequestAPIModels.swift in Sources */,
 				E000000100000000000000F5 /* LeaseRequestModels.swift in Sources */,
 				E000000100000000000000F6 /* LeaseRequestCardView.swift in Sources */,
+				E00000010000000000000401 /* PickupCountdownView.swift in Sources */,
 				E000000100000000000000F7 /* PaymentSheetPresenter.swift in Sources */,
 				E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */,
 				E00000010000000000000331 /* AdjustPriceSheet.swift in Sources */,

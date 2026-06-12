@@ -180,6 +180,28 @@ final class DriverTodayViewModel: ObservableObject {
         }
     }
 
+    /// "Got it" on a terminal refunded card. Optimistically removes the
+    /// card; on backend failure we refetch so the row reappears.
+    func dismissHandover(_ handover: KeyHandover) {
+        let originalIndex = keyHandovers.firstIndex(where: { $0.id == handover.id })
+        keyHandovers.removeAll { $0.id == handover.id }
+
+        Task {
+            do {
+                _ = try await apiClient.dismissKeyHandover(id: handover.id)
+            } catch {
+                #if DEBUG
+                print("[DriverTodayVM] dismissHandover error: \(error)")
+                #endif
+                if let i = originalIndex,
+                   !self.keyHandovers.contains(where: { $0.id == handover.id }) {
+                    self.keyHandovers.insert(handover, at: min(i, self.keyHandovers.count))
+                }
+                await fetchKeyHandovers()
+            }
+        }
+    }
+
     // MARK: - Countdown Timer
 
     private func startCountdownTimer() {
@@ -211,7 +233,12 @@ final class DriverTodayViewModel: ObservableObject {
             }
             .store(in: &wsCancellables)
 
+        // Driver Today depends on BOTH handover state changes AND lease state
+        // changes (the card's pickup countdown + extension fields come from
+        // the lease). Without this merge an owner-side extend would not be
+        // visible to the driver until the next 60s tick.
         ws.keyHandoverUpdatedPublisher
+            .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchKeyHandovers() }
             }

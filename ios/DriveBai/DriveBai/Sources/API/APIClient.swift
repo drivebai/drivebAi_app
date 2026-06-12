@@ -204,10 +204,18 @@ protocol APIClientProtocol {
     func fetchKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel
     func ownerConfirmKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel
     func driverConfirmKeyHandover(id: UUID) async throws -> KeyHandoverAPIModel
+    /// Per-user "Got it" on a terminal pickup-refunded card.
+    func dismissKeyHandover(id: UUID) async throws -> DismissAPIResponse
 
     // Payments (Stripe)
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
+
+    // Pickup confirmation (driver presses "I picked up the car" within the deadline)
+    func confirmPickup(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
+
+    // Owner extends pickup deadline by 15/30/60 min (capped at 120 total).
+    func extendPickupDeadline(leaseRequestId: UUID, minutes: Int) async throws -> LeaseRequestAPIResponse
 
     // Notifications
     func fetchNotifications() async throws -> NotificationsListAPIResponse
@@ -600,6 +608,10 @@ final class APIClient: APIClientProtocol {
         try await postEmpty(path: "key-handovers/\(id.uuidString)/driver-confirm", authenticated: true)
     }
 
+    func dismissKeyHandover(id: UUID) async throws -> DismissAPIResponse {
+        try await postEmpty(path: "key-handovers/\(id.uuidString)/dismiss", authenticated: true)
+    }
+
     // MARK: - Lease Request Methods
 
     func createLeaseRequest(listingId: UUID, request: CreateLeaseRequestAPIRequest) async throws -> CreateLeaseRequestAPIResponse {
@@ -637,6 +649,15 @@ final class APIClient: APIClientProtocol {
 
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse {
         try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/payments/sync", authenticated: true)
+    }
+
+    func confirmPickup(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse {
+        try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/pickup-confirm", authenticated: true)
+    }
+
+    func extendPickupDeadline(leaseRequestId: UUID, minutes: Int) async throws -> LeaseRequestAPIResponse {
+        let body = ExtendPickupDeadlineAPIRequest(minutes: minutes)
+        return try await post(path: "lease-requests/\(leaseRequestId.uuidString)/pickup-deadline/extend", body: body, authenticated: true)
     }
 
     // MARK: - Notifications

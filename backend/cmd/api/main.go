@@ -128,7 +128,8 @@ func main() {
 	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
-	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, logger)
+	pickupDeadline := time.Duration(cfg.PickupDeadlineMinutes) * time.Minute
+	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, pickupDeadline, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
@@ -286,6 +287,8 @@ func main() {
 			r.Post("/lease-requests/{id}/decline", leaseHandler.DeclineLeaseRequest)
 			r.Post("/lease-requests/{id}/cancel", leaseHandler.CancelLeaseRequest)
 			r.Patch("/lease-requests/{id}/price", leaseHandler.UpdateOfferedPrice)
+			r.Post("/lease-requests/{id}/pickup-confirm", leaseHandler.ConfirmPickup)
+			r.Post("/lease-requests/{id}/pickup-deadline/extend", leaseHandler.ExtendPickupDeadline)
 
 			// Payments (Stripe)
 			r.Post("/lease-requests/{id}/payments/intent", leaseHandler.CreatePaymentIntent)
@@ -296,6 +299,7 @@ func main() {
 			r.Get("/key-handovers/{id}", keyHandoverHandler.Get)
 			r.Post("/key-handovers/{id}/owner-confirm", keyHandoverHandler.OwnerConfirm)
 			r.Post("/key-handovers/{id}/driver-confirm", keyHandoverHandler.DriverConfirm)
+			r.Post("/key-handovers/{id}/dismiss", keyHandoverHandler.Dismiss)
 
 			// Accident reports (user-facing)
 			r.Route("/accidents", func(r chi.Router) {
@@ -423,6 +427,14 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// Background worker: pickup-deadline expiry scanner. Cancelled on shutdown
+	// via workerCtx so in-flight Stripe refunds get to finish (or fail) before
+	// the process exits — and resume on the next boot since state is in pgsql.
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+	scanInterval := time.Duration(cfg.PickupExpiryScanIntervalSeconds) * time.Second
+	go leaseHandler.StartPickupExpiryScanner(workerCtx, scanInterval)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)

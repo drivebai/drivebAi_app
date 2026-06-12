@@ -10,6 +10,9 @@ enum LeaseRequestStatus: String, Codable {
     case paymentPending = "payment_pending"
     case paid
     case expired
+    /// Driver failed to confirm pickup within PICKUP_DEADLINE_MINUTES; payment
+    /// was refunded and the car returned to discovery. Terminal.
+    case expiredRefunded = "expired_refunded"
 
     var displayText: String {
         switch self {
@@ -20,12 +23,13 @@ enum LeaseRequestStatus: String, Codable {
         case .paymentPending: return "Payment Pending"
         case .paid: return "Paid"
         case .expired: return "Expired"
+        case .expiredRefunded: return "Refunded"
         }
     }
 
     var isTerminal: Bool {
         switch self {
-        case .declined, .cancelled, .paid, .expired: return true
+        case .declined, .cancelled, .paid, .expired, .expiredRefunded: return true
         case .requested, .accepted, .paymentPending: return false
         }
     }
@@ -82,8 +86,31 @@ struct LeaseRequest: Identifiable, Equatable {
     let message: String?
     let carTitle: String
     let payment: PaymentSummary?
+    /// Pickup deadline lifecycle (backend migration 000024). Only present
+    /// once `status == .paid`; cleared by `confirmPickup`/refund flows.
+    let pickupDeadlineAt: Date?
+    let pickupConfirmedAt: Date?
+    let refundId: String?
+    let refundedAt: Date?
+    let refundStatus: String?
+    /// Pickup extension (backend migration 000025). Total minutes the owner
+    /// has added across all extensions, plus remaining headroom against the
+    /// `maxPickupExtensionMinutes` cap. The remaining value is computed
+    /// server-side so the client doesn't need to know the cap to disable
+    /// preset buttons that would exceed it.
+    let pickupExtensionTotalMinutes: Int
+    let pickupExtensionCount: Int
+    let pickupExtensionRemainingMinutes: Int
+    let pickupLastExtendedAt: Date?
     let createdAt: Date
     let updatedAt: Date
+
+    /// Hard cap kept in sync with the Go layer's `PickupMaxExtensionMinutes`.
+    /// Used as the fallback default when decoding older API payloads.
+    static let maxPickupExtensionMinutes: Int = 120
+
+    /// Preset increments matching the backend's `AllowedPickupExtensionMinutes`.
+    static let allowedPickupExtensionMinutes: [Int] = [15, 30, 60]
 
     /// The price actually in effect: owner's offer when set, otherwise the base listing price.
     var effectiveWeeklyPrice: Double { offeredWeeklyPrice ?? weeklyPrice }
@@ -131,5 +158,32 @@ struct LeaseRequest: Identifiable, Equatable {
     /// Payment succeeded on Stripe but webhook hasn't flipped lease to paid yet
     var isPaymentSucceededAwaitingWebhook: Bool {
         status == .paymentPending && payment?.status == .succeeded
+    }
+
+    /// True when the lease is paid and the driver still needs to confirm
+    /// pickup before the deadline elapses.
+    var isAwaitingPickupConfirmation: Bool {
+        status == .paid && pickupConfirmedAt == nil && pickupDeadlineAt != nil
+    }
+
+    /// Time remaining (positive) until the pickup deadline. nil if not paid
+    /// or no deadline is set.
+    func pickupTimeRemaining(now: Date = Date()) -> TimeInterval? {
+        guard let deadline = pickupDeadlineAt, isAwaitingPickupConfirmation else { return nil }
+        return max(0, deadline.timeIntervalSince(now))
+    }
+
+    /// True when the owner is still allowed to add time. Mirrors the server-side
+    /// guard so we can disable the "Add more time" button preemptively.
+    func canOwnerExtendPickup(now: Date = Date()) -> Bool {
+        guard isAwaitingPickupConfirmation,
+              let remaining = pickupTimeRemaining(now: now),
+              remaining > 0 else { return false }
+        return pickupExtensionRemainingMinutes >= LeaseRequest.allowedPickupExtensionMinutes.min() ?? 0
+    }
+
+    /// Presets the UI should surface — only those that still fit in the cap.
+    var availableExtensionPresets: [Int] {
+        LeaseRequest.allowedPickupExtensionMinutes.filter { $0 <= pickupExtensionRemainingMinutes }
     }
 }

@@ -271,6 +271,12 @@ struct ChatView: View {
                                 },
                                 onAdjustPrice: {
                                     adjustPriceLeaseRequest = leaseReq
+                                },
+                                onConfirmPickup: {
+                                    Task { await viewModel.confirmPickup(id: leaseReq.id) }
+                                },
+                                onExtendPickup: { minutes in
+                                    Task { await viewModel.extendPickupDeadline(id: leaseReq.id, minutes: minutes) }
                                 }
                             )
                         }

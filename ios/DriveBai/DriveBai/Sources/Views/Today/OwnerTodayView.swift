@@ -187,7 +187,11 @@ struct OwnerTodayView: View {
                             currentTime: viewModel.currentTime,
                             isSubmitting: viewModel.submittingHandoverId == handover.id,
                             onAct: { viewModel.confirmHandover(handover) },
-                            onOpen: { selectedHandover = handover }
+                            onOpen: { selectedHandover = handover },
+                            onExtendPickup: { minutes in
+                                viewModel.extendPickup(handover: handover, minutes: minutes)
+                            },
+                            onDismiss: { viewModel.dismissHandover(handover) }
                         )
                     }
                 }

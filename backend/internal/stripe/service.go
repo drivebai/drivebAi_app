@@ -192,6 +192,65 @@ func (s *Service) RetrievePaymentIntent(id string) (*PaymentIntent, error) {
 	return &pi, nil
 }
 
+// --- Refunds ---
+
+// Refund represents a Stripe Refund object (subset of fields we care about).
+type Refund struct {
+	ID              string `json:"id"`
+	PaymentIntentID string `json:"payment_intent"`
+	Amount          int64  `json:"amount"`
+	Currency        string `json:"currency"`
+	// Status: "pending" | "succeeded" | "failed" | "canceled" | "requires_action".
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// CreateRefund issues a full refund against a PaymentIntent. The
+// idempotencyKey must be stable for the same logical refund (we use
+// "refund-<leaseRequestID>") so that worker retries after a crash, network
+// blip, or duplicate webhook do not stack multiple refunds — Stripe returns
+// the same Refund on subsequent calls with the same key.
+//
+// Pass `reason` as one of: "requested_by_customer", "duplicate",
+// "fraudulent", or empty to omit.
+func (s *Service) CreateRefund(paymentIntentID, idempotencyKey, reason string) (*Refund, error) {
+	if paymentIntentID == "" {
+		return nil, fmt.Errorf("stripe refund: payment intent id required")
+	}
+	params := url.Values{}
+	params.Set("payment_intent", paymentIntentID)
+	if reason != "" {
+		params.Set("reason", reason)
+	}
+
+	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/refunds", strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create refund: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("stripe refund error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var ref Refund
+	if err := json.Unmarshal(body, &ref); err != nil {
+		return nil, fmt.Errorf("decode refund: %w", err)
+	}
+	return &ref, nil
+}
+
 // --- Webhook signature verification ---
 
 // VerifyWebhookSignature verifies a Stripe webhook signature using the official stripe-go library.

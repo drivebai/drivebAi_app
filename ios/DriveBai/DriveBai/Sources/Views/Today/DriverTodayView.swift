@@ -147,7 +147,8 @@ struct DriverTodayView: View {
                             currentTime: viewModel.currentTime,
                             isSubmitting: viewModel.submittingHandoverId == handover.id,
                             onAct: { viewModel.confirmHandover(handover) },
-                            onOpen: { selectedHandover = handover }
+                            onOpen: { selectedHandover = handover },
+                            onDismiss: { viewModel.dismissHandover(handover) }
                         )
                     }
                 }

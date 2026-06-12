@@ -42,16 +42,24 @@ type Config struct {
 	// Listing price constraints
 	MinWeeklyRentPrice float64 // minimum allowed weekly rent price; default 50
 
+	// PickupDeadlineMinutes is the grace window after payment_intent.succeeded
+	// in which the driver must press "Confirm pickup". Past this, the background
+	// scanner refunds the payment and returns the car to discovery. Default 120.
+	PickupDeadlineMinutes int
+	// PickupExpiryScanIntervalSeconds controls how often the background worker
+	// polls for expired pickups. Default 60s. Tunable for tests/demo.
+	PickupExpiryScanIntervalSeconds int
+
 	// Test/staging bypass: auto-approve newly created cars so they appear in Discover immediately.
 	// Set AUTO_APPROVE_CARS=true in dev/staging; must be false (default) in production.
 	AutoApproveCars bool
 
 	// APNs push notification (all required; if any empty, push is disabled)
-	AppleTeamID     string
-	APNSKeyID       string
-	APNSAuthKeyP8   string // base64-encoded .p8 key file contents
-	IOSBundleID     string
-	APNSSandbox     bool   // true for dev/TestFlight builds
+	AppleTeamID   string
+	APNSKeyID     string
+	APNSAuthKeyP8 string // base64-encoded .p8 key file contents
+	IOSBundleID   string
+	APNSSandbox   bool // true for dev/TestFlight builds
 }
 
 func Load() (*Config, error) {
@@ -87,6 +95,9 @@ func Load() (*Config, error) {
 
 		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
 		AutoApproveCars:    getEnv("AUTO_APPROVE_CARS", "false") == "true",
+
+		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
+		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),
 
 		AppleTeamID:   getEnv("APPLE_TEAM_ID", ""),
 		APNSKeyID:     getEnv("APNS_KEY_ID", ""),

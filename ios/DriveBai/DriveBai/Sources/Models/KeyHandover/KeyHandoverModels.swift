@@ -34,6 +34,16 @@ struct KeyHandover: Identifiable, Equatable, Hashable {
     let driverConfirmedAt: Date?
     let confirmationDeadline: Date?
     let startedAt: Date?
+    /// Lease-side mirror so the Today tab can render the pickup countdown
+    /// + owner extension UI without a second fetch. `leaseStatus == nil`
+    /// means the backend couldn't resolve the lease (treat as no countdown).
+    let leaseStatus: LeaseRequestStatus?
+    let pickupDeadlineAt: Date?
+    let pickupConfirmedAt: Date?
+    let pickupExtensionTotalMinutes: Int
+    let pickupExtensionCount: Int
+    let pickupExtensionRemainingMinutes: Int
+    let pickupLastExtendedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 }
@@ -84,5 +94,37 @@ extension KeyHandover {
 
     var pickupLocationText: String {
         pickupArea.isEmpty ? "See chat for the pickup location" : pickupArea
+    }
+
+    // MARK: - Pickup deadline mirror (lease-side)
+
+    /// True while the driver still needs to pick the car up before the
+    /// auto-refund. Drives the urgent pickup countdown on the Today card.
+    var isAwaitingPickupConfirmation: Bool {
+        guard let status = leaseStatus, status == .paid,
+              pickupDeadlineAt != nil,
+              pickupConfirmedAt == nil else { return false }
+        return true
+    }
+
+    /// True iff the lease moved to expired_refunded — the Today card should
+    /// show the refunded terminal state instead of any active countdown.
+    var isPickupRefunded: Bool {
+        leaseStatus == .expiredRefunded
+    }
+
+    /// Owner-side check mirroring the chat card's gating. Disables the
+    /// "Add more time" button once the cap is hit or the deadline lapsed.
+    func canOwnerExtendPickup(now: Date = Date()) -> Bool {
+        guard viewerRole == .owner,
+              isAwaitingPickupConfirmation,
+              let deadline = pickupDeadlineAt,
+              deadline.timeIntervalSince(now) > 0 else { return false }
+        return pickupExtensionRemainingMinutes >= LeaseRequest.allowedPickupExtensionMinutes.min() ?? 0
+    }
+
+    /// Presets the UI should surface — only those that still fit in the cap.
+    var availableExtensionPresets: [Int] {
+        LeaseRequest.allowedPickupExtensionMinutes.filter { $0 <= pickupExtensionRemainingMinutes }
     }
 }

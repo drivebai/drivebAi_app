@@ -104,13 +104,21 @@ func (r *KeyHandoverRepository) GetByLeaseRequestID(ctx context.Context, leaseRe
 	return kh, nil
 }
 
-// ListActiveForUser returns pending + owner_confirmed handovers for a participant.
+// ListActiveForUser returns pending + owner_confirmed handovers for a
+// participant that the user has NOT dismissed via /dismiss. Joining against
+// key_handover_dismissals here keeps the Today payload free of acknowledged
+// terminal-state cards without separate filtering passes in the handler.
 func (r *KeyHandoverRepository) ListActiveForUser(ctx context.Context, userID uuid.UUID) ([]models.KeyHandover, error) {
 	rows, err := r.db.Pool.Query(ctx,
 		`SELECT `+keyHandoverColumns+`
-		 FROM key_handovers
-		 WHERE (owner_id = $1 OR driver_id = $1) AND status IN ('pending', 'owner_confirmed')
-		 ORDER BY created_at DESC`, userID)
+		 FROM key_handovers kh
+		 WHERE (kh.owner_id = $1 OR kh.driver_id = $1)
+		   AND kh.status IN ('pending', 'owner_confirmed')
+		   AND NOT EXISTS (
+		       SELECT 1 FROM key_handover_dismissals d
+		       WHERE d.key_handover_id = kh.id AND d.user_id = $1
+		   )
+		 ORDER BY kh.created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list active key handovers: %w", err)
 	}
@@ -125,6 +133,22 @@ func (r *KeyHandoverRepository) ListActiveForUser(ctx context.Context, userID uu
 		out = append(out, *kh)
 	}
 	return out, nil
+}
+
+// DismissForUser records a per-user acknowledgement of a terminal handover
+// card. Idempotent: ON CONFLICT DO NOTHING means tapping "Got it" twice
+// (or the handler retrying) yields the same successful result without
+// creating duplicates or refreshing the timestamp.
+func (r *KeyHandoverRepository) DismissForUser(ctx context.Context, keyHandoverID, userID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		INSERT INTO key_handover_dismissals (key_handover_id, user_id)
+		VALUES ($1, $2)
+		ON CONFLICT (key_handover_id, user_id) DO NOTHING
+	`, keyHandoverID, userID)
+	if err != nil {
+		return fmt.Errorf("dismiss key handover: %w", err)
+	}
+	return nil
 }
 
 // OwnerConfirm transitions pending → owner_confirmed and sets the driver's deadline.

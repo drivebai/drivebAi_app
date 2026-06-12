@@ -115,16 +115,22 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 	return lr, nil
 }
 
-// GetByID returns a lease request by its ID.
+// GetByID returns a lease request by its ID, including migration-000024
+// pickup-deadline + refund fields so callers can render the pickup countdown
+// and refund status.
 func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
 	var lr models.LeaseRequest
 	err := r.db.Pool.QueryRow(ctx, `
-		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
 		FROM lease_requests WHERE id = $1
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -206,19 +212,123 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 	return results, nil
 }
 
-// AcceptLeaseRequest transitions a lease request from requested → accepted (owner only).
+// AcceptLeaseRequest transitions a lease request from requested → accepted AND
+// atomically reserves the car listing so it disappears from discovery for
+// other drivers. Only the car owner may call. Failure to reserve (e.g., the
+// car is already reserved by another concurrent accept) rolls back the entire
+// transition, so the lease stays 'requested' rather than getting orphaned.
 func (r *LeaseRequestRepository) AcceptLeaseRequest(ctx context.Context, id, ownerID uuid.UUID) (*models.LeaseRequest, error) {
-	return r.updateStatus(ctx, id, ownerID, models.LeaseStatusRequested, models.LeaseStatusAccepted, "owner")
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the row, validate actor + current status.
+	var lr models.LeaseRequest
+	err = tx.QueryRow(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		FROM lease_requests WHERE id = $1 FOR UPDATE
+	`, id).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, models.ErrLeaseRequestNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ownerID != lr.OwnerID {
+		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the owner can perform this action")
+	}
+	if lr.Status != models.LeaseStatusRequested {
+		return nil, models.ErrInvalidLeaseAction
+	}
+
+	now := time.Now().UTC()
+
+	// 1. Transition lease status to 'accepted'.
+	err = tx.QueryRow(ctx, `
+		UPDATE lease_requests SET status = $2, updated_at = $3
+		WHERE id = $1
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+	`, id, models.LeaseStatusAccepted, now).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update lease status: %w", err)
+	}
+
+	// 2. Reserve the car listing — guarded so a concurrent accept of a
+	//    different lease for the same car cannot double-reserve.
+	tag, err := tx.Exec(ctx, `
+		UPDATE cars SET reserved_by_lease_request_id = $1
+		WHERE id = $2 AND reserved_by_lease_request_id IS NULL
+	`, lr.ID, lr.ListingID)
+	if err != nil {
+		return nil, fmt.Errorf("reserve car: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction,
+			"This car was already reserved by another driver while you were accepting.")
+	}
+
+	// 3. System message + chat timestamp (same shape updateStatus uses).
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
+		VALUES ($1, $2, $3, 'system', 'Lease request accepted', $4)
+	`, uuid.New(), lr.ChatID, ownerID, now); err != nil {
+		return nil, fmt.Errorf("insert system message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1
+	`, lr.ChatID, now); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &lr, nil
 }
 
 // DeclineLeaseRequest transitions a lease request from requested → declined (owner only).
+// Also best-effort unreserves the car if this lease had reserved it (defensive
+// — today's flow only allows decline from 'requested' so the car was never
+// reserved by this lease, but future flexibility may allow decline-after-accept).
 func (r *LeaseRequestRepository) DeclineLeaseRequest(ctx context.Context, id, ownerID uuid.UUID) (*models.LeaseRequest, error) {
-	return r.updateStatus(ctx, id, ownerID, models.LeaseStatusRequested, models.LeaseStatusDeclined, "owner")
+	lr, err := r.updateStatus(ctx, id, ownerID, models.LeaseStatusRequested, models.LeaseStatusDeclined, "owner")
+	if err != nil {
+		return nil, err
+	}
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return lr, nil
 }
 
 // CancelLeaseRequest transitions a lease request from requested → cancelled (driver only).
 func (r *LeaseRequestRepository) CancelLeaseRequest(ctx context.Context, id, driverID uuid.UUID) (*models.LeaseRequest, error) {
-	return r.updateStatus(ctx, id, driverID, models.LeaseStatusRequested, models.LeaseStatusCancelled, "driver")
+	lr, err := r.updateStatus(ctx, id, driverID, models.LeaseStatusRequested, models.LeaseStatusCancelled, "driver")
+	if err != nil {
+		return nil, err
+	}
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return lr, nil
+}
+
+// unreserveCarIfHeldBy clears cars.reserved_by_lease_request_id when (and only
+// when) it matches this lease — so this lease's transition out of a
+// reservation-holding state releases the listing back to discovery, while
+// leaving unrelated reservations untouched. Safe to call when no car is
+// reserved (no-op).
+func (r *LeaseRequestRepository) unreserveCarIfHeldBy(ctx context.Context, leaseRequestID uuid.UUID) {
+	_, _ = r.db.Pool.Exec(ctx, `
+		UPDATE cars SET reserved_by_lease_request_id = NULL
+		WHERE reserved_by_lease_request_id = $1
+	`, leaseRequestID)
 }
 
 // SetPaymentPending transitions accepted → payment_pending.
@@ -586,4 +696,309 @@ func containsAt(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Pickup deadline + refund (migration 000024)
+// ────────────────────────────────────────────────────────────────────────────
+
+// SetPickupDeadline stamps the lease with a pickup_deadline_at value. Guarded
+// so it only fires while the lease is in 'paid' state and the deadline has
+// not already been set — repeated webhook/sync calls are no-ops, idempotently.
+func (r *LeaseRequestRepository) SetPickupDeadline(ctx context.Context, id uuid.UUID, deadline time.Time) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET pickup_deadline_at = $2, updated_at = NOW()
+		WHERE id = $1 AND status = 'paid' AND pickup_deadline_at IS NULL
+	`, id, deadline)
+	if err != nil {
+		return fmt.Errorf("set pickup deadline: %w", err)
+	}
+	return nil
+}
+
+// ConfirmPickup marks pickup_confirmed_at = NOW(). Only the driver may call.
+// Idempotent: if already confirmed, returns the current row without a second
+// timestamp update. If the deadline has passed and the row is already in
+// expired_refunded, returns ErrPickupDeadlinePassed.
+func (r *LeaseRequestRepository) ConfirmPickup(ctx context.Context, id, driverID uuid.UUID) (*models.LeaseRequest, error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	lr, err := scanFullLeaseLocked(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if lr.DriverID != driverID {
+		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the driver can confirm pickup")
+	}
+
+	// Idempotent: already confirmed → return as-is.
+	if lr.PickupConfirmedAt != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return lr, nil
+	}
+
+	if lr.Status == models.LeaseStatusExpiredRefunded {
+		return nil, models.ErrPickupDeadlinePassed
+	}
+	if lr.Status != models.LeaseStatusPaid {
+		return nil, models.ErrInvalidLeaseAction
+	}
+
+	now := time.Now().UTC()
+	if lr.PickupDeadlineAt != nil && now.After(*lr.PickupDeadlineAt) {
+		// Deadline has technically passed — let the scanner refund instead of
+		// confirming. We return the pre-existing 'paid' row so the caller can
+		// surface a clear "deadline passed" message; the scanner's atomic
+		// UPDATE will flip it on its next tick.
+		return nil, models.ErrPickupDeadlinePassed
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE lease_requests
+		SET pickup_confirmed_at = $2, updated_at = $2
+		WHERE id = $1
+	`, id, now); err != nil {
+		return nil, fmt.Errorf("confirm pickup: %w", err)
+	}
+	lr.PickupConfirmedAt = &now
+	lr.UpdatedAt = now
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return lr, nil
+}
+
+// ListExpiredAwaitingPickup returns leases whose pickup deadline has passed
+// without a driver confirmation. Used by the background expiry worker.
+func (r *LeaseRequestRepository) ListExpiredAwaitingPickup(ctx context.Context, now time.Time, limit int) ([]models.LeaseRequest, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		FROM lease_requests
+		WHERE status = 'paid'
+		  AND pickup_confirmed_at IS NULL
+		  AND pickup_deadline_at IS NOT NULL
+		  AND pickup_deadline_at <= $1
+		ORDER BY pickup_deadline_at ASC
+		LIMIT $2
+	`, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired awaiting pickup: %w", err)
+	}
+	defer rows.Close()
+
+	out := []models.LeaseRequest{}
+	for rows.Next() {
+		var lr models.LeaseRequest
+		if err := rows.Scan(
+			&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+			&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+			&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+			&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, nil
+}
+
+// ClaimForExpiry atomically transitions a single lease from paid →
+// expired_refunded so two workers cannot double-refund. Returns the updated
+// row on success or pgx.ErrNoRows if someone else already claimed it (or the
+// driver just confirmed). Caller then performs the Stripe refund and persists
+// the result via FinalizeRefund.
+func (r *LeaseRequestRepository) ClaimForExpiry(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
+	var lr models.LeaseRequest
+	err := r.db.Pool.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET status = $2, refund_status = 'pending', updated_at = NOW()
+		WHERE id = $1
+		  AND status = 'paid'
+		  AND pickup_confirmed_at IS NULL
+		  AND pickup_deadline_at IS NOT NULL
+		  AND pickup_deadline_at <= NOW()
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+	`, id, models.LeaseStatusExpiredRefunded).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Release the car listing in the same lifecycle step — the claim has
+	// committed regardless of this side-effect; doing it now keeps discovery
+	// in sync even if the subsequent FinalizeRefund call fails (we still
+	// don't want other drivers blocked by a deadline-busted reservation).
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return &lr, nil
+}
+
+// FinalizeRefund persists the outcome of the Stripe Refund API call for a
+// lease that was previously claimed via ClaimForExpiry. status='succeeded'
+// records the refund_id; status='failed' leaves refund_id NULL so the worker
+// can retry on a future tick.
+func (r *LeaseRequestRepository) FinalizeRefund(ctx context.Context, id uuid.UUID, refundID string, status models.RefundStatus) error {
+	now := time.Now().UTC()
+	if status == models.RefundStatusSucceeded {
+		_, err := r.db.Pool.Exec(ctx, `
+			UPDATE lease_requests
+			SET refund_id = $2, refunded_at = $3, refund_status = $4, updated_at = $3
+			WHERE id = $1
+		`, id, refundID, now, string(status))
+		return err
+	}
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET refund_status = $2, updated_at = $3
+		WHERE id = $1
+	`, id, string(status), now)
+	return err
+}
+
+// ExtendPickupDeadline is the owner-initiated "Add more time" action.
+//
+// The whole operation is a single guarded UPDATE that is the serialization
+// point against the expiry scanner: it only succeeds when the row is still
+// in a pre-claim state (status='paid', not refunded, not confirmed) and the
+// existing deadline has not yet elapsed. Because ClaimForExpiry uses the
+// same predicate (status='paid' AND pickup_confirmed_at IS NULL AND
+// pickup_deadline_at <= NOW()), at most one of {extend, claim} can change
+// the row — whoever updates first commits, the other sees zero affected
+// rows. The total-minutes cap is enforced inline so we don't need a
+// separate read-then-write.
+//
+// On zero rows affected we do one follow-up read to classify the failure
+// (refunded? confirmed? cap reached?) and surface a clean API error.
+func (r *LeaseRequestRepository) ExtendPickupDeadline(
+	ctx context.Context,
+	id, ownerID uuid.UUID,
+	minutes int,
+) (*models.LeaseRequest, error) {
+	if !models.IsAllowedPickupExtensionMinutes(minutes) {
+		return nil, models.ErrInvalidExtensionMin
+	}
+
+	now := time.Now().UTC()
+	var lr models.LeaseRequest
+	err := r.db.Pool.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET pickup_deadline_at              = pickup_deadline_at + (make_interval(mins => $3)),
+		    pickup_extension_total_minutes  = pickup_extension_total_minutes + $3,
+		    pickup_extension_count          = pickup_extension_count + 1,
+		    pickup_last_extended_at         = $4,
+		    updated_at                      = $4
+		WHERE id = $1
+		  AND owner_id = $2
+		  AND status = 'paid'
+		  AND pickup_confirmed_at IS NULL
+		  AND pickup_deadline_at IS NOT NULL
+		  AND pickup_deadline_at > $4
+		  AND refund_status IS NULL
+		  AND refunded_at   IS NULL
+		  AND pickup_extension_total_minutes + $3 <= $5
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+	`, id, ownerID, minutes, now, models.PickupMaxExtensionMinutes).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+	)
+	if err == nil {
+		return &lr, nil
+	}
+	if err != pgx.ErrNoRows {
+		return nil, fmt.Errorf("extend pickup deadline: %w", err)
+	}
+	return nil, r.classifyExtendFailure(ctx, id, ownerID, minutes)
+}
+
+// classifyExtendFailure runs after a zero-row UPDATE to turn the silent
+// guard-failure into a precise API error.
+func (r *LeaseRequestRepository) classifyExtendFailure(
+	ctx context.Context,
+	id, ownerID uuid.UUID,
+	minutes int,
+) error {
+	existing, err := r.GetByID(ctx, id)
+	if err != nil {
+		// Not found is already wrapped as ErrLeaseRequestNotFound.
+		return err
+	}
+	if existing.OwnerID != ownerID {
+		return models.NewAPIError(models.ErrCodeInvalidLeaseAction,
+			"Only the car owner can extend the pickup deadline")
+	}
+	if existing.Status == models.LeaseStatusExpiredRefunded ||
+		existing.RefundedAt != nil ||
+		existing.RefundStatus != nil {
+		return models.ErrPickupDeadlinePassed
+	}
+	if existing.PickupConfirmedAt != nil {
+		return models.NewAPIError(models.ErrCodeInvalidLeaseAction,
+			"Pickup is already confirmed; nothing to extend")
+	}
+	if existing.Status != models.LeaseStatusPaid || existing.PickupDeadlineAt == nil {
+		return models.ErrInvalidLeaseAction
+	}
+	now := time.Now().UTC()
+	if !existing.PickupDeadlineAt.After(now) {
+		// Deadline elapsed — the scanner will (or already did) claim it.
+		return models.ErrPickupDeadlinePassed
+	}
+	if existing.PickupExtensionTotalMinutes+minutes > models.PickupMaxExtensionMinutes {
+		return models.ErrPickupExtensionCap
+	}
+	// Shouldn't reach here, but fall back to a generic guard rejection so the
+	// caller still gets an APIError shape instead of a raw 500.
+	return models.ErrInvalidLeaseAction
+}
+
+// scanFullLeaseLocked SELECT ... FOR UPDATE with the full lease columns
+// (including the migration-000024 pickup + refund fields). Used by
+// ConfirmPickup; ErrLeaseRequestNotFound on miss.
+func scanFullLeaseLocked(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*models.LeaseRequest, error) {
+	var lr models.LeaseRequest
+	err := tx.QueryRow(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		FROM lease_requests
+		WHERE id = $1
+		FOR UPDATE
+	`, id).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, models.ErrLeaseRequestNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &lr, nil
 }

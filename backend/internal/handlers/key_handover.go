@@ -235,6 +235,70 @@ func (h *KeyHandoverHandler) DriverConfirm(w http.ResponseWriter, r *http.Reques
 	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
+// Dismiss — POST /key-handovers/{id}/dismiss
+// Per-user "Got it" for a terminal pickup-refunded card. Idempotent.
+// Allowed only when the backing lease is in a terminal pickup state
+// (expired_refunded, declined, cancelled) so users can't dismiss an
+// active card to hide it from themselves.
+func (h *KeyHandoverHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid handover id"))
+		return
+	}
+
+	// 1. Must be a participant. GetByIDForUser returns ErrLeaseRequestNotFound-
+	//    shaped 404 for non-participants so we don't leak existence.
+	kh, err := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrKeyHandoverNotFound)
+		return
+	}
+
+	// 2. Gate on the backing lease's terminal pickup state. The handover row
+	//    itself may still be 'pending' at this point (we never auto-expire
+	//    handovers when the lease is refunded — the dismiss IS the cleanup).
+	lr, err := h.leaseRepo.GetByID(r.Context(), kh.LeaseRequestID)
+	if err != nil || lr == nil {
+		h.logger.Error("dismiss: fetch lease", "error", err, "handover_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if !isPickupTerminal(lr.Status) {
+		httputil.WriteError(w, http.StatusConflict, models.ErrHandoverNotDismissable)
+		return
+	}
+
+	// 3. Idempotent upsert. Repeated calls just return success.
+	if err := h.repo.DismissForUser(r.Context(), id, userID); err != nil {
+		h.logger.Error("dismiss handover", "error", err, "handover_id", id, "user_id", userID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "dismissed"})
+}
+
+// isPickupTerminal reports whether a lease is in a state that retired the
+// pickup flow (refund issued, request rescinded, etc.). These are the only
+// states that allow the Today card to be dismissed.
+func isPickupTerminal(s models.LeaseRequestStatus) bool {
+	switch s {
+	case models.LeaseStatusExpiredRefunded,
+		models.LeaseStatusCancelled,
+		models.LeaseStatusDeclined,
+		models.LeaseStatusExpired:
+		return true
+	}
+	return false
+}
+
 // expireIfOverdue transitions an owner_confirmed handover to expired once its
 // deadline has passed, notifying both parties exactly once.
 func (h *KeyHandoverHandler) expireIfOverdue(ctx context.Context, kh *models.KeyHandover) *models.KeyHandover {
@@ -299,7 +363,23 @@ func (h *KeyHandoverHandler) buildResponse(ctx context.Context, kh *models.KeyHa
 		resp.DriverName = driver.FullName()
 	}
 	resp.CarTitle = h.carTitle(ctx, kh.CarID)
-	resp.ChatID = h.chatIDForLease(ctx, kh.LeaseRequestID)
+
+	// Single lease fetch: source the chat id AND mirror the pickup-deadline
+	// + extension fields onto the response so the Today tab can drive its
+	// countdown + "Add more time" UI without a second round-trip.
+	if lr, err := h.leaseRepo.GetByID(ctx, kh.LeaseRequestID); err == nil && lr != nil {
+		chatID := lr.ChatID
+		resp.ChatID = &chatID
+
+		status := lr.Status
+		resp.LeaseStatus = &status
+		resp.PickupDeadlineAt = models.NewRFC3339TimePtr(lr.PickupDeadlineAt)
+		resp.PickupConfirmedAt = models.NewRFC3339TimePtr(lr.PickupConfirmedAt)
+		resp.PickupExtensionTotalMinutes = lr.PickupExtensionTotalMinutes
+		resp.PickupExtensionCount = lr.PickupExtensionCount
+		resp.PickupExtensionRemainingMin = lr.RemainingExtensionMinutes()
+		resp.PickupLastExtendedAt = models.NewRFC3339TimePtr(lr.PickupLastExtendedAt)
+	}
 
 	if viewerID == kh.OwnerID {
 		resp.ViewerRole = "owner"

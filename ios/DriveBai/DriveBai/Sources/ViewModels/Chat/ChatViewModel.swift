@@ -366,6 +366,37 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Driver-only: confirms in-person pickup before the PICKUP_DEADLINE_MINUTES
+    /// window elapses. Backend marks pickup_confirmed_at, stops the expiry
+    /// scanner from picking the row up, and broadcasts to both sides.
+    func confirmPickup(id: UUID) async {
+        do {
+            let response = try await apiClient.confirmPickup(leaseRequestId: id)
+            let updated = response.toLeaseRequest()
+            if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
+                leaseRequests[idx] = updated
+            }
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    /// Owner-only: pushes `pickup_deadline_at` out by `minutes` (one of
+    /// LeaseRequest.allowedPickupExtensionMinutes). The backend response is
+    /// authoritative — it bumps the local row's deadline and the timer in
+    /// the lease card picks the new value up on the next tick.
+    func extendPickupDeadline(id: UUID, minutes: Int) async {
+        do {
+            let response = try await apiClient.extendPickupDeadline(leaseRequestId: id, minutes: minutes)
+            let updated = response.toLeaseRequest()
+            if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
+                leaseRequests[idx] = updated
+            }
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
     func adjustLeasePrice(id: UUID, offeredWeeklyPrice: Double) async {
         do {
             let response = try await apiClient.updateLeaseRequestPrice(id: id, offeredWeeklyPrice: offeredWeeklyPrice)
@@ -430,6 +461,15 @@ final class ChatViewModel: ObservableObject {
                     totalAmount: lr.totalAmount,
                     currency: lr.currency, weeks: lr.weeks, message: lr.message,
                     carTitle: lr.carTitle, payment: updatedPayment,
+                    pickupDeadlineAt: lr.pickupDeadlineAt,
+                    pickupConfirmedAt: lr.pickupConfirmedAt,
+                    refundId: lr.refundId,
+                    refundedAt: lr.refundedAt,
+                    refundStatus: lr.refundStatus,
+                    pickupExtensionTotalMinutes: lr.pickupExtensionTotalMinutes,
+                    pickupExtensionCount: lr.pickupExtensionCount,
+                    pickupExtensionRemainingMinutes: lr.pickupExtensionRemainingMinutes,
+                    pickupLastExtendedAt: lr.pickupLastExtendedAt,
                     createdAt: lr.createdAt, updatedAt: lr.updatedAt
                 )
             } else {
@@ -441,6 +481,15 @@ final class ChatViewModel: ObservableObject {
                     totalAmount: lr.totalAmount,
                     currency: lr.currency, weeks: lr.weeks, message: lr.message,
                     carTitle: lr.carTitle, payment: lr.payment,
+                    pickupDeadlineAt: lr.pickupDeadlineAt,
+                    pickupConfirmedAt: lr.pickupConfirmedAt,
+                    refundId: lr.refundId,
+                    refundedAt: lr.refundedAt,
+                    refundStatus: lr.refundStatus,
+                    pickupExtensionTotalMinutes: lr.pickupExtensionTotalMinutes,
+                    pickupExtensionCount: lr.pickupExtensionCount,
+                    pickupExtensionRemainingMinutes: lr.pickupExtensionRemainingMinutes,
+                    pickupLastExtendedAt: lr.pickupLastExtendedAt,
                     createdAt: lr.createdAt, updatedAt: lr.updatedAt
                 )
             }

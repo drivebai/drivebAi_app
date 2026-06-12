@@ -17,6 +17,39 @@ const (
 	LeaseStatusPaymentPending LeaseRequestStatus = "payment_pending"
 	LeaseStatusPaid           LeaseRequestStatus = "paid"
 	LeaseStatusExpired        LeaseRequestStatus = "expired"
+	// LeaseStatusExpiredRefunded: driver did not confirm pickup within the
+	// PICKUP_DEADLINE_MINUTES window after payment. Payment is refunded via
+	// Stripe and the listing returns to discovery. Terminal.
+	LeaseStatusExpiredRefunded LeaseRequestStatus = "expired_refunded"
+)
+
+// PickupMaxExtensionMinutes is the hard cap on the total minutes an owner can
+// add to a single lease's pickup deadline. Also enforced by a DB CHECK
+// constraint (migration 000025) as defence-in-depth.
+const PickupMaxExtensionMinutes = 120
+
+// AllowedPickupExtensionMinutes enumerates the preset increments the owner
+// may pick. The handler rejects anything outside this set so the iOS preset
+// buttons remain the source of truth.
+var AllowedPickupExtensionMinutes = []int{15, 30, 60}
+
+// IsAllowedPickupExtensionMinutes reports whether `m` is one of the presets.
+func IsAllowedPickupExtensionMinutes(m int) bool {
+	for _, v := range AllowedPickupExtensionMinutes {
+		if v == m {
+			return true
+		}
+	}
+	return false
+}
+
+// RefundStatus tracks the Stripe refund lifecycle for an expired pickup.
+type RefundStatus string
+
+const (
+	RefundStatusPending   RefundStatus = "pending"   // Stripe call about to be made
+	RefundStatusSucceeded RefundStatus = "succeeded" // Stripe Refund created and accepted
+	RefundStatusFailed    RefundStatus = "failed"    // Stripe rejected the refund; needs human intervention
 )
 
 // PaymentStatus mirrors Stripe PaymentIntent statuses
@@ -33,21 +66,45 @@ const (
 
 // LeaseRequest represents a driver's request to lease a car listing
 type LeaseRequest struct {
-	ID                   uuid.UUID          `json:"id"`
-	ChatID               uuid.UUID          `json:"chat_id"`
-	ListingID            uuid.UUID          `json:"listing_id"`
-	OwnerID              uuid.UUID          `json:"owner_id"`
-	DriverID             uuid.UUID          `json:"driver_id"`
-	Status               LeaseRequestStatus `json:"status"`
-	WeeklyPrice          float64            `json:"weekly_price"`
-	OfferedWeeklyPrice   *float64           `json:"offered_weekly_price,omitempty"`
-	OfferedPriceUpdatedAt *time.Time        `json:"offered_price_updated_at,omitempty"`
-	Currency             string             `json:"currency"`
-	Weeks                int                `json:"weeks"`
-	Message              *string            `json:"message,omitempty"`
-	ExpiresAt            time.Time          `json:"expires_at"`
-	CreatedAt            time.Time          `json:"created_at"`
-	UpdatedAt            time.Time          `json:"updated_at"`
+	ID                    uuid.UUID          `json:"id"`
+	ChatID                uuid.UUID          `json:"chat_id"`
+	ListingID             uuid.UUID          `json:"listing_id"`
+	OwnerID               uuid.UUID          `json:"owner_id"`
+	DriverID              uuid.UUID          `json:"driver_id"`
+	Status                LeaseRequestStatus `json:"status"`
+	WeeklyPrice           float64            `json:"weekly_price"`
+	OfferedWeeklyPrice    *float64           `json:"offered_weekly_price,omitempty"`
+	OfferedPriceUpdatedAt *time.Time         `json:"offered_price_updated_at,omitempty"`
+	Currency              string             `json:"currency"`
+	Weeks                 int                `json:"weeks"`
+	Message               *string            `json:"message,omitempty"`
+	ExpiresAt             time.Time          `json:"expires_at"`
+	// Pickup deadline (added in migration 000024): set when payment succeeds,
+	// cleared by ConfirmPickup or by the expiry scanner.
+	PickupDeadlineAt  *time.Time `json:"pickup_deadline_at,omitempty"`
+	PickupConfirmedAt *time.Time `json:"pickup_confirmed_at,omitempty"`
+	// Refund tracking (populated by the expiry scanner when status moves to
+	// expired_refunded). Stripe Refund ID is kept for idempotency on retries.
+	RefundID     *string    `json:"refund_id,omitempty"`
+	RefundedAt   *time.Time `json:"refunded_at,omitempty"`
+	RefundStatus *string    `json:"refund_status,omitempty"`
+	// Owner-initiated pickup extension (migration 000025). Total minutes
+	// added across all extensions is capped at PickupMaxExtensionMinutes.
+	PickupExtensionTotalMinutes int        `json:"pickup_extension_total_minutes"`
+	PickupExtensionCount        int        `json:"pickup_extension_count"`
+	PickupLastExtendedAt        *time.Time `json:"pickup_last_extended_at,omitempty"`
+	CreatedAt                   time.Time  `json:"created_at"`
+	UpdatedAt                   time.Time  `json:"updated_at"`
+}
+
+// RemainingExtensionMinutes returns how many more minutes can still be added
+// by the owner before the cap is reached.
+func (lr *LeaseRequest) RemainingExtensionMinutes() int {
+	r := PickupMaxExtensionMinutes - lr.PickupExtensionTotalMinutes
+	if r < 0 {
+		return 0
+	}
+	return r
 }
 
 // TotalAmountCents returns the total amount in smallest currency unit (cents),
@@ -67,8 +124,8 @@ type Payment struct {
 	Provider          string        `json:"provider"`
 	StripeCustomerID  *string       `json:"stripe_customer_id,omitempty"`
 	PaymentIntentID   *string       `json:"payment_intent_id,omitempty"`
-	ClientSecret      *string       `json:"-"` // never serialized; sent to client via PaymentIntentResponse only
-	Amount            int64         `json:"amount"`             // in cents
+	ClientSecret      *string       `json:"-"`      // never serialized; sent to client via PaymentIntentResponse only
+	Amount            int64         `json:"amount"` // in cents
 	Currency          string        `json:"currency"`
 	PlatformFeeAmount int64         `json:"platform_fee_amount"` // in cents
 	Status            PaymentStatus `json:"status"`
@@ -97,6 +154,9 @@ var (
 	ErrPaymentAlreadyExists = &APIError{Code: ErrCodePaymentAlreadyExists, Message: "Payment already exists for this lease request"}
 	ErrInvalidLeaseAction   = &APIError{Code: ErrCodeInvalidLeaseAction, Message: "Invalid action for the current lease request status"}
 	ErrPriceLocked          = &APIError{Code: ErrCodePriceLocked, Message: "Price can only be adjusted while the request is pending"}
+	ErrPickupDeadlinePassed = &APIError{Code: "PICKUP_DEADLINE_PASSED", Message: "The pickup deadline has already passed; the rental was refunded."}
+	ErrPickupExtensionCap   = &APIError{Code: "PICKUP_EXTENSION_CAP_REACHED", Message: "Pickup deadline can't be extended further; the cap has been reached."}
+	ErrInvalidExtensionMin  = &APIError{Code: "INVALID_EXTENSION_MINUTES", Message: "Pickup extension must be 15, 30, or 60 minutes."}
 )
 
 // --- API request types ---
@@ -108,6 +168,12 @@ type CreateLeaseRequestBody struct {
 
 type UpdateOfferedPriceBody struct {
 	OfferedWeeklyPrice float64 `json:"offered_weekly_price"`
+}
+
+// ExtendPickupDeadlineBody is the payload for
+// POST /api/v1/lease-requests/{id}/pickup-deadline/extend.
+type ExtendPickupDeadlineBody struct {
+	Minutes int `json:"minutes"`
 }
 
 // --- API response types ---
@@ -130,8 +196,22 @@ type LeaseRequestResponse struct {
 	CarTitle           string             `json:"car_title"`
 	Payment            *PaymentSummary    `json:"payment,omitempty"`
 	ExpiresAt          RFC3339Time        `json:"expires_at"`
-	CreatedAt          RFC3339Time        `json:"created_at"`
-	UpdatedAt          RFC3339Time        `json:"updated_at"`
+	// New pickup-deadline fields (migration 000024). Present iff the lease
+	// has reached the paid state and the driver hasn't confirmed yet.
+	PickupDeadlineAt  *RFC3339Time `json:"pickup_deadline_at,omitempty"`
+	PickupConfirmedAt *RFC3339Time `json:"pickup_confirmed_at,omitempty"`
+	RefundID          *string      `json:"refund_id,omitempty"`
+	RefundedAt        *RFC3339Time `json:"refunded_at,omitempty"`
+	RefundStatus      *string      `json:"refund_status,omitempty"`
+	// Extension tracking (migration 000025). Surfaced to both client roles
+	// so the owner UI can disable the "Add more time" button once the cap
+	// is hit, and the driver UI can show "extended by 30 min" toasts.
+	PickupExtensionTotalMinutes int          `json:"pickup_extension_total_minutes"`
+	PickupExtensionCount        int          `json:"pickup_extension_count"`
+	PickupExtensionRemainingMin int          `json:"pickup_extension_remaining_minutes"`
+	PickupLastExtendedAt        *RFC3339Time `json:"pickup_last_extended_at,omitempty"`
+	CreatedAt                   RFC3339Time  `json:"created_at"`
+	UpdatedAt                   RFC3339Time  `json:"updated_at"`
 }
 
 type PaymentSummary struct {
@@ -155,7 +235,7 @@ type CreateLeaseRequestResponse struct {
 type PaymentIntentResponse struct {
 	PaymentIntentClientSecret string `json:"payment_intent_client_secret"`
 	PaymentIntentID           string `json:"payment_intent_id"`
-	PublishableKey             string `json:"publishable_key"`
+	PublishableKey            string `json:"publishable_key"`
 	CustomerID                string `json:"customer_id,omitempty"`
 	EphemeralKeySecret        string `json:"ephemeral_key_secret,omitempty"`
 	Amount                    int64  `json:"amount"`

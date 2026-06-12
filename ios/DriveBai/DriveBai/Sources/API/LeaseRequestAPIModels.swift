@@ -19,6 +19,18 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
     let message: String?
     let carTitle: String
     let payment: PaymentSummaryAPIResponse?
+    // Pickup deadline lifecycle (backend migration 000024)
+    let pickupDeadlineAt: Date?
+    let pickupConfirmedAt: Date?
+    let refundId: String?
+    let refundedAt: Date?
+    let refundStatus: String?
+    // Pickup extension (backend migration 000025). Always present; default 0
+    // server-side so absent values from older payloads decode as 0.
+    let pickupExtensionTotalMinutes: Int?
+    let pickupExtensionCount: Int?
+    let pickupExtensionRemainingMinutes: Int?
+    let pickupLastExtendedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -37,6 +49,15 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
         case currency, weeks, message
         case carTitle = "car_title"
         case payment
+        case pickupDeadlineAt = "pickup_deadline_at"
+        case pickupConfirmedAt = "pickup_confirmed_at"
+        case refundId = "refund_id"
+        case refundedAt = "refunded_at"
+        case refundStatus = "refund_status"
+        case pickupExtensionTotalMinutes = "pickup_extension_total_minutes"
+        case pickupExtensionCount = "pickup_extension_count"
+        case pickupExtensionRemainingMinutes = "pickup_extension_remaining_minutes"
+        case pickupLastExtendedAt = "pickup_last_extended_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -52,6 +73,15 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
             currency: currency, weeks: weeks, message: message,
             carTitle: carTitle,
             payment: payment?.toPaymentSummary(),
+            pickupDeadlineAt: pickupDeadlineAt,
+            pickupConfirmedAt: pickupConfirmedAt,
+            refundId: refundId,
+            refundedAt: refundedAt,
+            refundStatus: refundStatus,
+            pickupExtensionTotalMinutes: pickupExtensionTotalMinutes ?? 0,
+            pickupExtensionCount: pickupExtensionCount ?? 0,
+            pickupExtensionRemainingMinutes: pickupExtensionRemainingMinutes ?? LeaseRequest.maxPickupExtensionMinutes,
+            pickupLastExtendedAt: pickupLastExtendedAt,
             createdAt: createdAt, updatedAt: updatedAt
         )
     }
@@ -133,6 +163,10 @@ struct UpdateLeaseRequestPriceAPIRequest: Codable {
     enum CodingKeys: String, CodingKey {
         case offeredWeeklyPrice = "offered_weekly_price"
     }
+}
+
+struct ExtendPickupDeadlineAPIRequest: Codable {
+    let minutes: Int
 }
 
 // MARK: - Shared Driver Documents

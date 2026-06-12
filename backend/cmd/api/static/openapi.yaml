@@ -1260,6 +1260,102 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /lease-requests/{id}/pickup-confirm:
+    post:
+      tags: [LeaseRequests]
+      summary: Confirm in-person pickup (driver only)
+      description: |
+        Marks the rental as picked up so the background expiry scanner stops
+        considering it. Must be called within `PICKUP_DEADLINE_MINUTES` of the
+        payment_intent.succeeded event (default 120). After the deadline the
+        worker refunds the payment and returns the car to discovery; calling
+        this after that point returns `409 PICKUP_DEADLINE_PASSED`.
+
+        Idempotent: calling twice returns the same `pickup_confirmed_at`.
+      operationId: confirmPickup
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      responses:
+        '200':
+          description: Pickup confirmed (or already confirmed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Only the driver on the lease can confirm pickup
+        '404':
+          description: Lease request not found
+        '409':
+          description: |
+            Either the lease is not in a state that accepts pickup confirmation
+            (`INVALID_LEASE_ACTION`), or the deadline has already elapsed
+            (`PICKUP_DEADLINE_PASSED`) — the payment is being refunded.
+
+  /lease-requests/{id}/pickup-deadline/extend:
+    post:
+      tags: [LeaseRequests]
+      summary: Extend the pickup deadline (owner only)
+      description: |
+        Owner-initiated "Add more time" action. Adds the requested number of
+        minutes to `pickup_deadline_at`, bumps `pickup_extension_total_minutes`
+        and `pickup_extension_count`, and stamps `pickup_last_extended_at`.
+
+        The total minutes added across all extensions is capped at 120
+        (also enforced by a DB CHECK constraint). The endpoint is the
+        serialization point against the expiry scanner: if the deadline
+        already elapsed and the scanner has claimed the row, this returns
+        `409 PICKUP_DEADLINE_PASSED`.
+
+        Allowed `minutes` values: 15, 30, 60.
+      operationId: extendPickupDeadline
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/leaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutes]
+              properties:
+                minutes:
+                  type: integer
+                  enum: [15, 30, 60]
+                  example: 30
+      responses:
+        '200':
+          description: Pickup deadline extended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeaseRequest'
+        '400':
+          description: |
+            Invalid body, or `minutes` outside the allowed enum
+            (`INVALID_EXTENSION_MINUTES`).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Only the car owner can extend the deadline.
+        '404':
+          description: Lease request not found.
+        '409':
+          description: |
+            One of:
+              * `PICKUP_DEADLINE_PASSED` — deadline already elapsed
+                (scanner is refunding / has refunded).
+              * `PICKUP_EXTENSION_CAP_REACHED` — adding `minutes` would
+                exceed the 120-minute cap.
+              * `INVALID_LEASE_ACTION` — lease is not in `paid` /
+                awaiting-pickup state (e.g. already confirmed).
+
   /lease-requests/{id}/payments/intent:
     post:
       tags: [LeaseRequests]
@@ -2338,7 +2434,12 @@ components:
           format: uuid
         status:
           type: string
-          enum: [requested, accepted, declined, cancelled, payment_pending, paid, expired]
+          enum: [requested, accepted, declined, cancelled, payment_pending, paid, expired, expired_refunded]
+          description: |
+            `expired_refunded` is a terminal state set by the background
+            scanner when the driver failed to confirm pickup before the
+            pickup_deadline_at. The associated payment is refunded; the
+            car is released back to discovery.
         weekly_price:
           type: number
           example: 400.00
@@ -2353,6 +2454,51 @@ components:
           type: string
           example: AED
         expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        pickup_deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Set when the lease transitions to `paid`. The driver must call
+            POST /lease-requests/{id}/pickup-confirm before this time, or
+            the worker will refund the payment and release the car.
+        pickup_confirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Populated by /pickup-confirm. Stops the expiry scanner.
+        refund_id:
+          type: string
+          nullable: true
+          description: Stripe Refund ID, populated when a missed-pickup refund succeeds.
+        refunded_at:
+          type: string
+          format: date-time
+          nullable: true
+        refund_status:
+          type: string
+          enum: [pending, succeeded, failed]
+          nullable: true
+        pickup_extension_total_minutes:
+          type: integer
+          description: |
+            Total minutes the owner has added to `pickup_deadline_at` across
+            all extensions. Bounded by 120 (server + DB CHECK).
+          example: 30
+        pickup_extension_count:
+          type: integer
+          description: How many distinct extensions the owner has performed.
+          example: 1
+        pickup_extension_remaining_minutes:
+          type: integer
+          description: |
+            Remaining headroom before the 120-minute cap. The iOS client
+            uses this to disable preset buttons that would exceed the cap.
+          example: 90
+        pickup_last_extended_at:
           type: string
           format: date-time
           nullable: true
