@@ -10,6 +10,35 @@ import { useToastStore } from '../stores/toast'
 
 const TOKEN_KEY = 'drivebai.admin.token'
 
+// API base resolution.
+//   - In `vite dev` the Vite proxy rewrites /api and /uploads onto the backend,
+//     so an empty base ("") sends requests to the same origin and the proxy
+//     forwards them. Don't change this — it's what makes hot-reload work.
+//   - In production builds (vite build), VITE_API_BASE_URL is baked into the
+//     bundle and must point at the deployed backend (e.g.
+//     https://drivebai-api-team.fly.dev). The admin Fly app does NOT run a
+//     backend, so a missing/empty VITE_API_BASE_URL in prod is a deploy bug —
+//     every request would 404 against the static-only nginx.
+// We surface that bug at boot with a clear console error so the operator sees
+// it immediately instead of via a confusing pile of failed XHRs.
+const RAW_API_BASE = (import.meta.env.VITE_API_BASE_URL || '').trim()
+const API_BASE = RAW_API_BASE.replace(/\/+$/, '') // strip trailing slash
+
+if (import.meta.env.PROD && !API_BASE) {
+  // eslint-disable-next-line no-console
+  console.error(
+    '[admin] VITE_API_BASE_URL is empty in a production build. ' +
+    'Set it at build time or in admin/.env.production before running `vite build`.'
+  )
+}
+
+/** Joins the configured base URL onto a leading-slash path. Same-origin in dev. */
+function resolveURL(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path
+  if (!API_BASE) return path // dev / proxy fallback
+  return `${API_BASE}${path.startsWith('/') ? path : '/' + path}`
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -35,7 +64,7 @@ async function request<T>(method: Method, path: string, body?: unknown): Promise
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
 
-  const res = await fetch(path, {
+  const res = await fetch(resolveURL(path), {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

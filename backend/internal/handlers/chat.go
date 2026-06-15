@@ -28,15 +28,19 @@ type ChatHandler struct {
 	uploadDir string
 	wsHub     *ws.Hub
 	jwtSvc    *auth.JWTService
+	// urlSigner signs private file URLs (chat attachments + license URLs
+	// in profile responses) so a leaked path is unusable past the TTL.
+	urlSigner *PrivateURLSigner
 	logger    *slog.Logger
 }
 
-func NewChatHandler(chatRepo *repository.ChatRepository, uploadDir string, wsHub *ws.Hub, jwtSvc *auth.JWTService, logger *slog.Logger) *ChatHandler {
+func NewChatHandler(chatRepo *repository.ChatRepository, uploadDir string, wsHub *ws.Hub, jwtSvc *auth.JWTService, urlSigner *PrivateURLSigner, logger *slog.Logger) *ChatHandler {
 	return &ChatHandler{
 		chatRepo:  chatRepo,
 		uploadDir: uploadDir,
 		wsHub:     wsHub,
 		jwtSvc:    jwtSvc,
+		urlSigner: urlSigner,
 		logger:    logger,
 	}
 }
@@ -179,6 +183,13 @@ func (h *ChatHandler) ListMessages(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		}
 		return
+	}
+
+	// Sign attachment URLs in every message we're about to emit.
+	for i := range resp.Messages {
+		for j := range resp.Messages[i].Attachments {
+			resp.Messages[i].Attachments[j].FileURL = h.urlSigner.Sign(resp.Messages[i].Attachments[j].FileURL)
+		}
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, resp)
@@ -696,6 +707,13 @@ func (h *ChatHandler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sign each FileURL so the iOS client gets ?sig/?exp it can hand to the
+	// FilesHandler. Without this the URL would 404 in production where
+	// REQUIRE_PRIVATE_UPLOAD_SIGNATURES=true.
+	for i := range atts {
+		atts[i].FileURL = h.urlSigner.Sign(atts[i].FileURL)
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"attachments": atts})
 }
 
@@ -896,7 +914,7 @@ func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 				Filename:  att.Filename,
 				MimeType:  att.MimeType,
 				FileSize:  att.FileSize,
-				FileURL:   att.FileURL,
+				FileURL:   h.urlSigner.Sign(att.FileURL),
 				CreatedAt: models.RFC3339Time(att.CreatedAt),
 			},
 		},
@@ -932,7 +950,7 @@ func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 
 // GetUserProfile returns a user's profile detail.
 func (h *ChatHandler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
-	_, ok := httputil.GetUserID(r.Context())
+	requesterID, ok := httputil.GetUserID(r.Context())
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
 		return
@@ -944,7 +962,7 @@ func (h *ChatHandler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile, err := h.chatRepo.GetUserProfileDetail(r.Context(), targetID)
+	profile, err := h.chatRepo.GetUserProfileDetail(r.Context(), requesterID, targetID)
 	if err != nil {
 		if apiErr := models.GetAPIError(err); apiErr != nil {
 			httputil.WriteError(w, http.StatusNotFound, apiErr)
@@ -953,6 +971,14 @@ func (h *ChatHandler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		}
 		return
+	}
+
+	// Sign the license URL if the repository allowed it through (caller is
+	// self or shares a chat — see GetUserProfileDetail). Passing nil into
+	// Sign is a passthrough so this is safe regardless of role/dev mode.
+	if profile.LicenseDocURL != nil {
+		signed := h.urlSigner.Sign(*profile.LicenseDocURL)
+		profile.LicenseDocURL = &signed
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, profile)

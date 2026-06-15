@@ -9,6 +9,10 @@ struct LeaseRequestCardView: View {
     let onCancel: () -> Void
     let onAdjustPrice: () -> Void
     let onConfirmPickup: () -> Void
+    /// Owner-only: tap "Cancel acceptance" while the lease is still in the
+    /// `accepted` state (no payment in flight). Backend RescindAccept
+    /// returns the lease to cancelled and unreserves the car.
+    let onRescindAccept: () -> Void
     /// Owner-only: invoked with one of LeaseRequest.allowedPickupExtensionMinutes.
     let onExtendPickup: (Int) -> Void
 
@@ -18,6 +22,7 @@ struct LeaseRequestCardView: View {
     /// Shown when the owner taps "Add more time" — surfaces only the
     /// presets that still fit within the 120-minute cap.
     @State private var showingExtendDialog = false
+    @State private var showingRescindConfirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -143,6 +148,12 @@ struct LeaseRequestCardView: View {
         } message: {
             Text("Gives the driver more time to pick up the car before the automatic refund. Up to \(leaseRequest.pickupExtensionRemainingMinutes) minutes left to add.")
         }
+        .alert("Cancel acceptance?", isPresented: $showingRescindConfirm) {
+            Button("Keep", role: .cancel) { }
+            Button("Cancel acceptance", role: .destructive) { onRescindAccept() }
+        } message: {
+            Text("The driver will be told the rental is cancelled. No charge has been made — your car returns to Discovery right away.")
+        }
     }
 
     // MARK: - Status Badge
@@ -262,6 +273,21 @@ struct LeaseRequestCardView: View {
                         .foregroundColor(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
+            }
+        } else if isOwner && leaseRequest.status == .accepted {
+            // Owner accepted but driver hasn't paid yet — let the owner back
+            // out without admin intervention. Once payment is in flight the
+            // backend refuses with 409 and we don't expose the button.
+            Button {
+                showingRescindConfirm = true
+            } label: {
+                Text("Cancel acceptance")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color(.systemGray5))
+                    .foregroundColor(.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
             }
         } else if isDriver && leaseRequest.isAwaitingPickupConfirmation,
                   let deadline = leaseRequest.pickupDeadlineAt {

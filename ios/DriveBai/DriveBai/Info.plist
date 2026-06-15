@@ -15,8 +15,10 @@
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
+		<!-- App Store / TestFlight friendly: ATS enforced by default.
+		     Only localhost (DEBUG builds talking to a local backend) is
+		     exempt; the production Fly endpoint already uses TLS so no
+		     additional exception is required. -->
 		<key>NSExceptionDomains</key>
 		<dict>
 			<key>localhost</key>
@@ -32,6 +34,11 @@
 		<true/>
 	</dict>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<!-- Branded background instead of blank white on cold start.
+		     AccentColor already exists in Assets.xcassets (brand teal). -->
+		<key>UIColorName</key>
+		<string>AccentColor</string>
+	</dict>
 </dict>
 </plist>

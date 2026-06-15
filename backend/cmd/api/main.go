@@ -21,6 +21,7 @@ import (
 	"github.com/drivebai/backend/internal/push"
 	"github.com/drivebai/backend/internal/repository"
 	stripeService "github.com/drivebai/backend/internal/stripe"
+	"github.com/drivebai/backend/internal/urlsigner"
 	"github.com/drivebai/backend/internal/ws"
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -40,6 +41,14 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	// Fail fast if production is missing critical env (Stripe keys, JWT
+	// secret strength, URL signing secret, HTTPS base URL, etc.). In dev
+	// this is a no-op so a fresh checkout still boots without setup.
+	if err := cfg.ValidateForProduction(); err != nil {
+		logger.Error("production env validation failed", "problems", err.Error())
 		os.Exit(1)
 	}
 
@@ -92,6 +101,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// URL signer for private uploads. Production must set UPLOAD_URL_SECRET;
+	// in development we fall back to the JWT secret so a fresh checkout boots.
+	uploadSecret := cfg.UploadURLSecret
+	if uploadSecret == "" {
+		uploadSecret = cfg.JWTSecret
+	}
+	uploadSigner := urlsigner.New(uploadSecret)
+	privateURLSigner := &handlers.PrivateURLSigner{Signer: uploadSigner, TTL: cfg.UploadURLTTL}
+	logger.Info("upload url signing",
+		"signer_configured", uploadSigner != nil,
+		"require_signed_private", cfg.RequirePrivateUploadSignatures,
+		"ttl", cfg.UploadURLTTL.String(),
+	)
+
 	// Initialize WebSocket hub
 	wsHub := ws.NewHub(logger)
 	go wsHub.Run()
@@ -122,19 +145,19 @@ func main() {
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
-	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
+	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
-	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, logger)
+	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, privateURLSigner, logger)
 	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
 	pickupDeadline := time.Duration(cfg.PickupDeadlineMinutes) * time.Minute
-	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, pickupDeadline, logger)
+	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
-	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, logger)
+	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
 
 	// Setup router
@@ -145,14 +168,19 @@ func main() {
 	r.Use(chiMiddleware.RealIP)
 	r.Use(middleware.Logger(logger))
 	r.Use(chiMiddleware.Recoverer)
+	// CORS. We use token auth (Authorization: Bearer), not cookies, so
+	// AllowCredentials stays false — this avoids the spec-illegal combo of
+	// `*` origin + credentials that browsers reject. Allowlist is driven
+	// by CORS_ALLOWED_ORIGINS (production validation enforces a real list).
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   cfg.CORSAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Request-ID"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           300,
 	}))
+	logger.Info("cors configured", "allowed_origins", cfg.CORSAllowedOrigins)
 
 	// Health check
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -286,6 +314,7 @@ func main() {
 			r.Post("/lease-requests/{id}/accept", leaseHandler.AcceptLeaseRequest)
 			r.Post("/lease-requests/{id}/decline", leaseHandler.DeclineLeaseRequest)
 			r.Post("/lease-requests/{id}/cancel", leaseHandler.CancelLeaseRequest)
+			r.Post("/lease-requests/{id}/rescind", leaseHandler.RescindAcceptedLeaseRequest)
 			r.Patch("/lease-requests/{id}/price", leaseHandler.UpdateOfferedPrice)
 			r.Post("/lease-requests/{id}/pickup-confirm", leaseHandler.ConfirmPickup)
 			r.Post("/lease-requests/{id}/pickup-deadline/extend", leaseHandler.ExtendPickupDeadline)
@@ -360,9 +389,12 @@ func main() {
 		})
 	})
 
-	// Serve uploaded files
-	fileServer := http.FileServer(http.Dir(uploadDir))
-	r.Handle("/uploads/*", http.StripPrefix("/uploads/", fileServer))
+	// Serve uploaded files. Private paths (chat attachments, driver
+	// documents, accident files, …) require a valid `?sig=…&exp=…` HMAC
+	// minted by the API handler that knew the caller was authorized.
+	// Public paths (car photos, profile photos) are served unsigned.
+	filesHandler := handlers.NewFilesHandler(uploadDir, uploadSigner, cfg.RequirePrivateUploadSignatures, logger)
+	r.Get("/uploads/*", filesHandler.Serve)
 
 	// Serve OpenAPI spec
 	r.Get("/openapi", func(w http.ResponseWriter, r *http.Request) {

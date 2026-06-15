@@ -32,6 +32,7 @@ type LeaseRequestHandler struct {
 	stripe          *stripeService.Service
 	wsHub           *ws.Hub
 	notifHandler    *NotificationHandler
+	urlSigner       *PrivateURLSigner
 	logger          *slog.Logger
 	// pickupDeadline is the grace window after payment_intent.succeeded in
 	// which the driver must confirm pickup. Past this point a background
@@ -50,6 +51,7 @@ func NewLeaseRequestHandler(
 	stripe *stripeService.Service,
 	wsHub *ws.Hub,
 	notifHandler *NotificationHandler,
+	urlSigner *PrivateURLSigner,
 	pickupDeadline time.Duration,
 	logger *slog.Logger,
 ) *LeaseRequestHandler {
@@ -67,6 +69,7 @@ func NewLeaseRequestHandler(
 		stripe:          stripe,
 		wsHub:           wsHub,
 		notifHandler:    notifHandler,
+		urlSigner:       urlSigner,
 		pickupDeadline:  pickupDeadline,
 		logger:          logger,
 	}
@@ -231,6 +234,70 @@ func (h *LeaseRequestHandler) DeclineLeaseRequest(w http.ResponseWriter, r *http
 // CancelLeaseRequest handles POST /api/v1/lease-requests/{id}/cancel
 func (h *LeaseRequestHandler) CancelLeaseRequest(w http.ResponseWriter, r *http.Request) {
 	h.handleLeaseAction(w, r, "cancel")
+}
+
+// RescindAcceptedLeaseRequest handles POST /api/v1/lease-requests/{id}/rescind.
+// Owner-only path to undo a mistaken Accept while the lease is still in the
+// `accepted` state (no payment in flight). Refuses with 409 once the driver
+// has moved to payment_pending / paid — at that point the owner must either
+// wait or use admin tooling to refund first. Releases the car reservation
+// atomically with the status change, so Discovery sees the listing again
+// before the response returns.
+func (h *LeaseRequestHandler) RescindAcceptedLeaseRequest(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	updated, err := h.leaseRepo.RescindAccept(r.Context(), leaseID, userID)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			status := http.StatusBadRequest
+			switch apiErr.Code {
+			case models.ErrCodeLeaseRequestNotFound:
+				status = http.StatusNotFound
+			case models.ErrCodeInvalidLeaseAction:
+				// "Only the owner can perform this action" → 403; status mismatch → 409.
+				if apiErr.Message == "Only the owner can perform this action" {
+					status = http.StatusForbidden
+				} else {
+					status = http.StatusConflict
+				}
+			}
+			httputil.WriteError(w, status, apiErr)
+			return
+		}
+		h.logger.Error("rescind accept", "error", err, "lease_request_id", leaseID, "user_id", userID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resp := h.buildLeaseRequestResponse(r, updated, nil)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{updated.DriverID, updated.OwnerID},
+	})
+
+	chatID := updated.ChatID
+	lrID := updated.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "the car"
+	}
+	go h.notifHandler.Notify(updated.DriverID, models.NotificationTypeLeaseRequest,
+		"Owner cancelled the rental",
+		fmt.Sprintf("The owner cancelled your accepted request for %s before payment. No charge was made.", carTitle),
+		&chatID, &lrID)
 }
 
 func (h *LeaseRequestHandler) handleLeaseAction(w http.ResponseWriter, r *http.Request, action string) {
@@ -825,20 +892,45 @@ func (h *LeaseRequestHandler) StartPickupExpiryScanner(ctx context.Context, inte
 	}
 }
 
+// stuckRefundStaleAfter is the minimum age before a row claimed for expiry
+// (status=expired_refunded, refund_id=NULL) is considered "stuck" and replayed.
+// 2 minutes gives a worker on its slow ticker a chance to finish without us
+// stepping on it, while still surfacing a real outage within the next sweep.
+const stuckRefundStaleAfter = 2 * time.Minute
+
 func (h *LeaseRequestHandler) runExpirySweep(ctx context.Context) {
 	now := time.Now().UTC()
+
+	// Phase 1: claim freshly-expired leases (status='paid' AND deadline <= now).
 	candidates, err := h.leaseRepo.ListExpiredAwaitingPickup(ctx, now, 50)
 	if err != nil {
 		h.logger.Error("expiry sweep: list", "error", err)
-		return
+	} else if len(candidates) > 0 {
+		h.logger.Info("expiry sweep: candidates", "count", len(candidates))
+		for _, c := range candidates {
+			h.processExpiredLease(ctx, c.ID)
+		}
 	}
-	if len(candidates) == 0 {
-		return
-	}
-	h.logger.Info("expiry sweep: candidates", "count", len(candidates))
 
-	for _, c := range candidates {
-		h.processExpiredLease(ctx, c.ID)
+	// Phase 2: retry stuck refunds — leases the worker already claimed but
+	// whose Stripe refund never persisted (process crash / Stripe 5xx /
+	// transient DB error between CreateRefund and FinalizeRefund). The
+	// stable idempotency key (`refund-<leaseID>`) makes the replay safe —
+	// Stripe returns the same Refund object instead of issuing a second
+	// charge-back. Without this phase a single mid-flight crash would
+	// silently dangle a refund forever (status='expired_refunded' but
+	// refund_id IS NULL is invisible to ListExpiredAwaitingPickup).
+	stuckBefore := now.Add(-stuckRefundStaleAfter)
+	stuck, err := h.leaseRepo.ListStuckRefunds(ctx, stuckBefore, 50)
+	if err != nil {
+		h.logger.Error("expiry sweep: list stuck refunds", "error", err)
+		return
+	}
+	if len(stuck) > 0 {
+		h.logger.Info("expiry sweep: stuck refund candidates", "count", len(stuck))
+		for i := range stuck {
+			h.retryStuckRefund(ctx, &stuck[i])
+		}
 	}
 }
 
@@ -861,14 +953,46 @@ func (h *LeaseRequestHandler) processExpiredLease(ctx context.Context, leaseID u
 	h.broadcastLeaseUpdate(ctx, lr)
 	h.notifyExpiry(ctx, lr)
 
-	// Step 3: issue the refund. We need the PaymentIntent ID from the
-	// payment row. If there's no PI yet (shouldn't happen for status=paid),
-	// mark refund_status=failed and bail so an operator can intervene.
+	// Step 3: issue + finalize the refund (shared with the stuck-retry path).
+	h.issueAndFinalizeRefund(ctx, lr, "expiry")
+}
+
+// retryStuckRefund is the recovery path for leases ClaimForExpiry already
+// moved to status=expired_refunded but whose Stripe refund never persisted
+// (worker crashed mid-call, Stripe returned 5xx, etc.). We do NOT re-broadcast
+// the lease state — the original processExpiredLease already did that. We
+// also do not re-notify (the driver was already told the deadline elapsed).
+// All that remains is to make Stripe agree; the idempotency key in
+// issueAndFinalizeRefund makes the replay safe.
+func (h *LeaseRequestHandler) retryStuckRefund(ctx context.Context, lr *models.LeaseRequest) {
+	h.logger.Info("expiry: refund retry claimed",
+		"lease_request_id", lr.ID,
+		"previous_refund_status", strOrEmpty(lr.RefundStatus),
+		"row_age_seconds", time.Since(lr.UpdatedAt).Seconds())
+	h.issueAndFinalizeRefund(ctx, lr, "retry")
+}
+
+// issueAndFinalizeRefund is the shared body for the first-attempt and the
+// retry path. It loads the linked PaymentIntent, calls Stripe with the
+// stable `refund-<leaseID>` idempotency key, persists the outcome, and
+// re-broadcasts so the UI flips when the refund actually lands.
+//
+// Safety notes:
+//   - Stripe dedupes on the idempotency key, so a replay returns the same
+//     Refund object instead of double-charging.
+//   - If the payment row has no PaymentIntentID we cannot refund — we mark
+//     refund_status=failed so an operator can intervene. The retry sweep
+//     will pick the row up again on a future tick (refund_status='failed'
+//     is included in ListStuckRefunds).
+//   - phase is "expiry" on first attempt, "retry" on later attempts; it's
+//     used only for log prefixes so the two paths are distinguishable in
+//     production logs.
+func (h *LeaseRequestHandler) issueAndFinalizeRefund(ctx context.Context, lr *models.LeaseRequest, phase string) {
 	payment, err := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID)
 	if err != nil || payment == nil || payment.PaymentIntentID == nil {
-		h.logger.Error("expiry: payment lookup failed", "error", err, "lease_request_id", lr.ID)
+		h.logger.Error("expiry: payment lookup failed", "phase", phase, "error", err, "lease_request_id", lr.ID)
 		if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, "", models.RefundStatusFailed); ferr != nil {
-			h.logger.Error("expiry: finalize refund (no PI)", "error", ferr, "lease_request_id", lr.ID)
+			h.logger.Error("expiry: finalize refund (no PI)", "phase", phase, "error", ferr, "lease_request_id", lr.ID)
 		}
 		return
 	}
@@ -876,29 +1000,30 @@ func (h *LeaseRequestHandler) processExpiredLease(ctx context.Context, leaseID u
 	idemKey := fmt.Sprintf("refund-%s", lr.ID.String())
 	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer")
 	if err != nil {
-		h.logger.Error("expiry: stripe refund", "error", err, "lease_request_id", lr.ID, "intent_id", *payment.PaymentIntentID)
+		h.logger.Error("expiry: refund retry failed",
+			"phase", phase,
+			"error", err,
+			"lease_request_id", lr.ID,
+			"intent_id", *payment.PaymentIntentID,
+		)
 		if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, "", models.RefundStatusFailed); ferr != nil {
-			h.logger.Error("expiry: finalize refund (stripe failed)", "error", ferr, "lease_request_id", lr.ID)
+			h.logger.Error("expiry: finalize refund (stripe failed)", "phase", phase, "error", ferr, "lease_request_id", lr.ID)
 		}
 		return
 	}
 
-	// Step 4: persist the Stripe outcome. Stripe statuses we care about:
-	// "succeeded" → done. "pending" → not final yet, but we record the ID
-	// so we don't re-issue (idem key would already block dupes anyway).
-	// Anything else (failed/canceled/requires_action) → leave as failed for
-	// an operator to inspect.
 	status := models.RefundStatusFailed
 	switch refund.Status {
 	case "succeeded", "pending":
 		status = models.RefundStatusSucceeded
 	}
 	if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, refund.ID, status); ferr != nil {
-		h.logger.Error("expiry: finalize refund", "error", ferr, "lease_request_id", lr.ID, "refund_id", refund.ID)
+		h.logger.Error("expiry: finalize refund", "phase", phase, "error", ferr, "lease_request_id", lr.ID, "refund_id", refund.ID)
 		return
 	}
 
 	h.logger.Info("expiry: refund completed",
+		"phase", phase,
 		"lease_request_id", lr.ID,
 		"refund_id", refund.ID,
 		"stripe_status", refund.Status,
@@ -908,6 +1033,13 @@ func (h *LeaseRequestHandler) processExpiredLease(ctx context.Context, leaseID u
 	if updated, err := h.leaseRepo.GetByID(ctx, lr.ID); err == nil && updated != nil {
 		h.broadcastLeaseUpdate(ctx, updated)
 	}
+}
+
+func strOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // broadcastLeaseUpdate sends a lease_request_updated WS event to both
@@ -1380,7 +1512,7 @@ func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http
 			UploaderID: info.UploaderID,
 			Type:       info.Type,
 			FileName:   info.FileName,
-			FileURL:    publicURLForDocument(info.UploaderID, info.FilePath),
+			FileURL:    h.urlSigner.Sign(publicURLForDocument(info.UploaderID, info.FilePath)),
 			FileSize:   info.FileSize,
 			MimeType:   info.MimeType,
 			Status:     info.Status,

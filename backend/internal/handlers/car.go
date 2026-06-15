@@ -26,6 +26,9 @@ type CarHandler struct {
 	docRepo            *repository.CarDocumentRepository
 	userRepo           *repository.UserRepository
 	uploadDir          string
+	// urlSigner signs car-document URLs (insurance, registration). Car
+	// PHOTO URLs are not signed — they're publicly readable for Discovery.
+	urlSigner          *PrivateURLSigner
 	minWeeklyRentPrice float64
 	autoApproveCars    bool
 }
@@ -36,6 +39,7 @@ func NewCarHandler(
 	docRepo *repository.CarDocumentRepository,
 	userRepo *repository.UserRepository,
 	uploadDir string,
+	urlSigner *PrivateURLSigner,
 	minWeeklyRentPrice float64,
 	autoApproveCars bool,
 ) *CarHandler {
@@ -45,6 +49,7 @@ func NewCarHandler(
 		docRepo:            docRepo,
 		userRepo:           userRepo,
 		uploadDir:          uploadDir,
+		urlSigner:          urlSigner,
 		minWeeklyRentPrice: minWeeklyRentPrice,
 		autoApproveCars:    autoApproveCars,
 	}
@@ -833,7 +838,8 @@ func (h *CarHandler) ListCarDocuments(w http.ResponseWriter, r *http.Request) {
 			ID:           d.ID,
 			DocumentType: d.DocumentType,
 			FileName:     d.FileName,
-			FileURL:      d.FileURL,
+			// Sign per response — DB stores raw `/uploads/cars/.../documents/...`.
+			FileURL:      h.urlSigner.Sign(d.FileURL),
 			FileSize:     d.FileSize,
 			CreatedAt:    models.RFC3339Time(d.CreatedAt),
 			UpdatedAt:    models.RFC3339Time(d.UpdatedAt),
@@ -986,7 +992,7 @@ func (h *CarHandler) UploadCarDocument(w http.ResponseWriter, r *http.Request) {
 		ID:           doc.ID,
 		DocumentType: doc.DocumentType,
 		FileName:     doc.FileName,
-		FileURL:      doc.FileURL,
+		FileURL:      h.urlSigner.Sign(doc.FileURL),
 		FileSize:     doc.FileSize,
 		CreatedAt:    models.RFC3339Time(doc.CreatedAt),
 		UpdatedAt:    models.RFC3339Time(doc.UpdatedAt),

@@ -366,6 +366,22 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Owner: undo an Accept while no payment is in flight. Backend refuses
+    /// (409) once the lease moves past `accepted`, so the iOS error banner
+    /// flashes "the rental is already in progress" — which is the right
+    /// thing to show the owner.
+    func rescindAcceptedLeaseRequest(id: UUID) async {
+        do {
+            let response = try await apiClient.rescindAcceptedLeaseRequest(id: id)
+            let updated = response.toLeaseRequest()
+            if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
+                leaseRequests[idx] = updated
+            }
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
     /// Driver-only: confirms in-person pickup before the PICKUP_DEADLINE_MINUTES
     /// window elapses. Backend marks pickup_confirmed_at, stops the expiry
     /// scanner from picking the row up, and broadcasts to both sides.

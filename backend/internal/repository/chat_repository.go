@@ -83,6 +83,28 @@ func (r *ChatRepository) IsParticipant(ctx context.Context, chatID, userID uuid.
 	return exists, err
 }
 
+// UsersShareChat reports whether two distinct users are participants in the
+// same chat — i.e. they have an established owner↔driver relationship. Used
+// as the authorization gate for fields that surface PII across the relation
+// (e.g. exposing a driver's license URL to the car owner they're chatting
+// with). Returns false when userA == userB so the caller is forced to use
+// the self-equality branch explicitly.
+func (r *ChatRepository) UsersShareChat(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
+	if userA == userB {
+		return false, nil
+	}
+	var exists bool
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM chat_participants a
+			JOIN chat_participants b ON b.chat_id = a.chat_id
+			WHERE a.user_id = $1 AND b.user_id = $2
+		)
+	`, userA, userB).Scan(&exists)
+	return exists, err
+}
+
 // GetChatByID returns a chat by its ID.
 func (r *ChatRepository) GetChatByID(ctx context.Context, chatID uuid.UUID) (*models.Chat, error) {
 	var chat models.Chat
@@ -863,7 +885,15 @@ func (r *ChatRepository) CreateAttachment(ctx context.Context, att *models.Attac
 }
 
 // GetUserProfileDetail returns a user's profile with role-specific fields.
-func (r *ChatRepository) GetUserProfileDetail(ctx context.Context, userID uuid.UUID) (*models.UserProfileDetailResponse, error) {
+//
+// SECURITY: LicenseDocURL is PII and must only surface to:
+//   - the user themselves (requesterID == userID), or
+//   - a counterparty in an established chat relationship.
+//
+// Callers MUST pass the requester's ID so this gate runs. Passing
+// uuid.Nil disables the relationship branch and the license is only
+// returned for the self-query case.
+func (r *ChatRepository) GetUserProfileDetail(ctx context.Context, requesterID, userID uuid.UUID) (*models.UserProfileDetailResponse, error) {
 	var resp models.UserProfileDetailResponse
 	var memberSince time.Time
 	var role models.Role
@@ -883,13 +913,25 @@ func (r *ChatRepository) GetUserProfileDetail(ctx context.Context, userID uuid.U
 	resp.MemberSince = models.RFC3339Time(memberSince)
 
 	if role == models.RoleDriver {
-		// Get driver's license URL
-		var licURL *string
-		_ = r.db.Pool.QueryRow(ctx, `
-			SELECT '/uploads/documents/' || id || '/' || file_name
-			FROM documents WHERE user_id = $1 AND type = 'drivers_license' LIMIT 1
-		`, userID).Scan(&licURL)
-		resp.LicenseDocURL = licURL
+		// PII gate (B2 fix): only return the driver license URL when the
+		// requester is either the driver themselves or a counterparty in
+		// an existing chat with them. Anyone else gets the profile minus
+		// the license field — they can still see the driver's name,
+		// avatar, and stats; they just can't harvest licenses by walking
+		// user UUIDs.
+		allowed := requesterID == userID
+		if !allowed && requesterID != uuid.Nil {
+			share, _ := r.UsersShareChat(ctx, requesterID, userID)
+			allowed = share
+		}
+		if allowed {
+			var licURL *string
+			_ = r.db.Pool.QueryRow(ctx, `
+				SELECT '/uploads/documents/' || id || '/' || file_name
+				FROM documents WHERE user_id = $1 AND type = 'drivers_license' LIMIT 1
+			`, userID).Scan(&licURL)
+			resp.LicenseDocURL = licURL
+		}
 
 		trips := 0
 		resp.TotalTrips = &trips

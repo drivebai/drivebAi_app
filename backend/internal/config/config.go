@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -32,6 +34,21 @@ type Config struct {
 	AppBaseURL        string
 
 	UploadDir string
+	// UploadURLSecret keys the HMAC that signs private file URLs (chat
+	// attachments, driver documents, accident files, …). Required in
+	// production; when empty in dev we fall back to JWTSecret so local
+	// flows still work without extra setup.
+	UploadURLSecret string
+	// UploadURLTTL is how long a signed private-file URL remains valid.
+	// Defaults to 1 hour — short enough that an accidentally-shared link
+	// dies quickly, long enough that the iOS image cache + chat reload
+	// stay happy without re-fetching parent JSON.
+	UploadURLTTL time.Duration
+	// RequirePrivateUploadSignatures must be true in production so private
+	// paths are 404'd without a valid signature. Off in development so
+	// running with old clients that still hold unsigned URLs doesn't
+	// break local QA. Defaults to true when ENV != "development".
+	RequirePrivateUploadSignatures bool
 
 	// Stripe configuration
 	StripeSecretKey      string
@@ -53,6 +70,12 @@ type Config struct {
 	// Test/staging bypass: auto-approve newly created cars so they appear in Discover immediately.
 	// Set AUTO_APPROVE_CARS=true in dev/staging; must be false (default) in production.
 	AutoApproveCars bool
+
+	// CORS allowed origins, comma-separated. In production this must be a
+	// concrete list (e.g. https://drivebai-admin-team.fly.dev). Default of
+	// "*" is fine for development (iOS clients don't care about CORS); the
+	// production-validation step rejects "*" in non-dev envs.
+	CORSAllowedOrigins []string
 
 	// APNs push notification (all required; if any empty, push is disabled)
 	AppleTeamID   string
@@ -87,6 +110,14 @@ func Load() (*Config, error) {
 		AppBaseURL:        getEnv("APP_BASE_URL", "http://localhost:8080"),
 
 		UploadDir: getEnv("UPLOAD_DIR", "./uploads"),
+		// UploadURLSecret: prefer the explicit env var; in dev, fall back to
+		// the JWT secret so a fresh local checkout works without extra wiring.
+		// Production must set both explicitly.
+		UploadURLSecret: getEnv("UPLOAD_URL_SECRET", ""),
+		UploadURLTTL:    getDuration("UPLOAD_URL_TTL", 1*time.Hour),
+		// Defaults to true (enforce signatures) UNLESS we're in development.
+		RequirePrivateUploadSignatures: getEnv("REQUIRE_PRIVATE_UPLOAD_SIGNATURES", "") != "false" &&
+			getEnv("ENV", "development") != "development",
 
 		StripeSecretKey:      getEnv("STRIPE_SECRET_KEY", ""),
 		StripePublishableKey: getEnv("STRIPE_PUBLISHABLE_KEY", ""),
@@ -98,6 +129,10 @@ func Load() (*Config, error) {
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),
+
+		// CORS origins. Production should pin to the admin URL(s) only.
+		// "*" is allowed in dev and rejected by ValidateForProduction in prod.
+		CORSAllowedOrigins: parseCSV(getEnv("CORS_ALLOWED_ORIGINS", "*")),
 
 		AppleTeamID:   getEnv("APPLE_TEAM_ID", ""),
 		APNSKeyID:     getEnv("APNS_KEY_ID", ""),
@@ -134,6 +169,24 @@ func getIntEnv(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// parseCSV splits "a,b , c" into ["a","b","c"], trimming whitespace and
+// dropping empty entries. Used for CORS_ALLOWED_ORIGINS so a single env var
+// can carry multiple admin/admin-staging URLs.
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func getFloat64Env(key string, defaultValue float64) float64 {
 	if value := os.Getenv(key); value != "" {
 		if f, err := strconv.ParseFloat(value, 64); err == nil {
@@ -145,4 +198,70 @@ func getFloat64Env(key string, defaultValue float64) float64 {
 
 func (c *Config) IsDevelopment() bool {
 	return c.Env == "development"
+}
+
+// ValidateForProduction enforces the small set of invariants that must hold
+// in a non-development env. Each one would otherwise fail silently in a way
+// that's hard to diagnose post-deploy (Stripe webhooks dropped on the floor,
+// password reset emails undeliverable, sessions signed with the dev secret,
+// etc.). Failing fast at startup is the cheapest fix.
+//
+// Returns a multi-error string (joined with "; ") so the operator sees
+// every missing piece in one pass, not one at a time.
+//
+// In development this is a no-op and returns nil — convenience matters
+// more than enforcement on a laptop.
+func (c *Config) ValidateForProduction() error {
+	if c.IsDevelopment() {
+		return nil
+	}
+
+	var problems []string
+
+	if c.JWTSecret == "" || c.JWTSecret == "dev-secret-change-me" {
+		problems = append(problems, "JWT_SECRET must be set to a strong random value (not the dev default)")
+	}
+	if c.StripeSecretKey == "" {
+		problems = append(problems, "STRIPE_SECRET_KEY is required")
+	}
+	if c.StripePublishableKey == "" {
+		problems = append(problems, "STRIPE_PUBLISHABLE_KEY is required")
+	}
+	if c.StripeWebhookSecret == "" {
+		// Without this the webhook handler 400s every legitimate event,
+		// pickups never auto-confirm, and refunds never finalize via the
+		// happy path. The polling fallback only partially masks it.
+		problems = append(problems, "STRIPE_WEBHOOK_SECRET is required (webhooks will be rejected without it)")
+	}
+	if c.UploadURLSecret == "" {
+		problems = append(problems, "UPLOAD_URL_SECRET is required (private file URLs will refuse to sign)")
+	}
+	if c.AppBaseURL != "" && !strings.HasPrefix(c.AppBaseURL, "https://") {
+		problems = append(problems, "APP_BASE_URL must be HTTPS")
+	}
+	if c.AutoApproveCars {
+		// Cars must go through admin approval in prod — auto-approve bypasses
+		// the safety check that's the whole point of the moderation queue.
+		problems = append(problems, "AUTO_APPROVE_CARS must be false in production")
+	}
+	if !c.RequirePrivateUploadSignatures {
+		// In production we want the FilesHandler to reject unsigned access
+		// to private paths. Toggling this off is a privacy hole.
+		problems = append(problems, "REQUIRE_PRIVATE_UPLOAD_SIGNATURES must not be disabled in production")
+	}
+	if len(c.CORSAllowedOrigins) == 0 {
+		problems = append(problems, "CORS_ALLOWED_ORIGINS is required (comma-separated admin URLs)")
+	} else {
+		for _, o := range c.CORSAllowedOrigins {
+			if o == "*" {
+				problems = append(problems, "CORS_ALLOWED_ORIGINS must not be '*' in production (set the explicit admin URL)")
+				break
+			}
+		}
+	}
+
+	if len(problems) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(problems, "; "))
 }

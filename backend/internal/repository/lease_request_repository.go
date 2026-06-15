@@ -319,6 +319,29 @@ func (r *LeaseRequestRepository) CancelLeaseRequest(ctx context.Context, id, dri
 	return lr, nil
 }
 
+// RescindAccept transitions accepted → cancelled (owner only) and releases the
+// car back to discovery in the same flow. This is the "undo accept" path for
+// owners who tapped Accept by mistake; it MUST refuse once a payment is in
+// flight (status moved past 'accepted') because we never want to drop a paid
+// lease without going through the refund path.
+//
+// The updateStatus helper underneath enforces:
+//   - actor must equal owner_id (owner-only)
+//   - current status must equal 'accepted' (refused with INVALID_LEASE_ACTION
+//     for any other state, including payment_pending and paid)
+//
+// Calling Rescind twice in succession returns INVALID_LEASE_ACTION on the
+// second call — the row is already cancelled. The handler maps that to
+// a clean 409 so a double-tap doesn't look like a 500.
+func (r *LeaseRequestRepository) RescindAccept(ctx context.Context, id, ownerID uuid.UUID) (*models.LeaseRequest, error) {
+	lr, err := r.updateStatus(ctx, id, ownerID, models.LeaseStatusAccepted, models.LeaseStatusCancelled, "owner")
+	if err != nil {
+		return nil, err
+	}
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return lr, nil
+}
+
 // unreserveCarIfHeldBy clears cars.reserved_by_lease_request_id when (and only
 // when) it matches this lease — so this lease's transition out of a
 // reservation-holding state releases the listing back to discovery, while
@@ -774,6 +797,55 @@ func (r *LeaseRequestRepository) ConfirmPickup(ctx context.Context, id, driverID
 		return nil, err
 	}
 	return lr, nil
+}
+
+// ListStuckRefunds returns leases that were claimed for expiry (status moved
+// to expired_refunded) but whose Stripe refund never finalized — typically
+// because the worker crashed or the Stripe call timed out between
+// ClaimForExpiry and FinalizeRefund. Rows older than `staleAfter` are
+// surfaced so the next sweep can replay CreateRefund with the same stable
+// idempotency key (`refund-<leaseID>`), which Stripe dedupes server-side.
+//
+// The query intentionally allows refund_status = 'failed' or NULL in
+// addition to 'pending' so a transient Stripe 5xx from a previous attempt
+// doesn't permanently park the row.
+func (r *LeaseRequestRepository) ListStuckRefunds(ctx context.Context, staleAfter time.Time, limit int) ([]models.LeaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		FROM lease_requests
+		WHERE status = 'expired_refunded'
+		  AND refund_id   IS NULL
+		  AND refunded_at IS NULL
+		  AND (refund_status IS NULL OR refund_status IN ('pending', 'failed'))
+		  AND updated_at <= $1
+		ORDER BY updated_at ASC
+		LIMIT $2
+	`, staleAfter, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stuck refunds: %w", err)
+	}
+	defer rows.Close()
+
+	out := []models.LeaseRequest{}
+	for rows.Next() {
+		var lr models.LeaseRequest
+		if err := rows.Scan(
+			&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+			&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+			&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+			&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, nil
 }
 
 // ListExpiredAwaitingPickup returns leases whose pickup deadline has passed

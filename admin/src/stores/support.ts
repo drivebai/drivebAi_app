@@ -22,8 +22,17 @@ export const useSupportStore = defineStore('support', () => {
     const token = getToken()
     if (!token) return
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/ws?token=${token}`)
+    // Derive the WS endpoint from VITE_API_BASE_URL (production), falling back
+    // to same-origin in dev where the Vite proxy upgrades /api/v1/ws to wss.
+    const apiBase = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '')
+    let wsURL: string
+    if (apiBase) {
+      wsURL = apiBase.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:') + `/api/v1/ws?token=${token}`
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      wsURL = `${protocol}//${window.location.host}/api/v1/ws?token=${token}`
+    }
+    socket = new WebSocket(wsURL)
 
     socket.onopen = () => {
       reconnectDelay = 3_000  // reset backoff on successful connection

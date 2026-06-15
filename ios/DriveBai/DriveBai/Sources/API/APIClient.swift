@@ -190,6 +190,9 @@ protocol APIClientProtocol {
     func acceptLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func declineLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
+    /// Owner: undo an Accept while the lease is still in `accepted`. Refused
+    /// with 409 once payment is in flight.
+    func rescindAcceptedLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func updateLeaseRequestPrice(id: UUID, offeredWeeklyPrice: Double) async throws -> LeaseRequestAPIResponse
 
     // Actions (Today tab) — chat requests
@@ -636,6 +639,10 @@ final class APIClient: APIClientProtocol {
 
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse {
         try await postEmpty(path: "lease-requests/\(id.uuidString)/cancel", authenticated: true)
+    }
+
+    func rescindAcceptedLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse {
+        try await postEmpty(path: "lease-requests/\(id.uuidString)/rescind", authenticated: true)
     }
 
     func updateLeaseRequestPrice(id: UUID, offeredWeeklyPrice: Double) async throws -> LeaseRequestAPIResponse {

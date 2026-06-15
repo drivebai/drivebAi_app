@@ -26,6 +26,7 @@ type AccidentHandler struct {
 	adminRepo    *repository.AdminRepository
 	wsHub        *ws.Hub
 	uploadDir    string
+	urlSigner    *PrivateURLSigner
 	logger       *slog.Logger
 }
 
@@ -34,6 +35,7 @@ func NewAccidentHandler(
 	adminRepo *repository.AdminRepository,
 	wsHub *ws.Hub,
 	uploadDir string,
+	urlSigner *PrivateURLSigner,
 	logger *slog.Logger,
 ) *AccidentHandler {
 	return &AccidentHandler{
@@ -41,6 +43,7 @@ func NewAccidentHandler(
 		adminRepo:    adminRepo,
 		wsHub:        wsHub,
 		uploadDir:    uploadDir,
+		urlSigner:    urlSigner,
 		logger:       logger,
 	}
 }
@@ -78,6 +81,7 @@ func (h *AccidentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if atts, _ := h.accidentRepo.ListAttachments(r.Context(), existing.ID); atts != nil {
 			existing.Attachments = atts
 		}
+		h.signURLs(existing)
 		httputil.WriteJSON(w, http.StatusOK, existing)
 		return
 	}
@@ -88,6 +92,7 @@ func (h *AccidentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	h.signURLs(accident)
 	httputil.WriteJSON(w, http.StatusCreated, accident)
 }
 
@@ -122,6 +127,7 @@ func (h *AccidentHandler) GetDraft(w http.ResponseWriter, r *http.Request) {
 	if atts, _ := h.accidentRepo.ListAttachments(r.Context(), accident.ID); atts != nil {
 		accident.Attachments = atts
 	}
+	h.signURLs(accident)
 	httputil.WriteJSON(w, http.StatusOK, accident)
 }
 
@@ -142,6 +148,9 @@ func (h *AccidentHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	if accidents == nil {
 		accidents = []models.Accident{}
+	}
+	for i := range accidents {
+		h.signURLs(&accidents[i])
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"accidents": accidents})
 }
@@ -171,6 +180,7 @@ func (h *AccidentHandler) Get(w http.ResponseWriter, r *http.Request) {
 		accident.Attachments = attachments
 	}
 
+	h.signURLs(accident)
 	httputil.WriteJSON(w, http.StatusOK, accident)
 }
 
@@ -233,6 +243,7 @@ func (h *AccidentHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	if attachments, e := h.accidentRepo.ListAttachments(r.Context(), accidentID); e == nil {
 		accident.Attachments = attachments
 	}
+	h.signURLs(accident)
 	httputil.WriteJSON(w, http.StatusOK, accident)
 }
 
@@ -345,6 +356,9 @@ func (h *AccidentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sign the URL we hand back so the iOS client can fetch the file from
+	// the protected /uploads endpoint. The DB row keeps the raw path.
+	att.FileURL = h.urlSigner.Sign(att.FileURL)
 	httputil.WriteJSON(w, http.StatusCreated, att)
 }
 
@@ -442,7 +456,21 @@ func (h *AccidentHandler) Sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, map[string]string{"signature_url": fileURL})
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"signature_url": h.urlSigner.Sign(fileURL)})
+}
+
+// signURLs walks an accident response and signs every private file URL in
+// place. The DB rows keep raw `/uploads/...` paths; only the on-the-wire
+// JSON gets `?sig=&exp=` appended. Callers should hit this immediately
+// before WriteJSON.
+func (h *AccidentHandler) signURLs(a *models.Accident) {
+	if a == nil {
+		return
+	}
+	a.SignatureURL = h.urlSigner.Sign(a.SignatureURL)
+	for i := range a.Attachments {
+		a.Attachments[i].FileURL = h.urlSigner.Sign(a.Attachments[i].FileURL)
+	}
 }
 
 // Submit — POST /accidents/{id}/submit
@@ -469,6 +497,7 @@ func (h *AccidentHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if attachments, e := h.accidentRepo.ListAttachments(r.Context(), accidentID); e == nil {
 		accident.Attachments = attachments
 	}
+	h.signURLs(accident)
 
 	// Broadcast to all admins so the panel updates in real-time
 	adminIDs, _ := h.adminRepo.GetAdminUserIDs(r.Context())
