@@ -10,6 +10,13 @@ primary_region = 'ewr'
 
 [env]
   UPLOAD_DIR = "/data/uploads"
+  ENV = "production"
+  # Static, non-secret knobs. Sensitive overrides go through `fly secrets set`
+  # (UPLOAD_URL_SECRET, CORS_ALLOWED_ORIGINS, STRIPE_*).
+  PICKUP_DEADLINE_MINUTES = "120"
+  PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS = "60"
+  REQUIRE_PRIVATE_UPLOAD_SIGNATURES = "true"
+  UPLOAD_URL_TTL = "1h"
 
 [mounts]
   source = "drivebai_uploads"

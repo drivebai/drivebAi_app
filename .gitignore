@@ -53,3 +53,4 @@ temp/
 *.key
 credentials.json
 secrets.json
+.deploy/

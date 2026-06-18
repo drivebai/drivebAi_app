@@ -616,7 +616,6 @@ struct ListingDetailView: View {
     @State private var showShareSheet = false
     @State private var currentPhotoIndex = 0
     @State private var showLocationMap = false
-    @State private var isCreatingChat = false
     @State private var navigateToChat: ChatNavigationData?
     @State private var isRequestingLease = false
     @State private var leaseRequestError: String?
@@ -801,35 +800,6 @@ struct ListingDetailView: View {
         }
     }
 
-    private func startChat() {
-        guard let user = authStore.state.user, !isCreatingChat else { return }
-        // Defensive guard: never try to start a chat with yourself.
-        guard ChatEligibility.canStartChat(currentUserId: user.id, otherUserId: car.owner.id) else { return }
-        isCreatingChat = true
-
-        Task {
-            defer { isCreatingChat = false }
-            do {
-                let request = FindOrCreateChatAPIRequest(
-                    carId: car.id,
-                    driverId: user.role == .driver ? user.id : car.owner.id,
-                    ownerId: user.role == .carOwner ? user.id : car.owner.id
-                )
-                let chat = try await APIClient.shared.findOrCreateChat(request: request)
-                navigateToChat = ChatNavigationData(
-                    chatId: chat.id,
-                    currentUserId: user.id,
-                    counterpartyId: car.owner.id,
-                    counterpartyName: car.owner.name
-                )
-                // Refresh chats list
-                await ChatsListViewModel.shared.fetchChats()
-            } catch {
-                print("[Chat] Failed to create chat: \(error)")
-            }
-        }
-    }
-
     private func requestLease() {
         guard let user = authStore.state.user, !isRequestingLease else { return }
         isRequestingLease = true
@@ -1001,66 +971,41 @@ struct ListingDetailView: View {
         }
     }
 
-    // MARK: - Bottom CTA Bar (Buy left/secondary, Request lease right/primary)
+    // MARK: - Bottom CTA Bar
+    //
+    // Single primary "Request lease" button. The standalone "Message" CTA
+    // was removed deliberately: drivers should reach the owner only after
+    // a lease request exists. The owner-driver chat opens automatically
+    // when `requestLease()` succeeds (via the chatId returned in the
+    // CreateLeaseRequest response — see line just below), so no chat
+    // capability is lost; it's just gated behind the request.
 
     private var bottomCTABar: some View {
         VStack(spacing: 0) {
             Divider()
 
-            HStack(spacing: 12) {
-                // Message owner button — hidden when the viewer is the owner
-                // (no self-chat) or when auth state is missing.
-                if ChatEligibility.canStartChat(
-                    currentUserId: authStore.state.user?.id,
-                    otherUserId: car.owner.id
-                ) {
-                    Button(action: startChat) {
-                        HStack(spacing: 6) {
-                            if isCreatingChat {
-                                ProgressView()
-                                    .tint(.driveBaiPrimary)
-                            } else {
-                                Image(systemName: "message.fill")
-                            }
-                            Text("Message")
-                                .font(.headline)
+            // Request lease button (primary). Only show when the listing is
+            // for rent; cars listed for sale only get a different surface.
+            if car.isForRent {
+                Button(action: requestLease) {
+                    HStack(spacing: 6) {
+                        if isRequestingLease {
+                            ProgressView()
+                                .tint(.white)
                         }
-                        .foregroundColor(.driveBaiPrimary)
-                        .frame(minWidth: 120)
-                        .padding(.vertical, 14)
-                        .background(Color(.systemBackground))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.driveBaiPrimary, lineWidth: 2)
-                        )
-                        .cornerRadius(12)
+                        Text("Request lease")
+                            .font(.headline)
                     }
-                    .disabled(isCreatingChat)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.driveBaiPrimary)
+                    .cornerRadius(12)
                 }
-
-                // Request lease button (primary) - only show if for rent
-                if car.isForRent {
-                    Button(action: requestLease) {
-                        HStack(spacing: 6) {
-                            if isRequestingLease {
-                                ProgressView()
-                                    .tint(.white)
-                            }
-                            Text("Request lease")
-                                .font(.headline)
-                        }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color.driveBaiPrimary)
-                        .cornerRadius(12)
-                    }
-                    .disabled(isRequestingLease)
-                }
+                .disabled(isRequestingLease)
+                .padding(16)
+                .background(Color(.systemBackground))
             }
-            .frame(maxWidth: .infinity)
-            .padding(16)
-            .background(Color(.systemBackground))
         }
     }
 }

@@ -19,6 +19,20 @@ struct LeaseRequestCardView: View {
     private var isOwner: Bool { currentUserId == leaseRequest.ownerId }
     private var isDriver: Bool { currentUserId == leaseRequest.driverId }
 
+    /// True while the rental hasn't been paid for or terminated — i.e. the
+    /// stages where "unused days will be refunded" is information the user
+    /// actually needs (decide to accept, decide to pay, retry payment).
+    /// Hidden once the lease is paid, declined, cancelled, expired, or
+    /// refunded so the line doesn't become noise on terminal cards.
+    private var showsUnusedDaysDisclaimer: Bool {
+        switch leaseRequest.status {
+        case .requested, .accepted, .paymentPending:
+            return true
+        case .paid, .declined, .cancelled, .expired, .expiredRefunded:
+            return false
+        }
+    }
+
     /// Shown when the owner taps "Add more time" — surfaces only the
     /// presets that still fit within the 120-minute cap.
     @State private var showingExtendDialog = false
@@ -112,6 +126,16 @@ struct LeaseRequestCardView: View {
                     Text("Total: \(totalFormatted)")
                         .font(.subheadline.weight(.semibold))
                 }
+            }
+
+            // Refund disclaimer — shown only while the rental is still
+            // pre-active (requested / accepted / payment-pending). Once the
+            // lease is paid, declined, cancelled, or refunded, the line
+            // would be either redundant or misleading.
+            if showsUnusedDaysDisclaimer {
+                Label("Any unused days will be refunded.", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             // Participants

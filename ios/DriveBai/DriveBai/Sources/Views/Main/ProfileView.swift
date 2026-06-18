@@ -161,7 +161,7 @@ struct AuthenticatedProfileView: View {
                     Divider().padding(.leading, 56)
                     ProfileActionRow(
                         icon: "questionmark.circle.fill",
-                        title: "Help & Support",
+                        title: "Contact Support",
                         badge: supportInboxStore.unreadCount,
                         action: { showSupportChat = true }
                     )

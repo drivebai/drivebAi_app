@@ -70,30 +70,20 @@ struct LoginView: View {
                             .padding(.horizontal)
                     }
 
-                    // Login Button
-                    VStack(spacing: 16) {
-                        Button(action: login) {
-                            if authStore.isLoading {
-                                ProgressView()
-                                    .tint(.white)
-                            } else {
-                                Text("Continue")
-                            }
+                    // Login Button (social-login placeholders removed —
+                    // Google/Facebook were never wired up; they were
+                    // dropped instead of being shipped as dead buttons).
+                    Button(action: login) {
+                        if authStore.isLoading {
+                            ProgressView()
+                                .tint(.white)
+                        } else {
+                            Text("Continue")
                         }
-                        .buttonStyle(DriveBaiButtonStyle())
-                        .disabled(authStore.isLoading || !isFormValid)
-                        .padding(.horizontal)
-
-                        Text("or")
-                            .foregroundColor(.secondary)
-
-                        // Social Login Buttons (placeholders)
-                        VStack(spacing: 12) {
-                            SocialLoginButton(provider: .google, action: {})
-                            SocialLoginButton(provider: .facebook, action: {})
-                        }
-                        .padding(.horizontal)
                     }
+                    .buttonStyle(DriveBaiButtonStyle())
+                    .disabled(authStore.isLoading || !isFormValid)
+                    .padding(.horizontal)
 
                     // Sign Up Link
                     HStack {
@@ -142,60 +132,6 @@ struct LoginView: View {
                 // Error is already set in authStore
             }
         }
-    }
-}
-
-// MARK: - Social Login Button
-
-enum SocialLoginProvider {
-    case google
-    case facebook
-
-    var title: String {
-        switch self {
-        case .google: return "Continue with Google"
-        case .facebook: return "Continue with Facebook"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .google: return "g.circle.fill"
-        case .facebook: return "f.circle.fill"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .google: return .red
-        case .facebook: return .blue
-        }
-    }
-}
-
-struct SocialLoginButton: View {
-    let provider: SocialLoginProvider
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Image(systemName: provider.icon)
-                    .foregroundColor(provider.color)
-                Text(provider.title)
-                    .foregroundColor(.primary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding()
-            .background(Color(.systemBackground))
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-            )
-        }
-        .disabled(true) // Placeholder - not implemented
-        .opacity(0.6)
     }
 }
 
