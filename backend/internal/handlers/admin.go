@@ -22,12 +22,17 @@ import (
 // All endpoints assume the caller has already passed AuthMiddleware + RequireRole(admin).
 type AdminHandler struct {
 	adminRepo *repository.AdminRepository
-	wsHub     *ws.Hub
-	logger    *slog.Logger
+	// userRepo is used for the narrow profile-field update on
+	// PATCH /admin/users/{id}/profile. We deliberately do NOT call the
+	// broader UserRepository.Update from admin paths — see the
+	// UpdateProfileFields docstring for the mass-assignment rationale.
+	userRepo *repository.UserRepository
+	wsHub    *ws.Hub
+	logger   *slog.Logger
 }
 
-func NewAdminHandler(adminRepo *repository.AdminRepository, wsHub *ws.Hub, logger *slog.Logger) *AdminHandler {
-	return &AdminHandler{adminRepo: adminRepo, wsHub: wsHub, logger: logger}
+func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{adminRepo: adminRepo, userRepo: userRepo, wsHub: wsHub, logger: logger}
 }
 
 func parsePage(r *http.Request) (page, limit int) {
@@ -103,6 +108,93 @@ func (h *AdminHandler) BlockUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "blocked": body.Blocked})
+}
+
+// updateUserProfileBody is the explicit allow-list for admin profile edits.
+// Every field is a pointer so omitted keys mean "leave unchanged". Adding a
+// new sensitive column to `users` does NOT make it editable from admin —
+// it has to be added here AND to UpdateProfileFields explicitly.
+type updateUserProfileBody struct {
+	FirstName *string `json:"first_name,omitempty"`
+	LastName  *string `json:"last_name,omitempty"`
+	Phone     *string `json:"phone,omitempty"`
+}
+
+// UpdateUserProfile — PATCH /admin/users/{id}/profile
+//
+// Admin can edit a target user's first_name, last_name, and phone only.
+// Email is excluded because it doubles as the login identifier and would
+// need OTP re-verification; role is excluded because the app uses a
+// dedicated profile-switch flow; is_blocked has its own /block endpoint;
+// password_hash and verification flags are never admin-editable from
+// here. Mass-assignment-safe by construction: the body struct names only
+// the safe fields, and UpdateProfileFields only writes those columns.
+func (h *AdminHandler) UpdateUserProfile(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	var body updateUserProfileBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid body"))
+		return
+	}
+
+	// Normalize + validate. Trim whitespace, enforce DB column limits,
+	// reject "empty after trim" for required fields (first/last name).
+	if body.FirstName != nil {
+		trimmed := strings.TrimSpace(*body.FirstName)
+		if trimmed == "" {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("first_name cannot be empty"))
+			return
+		}
+		if len(trimmed) > 100 {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("first_name too long"))
+			return
+		}
+		body.FirstName = &trimmed
+	}
+	if body.LastName != nil {
+		trimmed := strings.TrimSpace(*body.LastName)
+		if trimmed == "" {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("last_name cannot be empty"))
+			return
+		}
+		if len(trimmed) > 100 {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("last_name too long"))
+			return
+		}
+		body.LastName = &trimmed
+	}
+	if body.Phone != nil {
+		trimmed := strings.TrimSpace(*body.Phone)
+		if len(trimmed) > 20 {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("phone too long"))
+			return
+		}
+		body.Phone = &trimmed
+	}
+
+	if err := h.userRepo.UpdateProfileFields(r.Context(), id, body.FirstName, body.LastName, body.Phone); err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "user not found"))
+			return
+		}
+		h.logger.Error("admin update user profile", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	// Return the refreshed AdminUser so the admin UI can swap the row
+	// without a separate fetch.
+	updated, err := h.adminRepo.GetUserDetail(r.Context(), id)
+	if err != nil {
+		h.logger.Error("admin reload user after update", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, updated)
 }
 
 // ===== CARS =====

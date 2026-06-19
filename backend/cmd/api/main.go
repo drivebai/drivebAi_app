@@ -155,7 +155,7 @@ func main() {
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
-	adminHandler := handlers.NewAdminHandler(adminRepo, wsHub, logger)
+	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, logger)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
@@ -362,6 +362,7 @@ func main() {
 				r.Get("/users", adminHandler.ListUsers)
 				r.Get("/users/{id}", adminHandler.GetUser)
 				r.Patch("/users/{id}/block", adminHandler.BlockUser)
+				r.Patch("/users/{id}/profile", adminHandler.UpdateUserProfile)
 
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)

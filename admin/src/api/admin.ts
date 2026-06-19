@@ -17,6 +17,19 @@ export const adminApi = {
   blockUser: (id: string, blocked: boolean) =>
     api.patch<{ ok: boolean; blocked: boolean }>(`${BASE}/users/${id}/block`, { blocked }),
 
+  /**
+   * Admin edit of safe profile fields (first_name, last_name, phone).
+   * Email, role, verification flags, and password are deliberately NOT
+   * editable here — see backend AdminHandler.UpdateUserProfile for the
+   * rationale. Omitted fields mean "leave unchanged" on the server.
+   * Returns the refreshed AdminUser so the table row can be swapped
+   * without a separate fetch.
+   */
+  updateUserProfile: (
+    id: string,
+    body: { first_name?: string; last_name?: string; phone?: string },
+  ) => api.patch<AdminUser>(`${BASE}/users/${id}/profile`, body),
+
   // ---- Cars ----
   listCars: (q: { query?: string; page?: number; limit?: number }) =>
     api.get<Page<AdminCar>>(`${BASE}/cars${qs(q)}`),

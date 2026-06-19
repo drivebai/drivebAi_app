@@ -69,6 +69,60 @@ async function confirmBlock() {
   }
 }
 
+// --- edit profile ---
+// Modal-style form bound to a snapshot of the drawer user. Backend only
+// accepts first_name / last_name / phone — see adminApi.updateUserProfile.
+const editing = ref<AdminUser | null>(null)
+const editForm = ref({ first_name: '', last_name: '', phone: '' })
+const savingEdit = ref(false)
+const editError = ref<string | null>(null)
+function startEdit(u: AdminUser) {
+  editing.value = u
+  editForm.value = {
+    first_name: u.first_name ?? '',
+    last_name: u.last_name ?? '',
+    phone: u.phone ?? '',
+  }
+  editError.value = null
+}
+function cancelEdit() {
+  editing.value = null
+  editError.value = null
+}
+async function saveEdit() {
+  const u = editing.value
+  if (!u) return
+  const fn = editForm.value.first_name.trim()
+  const ln = editForm.value.last_name.trim()
+  const ph = editForm.value.phone.trim()
+  if (!fn || !ln) {
+    editError.value = 'First and last name are required.'
+    return
+  }
+  // Only send what actually changed.
+  const body: { first_name?: string; last_name?: string; phone?: string } = {}
+  if (fn !== (u.first_name ?? '')) body.first_name = fn
+  if (ln !== (u.last_name ?? '')) body.last_name = ln
+  if (ph !== (u.phone ?? '')) body.phone = ph
+  if (Object.keys(body).length === 0) { cancelEdit(); return }
+
+  savingEdit.value = true
+  editError.value = null
+  try {
+    const updated = await adminApi.updateUserProfile(u.id, body)
+    // Patch the row in-place so the table reflects the change without a refetch.
+    const idx = rows.value.findIndex(x => x.id === u.id)
+    if (idx >= 0) rows.value[idx] = updated
+    if (drawerUser.value?.id === u.id) drawerUser.value = updated
+    toast.success('Profile updated')
+    editing.value = null
+  } catch (e: any) {
+    editError.value = e?.message || 'Failed to update profile'
+  } finally {
+    savingEdit.value = false
+  }
+}
+
 function roleLabel(r: string) {
   if (r === 'driver') return 'Driver'
   if (r === 'car_owner') return 'Owner'
@@ -161,11 +215,43 @@ function roleLabel(r: string) {
     </dl>
 
     <div class="drawer-actions">
+      <button class="secondary" @click="startEdit(drawerUser)">Edit profile</button>
       <button :class="drawerUser.is_blocked ? 'primary' : 'danger'" @click="askBlock(drawerUser)">
         {{ drawerUser.is_blocked ? 'Unblock user' : 'Block user' }}
       </button>
     </div>
   </Drawer>
+
+  <!-- Edit profile modal. Backend allow-lists first_name / last_name / phone;
+       email + role intentionally not editable here. -->
+  <div v-if="editing" class="modal-overlay" @click.self="cancelEdit">
+    <div class="modal" role="dialog" aria-labelledby="editProfileTitle">
+      <h2 id="editProfileTitle">Edit profile</h2>
+      <p class="modal-sub">{{ editing.email }}</p>
+
+      <label>
+        First name
+        <input v-model="editForm.first_name" maxlength="100" :disabled="savingEdit" autocomplete="off" />
+      </label>
+      <label>
+        Last name
+        <input v-model="editForm.last_name" maxlength="100" :disabled="savingEdit" autocomplete="off" />
+      </label>
+      <label>
+        Phone
+        <input v-model="editForm.phone" maxlength="20" :disabled="savingEdit" autocomplete="off" />
+      </label>
+
+      <p v-if="editError" class="error">{{ editError }}</p>
+
+      <div class="modal-actions">
+        <button class="secondary" :disabled="savingEdit" @click="cancelEdit">Cancel</button>
+        <button class="primary" :disabled="savingEdit" @click="saveEdit">
+          {{ savingEdit ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+    </div>
+  </div>
 
   <ConfirmDialog
     :open="!!pendingBlock"
@@ -193,5 +279,26 @@ select { width: 160px; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; margin: 0; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; }
-.drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; }
+.drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000; padding: 16px;
+}
+.modal {
+  background: var(--surface, #fff); border-radius: 12px; padding: 24px;
+  width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15);
+}
+.modal h2 { margin: 0; font-size: 18px; }
+.modal-sub { margin: -8px 0 4px; color: var(--text-muted); font-size: 13px; }
+.modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-muted); }
+.modal input {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 14px; background: var(--bg, #fff); color: var(--text, #111);
+}
+.modal input:focus { outline: 2px solid var(--accent, #2bd1c4); outline-offset: -1px; }
+.modal .error { color: var(--danger, #d33); font-size: 13px; margin: 0; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 </style>

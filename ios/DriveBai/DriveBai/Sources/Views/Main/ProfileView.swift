@@ -48,6 +48,7 @@ struct AuthenticatedProfileView: View {
     @State private var showDriverDocsSheet = false
     @State private var switchError: String?
     @State private var showSupportChat = false
+    @State private var showEditProfile = false
 
     /// Constructs the full URL for the profile photo
     private var profilePhotoURL: URL? {
@@ -153,7 +154,7 @@ struct AuthenticatedProfileView: View {
 
                 // Actions
                 VStack(spacing: 0) {
-                    ProfileActionRow(icon: "person.fill", title: "Edit Profile", action: {})
+                    ProfileActionRow(icon: "person.fill", title: "Edit Profile", action: { showEditProfile = true })
                     Divider().padding(.leading, 56)
                     ProfileActionRow(icon: "bell.fill", title: "Notifications", action: {})
                     Divider().padding(.leading, 56)
@@ -191,6 +192,10 @@ struct AuthenticatedProfileView: View {
             SupportChatView()
                 .environmentObject(authStore)
                 .environmentObject(supportInboxStore)
+        }
+        .sheet(isPresented: $showEditProfile) {
+            EditProfileView(user: user)
+                .environmentObject(authStore)
         }
         .sheet(isPresented: $showDriverDocsSheet) {
             DriverDocsRequiredSheet(

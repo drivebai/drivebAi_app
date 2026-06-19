@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -127,6 +128,39 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 	}
 
 	return user, nil
+}
+
+// UpdateProfileFields is a NARROW partial update for the only three
+// profile fields that any "edit profile" UI is allowed to change:
+// first_name, last_name, and phone. nil for any pointer means "leave the
+// column unchanged".
+//
+// Why this exists alongside Update: the broader Update() below rewrites
+// the full row from an in-memory struct (role, password_hash,
+// is_email_verified, …). Surfacing that to admin or per-user "edit
+// profile" handlers would be a mass-assignment hazard — a future caller
+// might forget to scrub a sensitive field. This method keeps the safe
+// surface trivially small. Returns ErrUserNotFound if no row matches.
+func (r *UserRepository) UpdateProfileFields(
+	ctx context.Context,
+	userID uuid.UUID,
+	firstName, lastName, phone *string,
+) error {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE users
+		SET first_name = COALESCE($2, first_name),
+		    last_name  = COALESCE($3, last_name),
+		    phone      = CASE WHEN $4::text IS NOT NULL THEN $4 ELSE phone END,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, userID, firstName, lastName, phone)
+	if err != nil {
+		return fmt.Errorf("update profile fields: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return models.ErrUserNotFound
+	}
+	return nil
 }
 
 func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
