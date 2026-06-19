@@ -27,7 +27,6 @@
 		E00000010000000000000024 /* ForgotPasswordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000014 /* ForgotPasswordView.swift */; };
 		E00000010000000000000025 /* DiscoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000015 /* DiscoverView.swift */; };
 		E00000010000000000000026 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000016 /* ProfileView.swift */; };
-		E00000010000000000000411 /* EditProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000410 /* EditProfileView.swift */; };
 		E00000010000000000000027 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000017 /* MainTabView.swift */; };
 		E00000010000000000000028 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000018 /* Assets.xcassets */; };
 		E00000010000000000000029 /* DriverTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000003F /* DriverTabView.swift */; };
@@ -97,7 +96,6 @@
 		E00000010000000000000301 /* PriceEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000300 /* PriceEditorSheet.swift */; };
 		E00000010000000000000311 /* ChatEligibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000310 /* ChatEligibility.swift */; };
 		E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000320 /* DriverDocumentsSection.swift */; };
-		E00000010000000000000421 /* VehicleDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000420 /* VehicleDocumentsSection.swift */; };
 		E00000010000000000000331 /* AdjustPriceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000330 /* AdjustPriceSheet.swift */; };
 		E00000010000000000000341 /* NotificationAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000340 /* NotificationAPIModels.swift */; };
 		E00000010000000000000351 /* SupportAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000350 /* SupportAPIModels.swift */; };
@@ -108,6 +106,8 @@
 		E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003C0 /* AccidentReportViewModel.swift */; };
 		E000000100000000000003D1 /* AccidentReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003D0 /* AccidentReportView.swift */; };
 		E00000010000000000000401 /* PickupCountdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000400 /* PickupCountdownView.swift */; };
+		E00000010000000000000411 /* EditProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000410 /* EditProfileView.swift */; };
+		E00000010000000000000421 /* VehicleDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000420 /* VehicleDocumentsSection.swift */; };
 		E7B54F0BB3AB2C0B9F1A7246 /* PhotoLibrarySaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */; };
 		EF0F482AB376D092D87C86B8 /* AttachmentDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */; };
 		F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */; };
@@ -132,7 +132,6 @@
 		E00000010000000000000014 /* ForgotPasswordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForgotPasswordView.swift; sourceTree = "<group>"; };
 		E00000010000000000000015 /* DiscoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverView.swift; sourceTree = "<group>"; };
 		E00000010000000000000016 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
-		E00000010000000000000410 /* EditProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditProfileView.swift; sourceTree = "<group>"; };
 		E00000010000000000000017 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		E00000010000000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E00000010000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -203,7 +202,6 @@
 		E00000010000000000000300 /* PriceEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriceEditorSheet.swift; sourceTree = "<group>"; };
 		E00000010000000000000310 /* ChatEligibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatEligibility.swift; sourceTree = "<group>"; };
 		E00000010000000000000320 /* DriverDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriverDocumentsSection.swift; sourceTree = "<group>"; };
-		E00000010000000000000420 /* VehicleDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VehicleDocumentsSection.swift; sourceTree = "<group>"; };
 		E00000010000000000000330 /* AdjustPriceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdjustPriceSheet.swift; sourceTree = "<group>"; };
 		E00000010000000000000340 /* NotificationAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationAPIModels.swift; sourceTree = "<group>"; };
 		E00000010000000000000350 /* SupportAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportAPIModels.swift; sourceTree = "<group>"; };
@@ -214,6 +212,8 @@
 		E000000100000000000003C0 /* AccidentReportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportViewModel.swift; sourceTree = "<group>"; };
 		E000000100000000000003D0 /* AccidentReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportView.swift; sourceTree = "<group>"; };
 		E00000010000000000000400 /* PickupCountdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickupCountdownView.swift; sourceTree = "<group>"; };
+		E00000010000000000000410 /* EditProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditProfileView.swift; sourceTree = "<group>"; };
+		E00000010000000000000420 /* VehicleDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VehicleDocumentsSection.swift; sourceTree = "<group>"; };
 		E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatPlusMenuSheet.swift; path = DriveBai/Sources/Views/Chat/Components/ChatPlusMenuSheet.swift; sourceTree = SOURCE_ROOT; };
 		EFDD4815B08438F162E135F0 /* PDFViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PDFViewerView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/PDFViewerView.swift; sourceTree = SOURCE_ROOT; };
 		F23642CA82731C1438425E6D /* ImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImagePipeline.swift; path = DriveBai/Sources/Services/ImagePipeline.swift; sourceTree = SOURCE_ROOT; };
@@ -889,7 +889,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
@@ -922,7 +922,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;

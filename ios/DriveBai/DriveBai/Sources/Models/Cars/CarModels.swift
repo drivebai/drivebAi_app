@@ -249,6 +249,15 @@ struct CarDocument: Identifiable, Equatable {
     let fileSize: Int
     let uploadedAt: Date
 
+    /// Raw bytes from the file picker, kept ONLY for docs not yet pushed
+    /// to the backend. `CarDetailEditView.saveCar()` walks docs with
+    /// non-nil `localData` and uploads them via OwnerCarsStore. Server-
+    /// fetched rows have this nil.
+    var localData: Data?
+    /// MIME type tagged alongside `localData` so the multipart upload
+    /// gets the correct Content-Type. Same lifecycle as `localData`.
+    var localMimeType: String?
+
     var fileSizeFormatted: String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -262,12 +271,27 @@ struct CarDocument: Identifiable, Equatable {
         return formatter.string(from: uploadedAt)
     }
 
-    init(id: UUID = UUID(), documentType: CarDocumentType, filename: String, fileSize: Int, uploadedAt: Date = Date()) {
+    /// True when this row exists only locally and needs to be pushed up
+    /// the next time the parent view saves. Used by saveCar() to decide
+    /// what to upload.
+    var needsUpload: Bool { localData != nil }
+
+    init(
+        id: UUID = UUID(),
+        documentType: CarDocumentType,
+        filename: String,
+        fileSize: Int,
+        uploadedAt: Date = Date(),
+        localData: Data? = nil,
+        localMimeType: String? = nil
+    ) {
         self.id = id
         self.documentType = documentType
         self.filename = filename
         self.fileSize = fileSize
         self.uploadedAt = uploadedAt
+        self.localData = localData
+        self.localMimeType = localMimeType
     }
 }
 

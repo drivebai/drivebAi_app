@@ -212,6 +212,28 @@ struct CarDetailEditView: View {
             }
         }
 
+        // Push every freshly-picked car document. Without this, the document
+        // picker's bytes never reach the server — owner sees the row in the
+        // edit UI but the driver-side Chat → Requests "Vehicle Documents"
+        // section stays empty because car_documents has no row to return.
+        let docsToUpload = editedCar.documents.filter { $0.needsUpload }
+        for doc in docsToUpload {
+            guard let data = doc.localData else { continue }
+            let mime = doc.localMimeType ?? "application/octet-stream"
+            let resp = await store.uploadDocument(
+                carId: car.id,
+                documentType: doc.documentType,
+                data: data,
+                filename: doc.filename,
+                mimeType: mime
+            )
+            if resp == nil {
+                #if DEBUG
+                print("[CarDetailEditView] Failed to upload document: \(doc.documentType.rawValue) — \(store.error ?? "no error")")
+                #endif
+            }
+        }
+
         isSaving = false
         // Success - exit edit mode
         isEditMode = false
@@ -555,14 +577,23 @@ private struct DocumentsContent: View {
                 guard let type = selectedDocumentType else { return }
                 guard let data = try? await item.loadTransferable(type: Data.self) else { return }
                 let ext: String
+                let mimeType: String
                 if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
                     ext = "png"
+                    mimeType = "image/png"
                 } else {
                     ext = "jpg"
+                    mimeType = "image/jpeg"
                 }
                 let filename = "\(type.rawValue).\(ext)"
                 await MainActor.run {
-                    addOrReplaceDocument(type: type, filename: filename, fileSize: data.count)
+                    addOrReplaceDocument(
+                        type: type,
+                        filename: filename,
+                        fileSize: data.count,
+                        data: data,
+                        mimeType: mimeType
+                    )
                 }
             }
         }
@@ -600,16 +631,29 @@ private struct DocumentsContent: View {
             guard url.startAccessingSecurityScopedResource() else { return }
             defer { url.stopAccessingSecurityScopedResource() }
 
-            let filename = url.lastPathComponent
-            let fileSize: Int
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-               let size = attributes[.size] as? Int {
-                fileSize = size
-            } else {
-                fileSize = 0
+            // Actually read the file bytes — the previous code only read the
+            // filename + size and threw the contents away, which silently
+            // turned every car-document upload into a local-only no-op.
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                #if DEBUG
+                print("[DocumentsContent] Read failed: \(error)")
+                #endif
+                return
             }
 
-            addOrReplaceDocument(type: type, filename: filename, fileSize: fileSize)
+            let filename = url.lastPathComponent
+            let mimeType = mimeTypeForExtension(url.pathExtension.lowercased())
+
+            addOrReplaceDocument(
+                type: type,
+                filename: filename,
+                fileSize: data.count,
+                data: data,
+                mimeType: mimeType
+            )
 
         case .failure(let error):
             #if DEBUG
@@ -618,12 +662,34 @@ private struct DocumentsContent: View {
         }
     }
 
-    private func addOrReplaceDocument(type: CarDocumentType, filename: String, fileSize: Int) {
+    /// Maps a file extension to a Content-Type the backend whitelists.
+    /// Falls back to application/octet-stream for unknown types — the
+    /// server's CarDocumentType is what actually determines categorization,
+    /// the MIME is just for the HTTP request shape.
+    private func mimeTypeForExtension(_ ext: String) -> String {
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "heic": return "image/heic"
+        default: return "application/octet-stream"
+        }
+    }
+
+    private func addOrReplaceDocument(
+        type: CarDocumentType,
+        filename: String,
+        fileSize: Int,
+        data: Data,
+        mimeType: String
+    ) {
         let newDocument = CarDocument(
             documentType: type,
             filename: filename,
             fileSize: fileSize,
-            uploadedAt: Date()
+            uploadedAt: Date(),
+            localData: data,
+            localMimeType: mimeType
         )
 
         if let replaceDoc = documentToReplace,
