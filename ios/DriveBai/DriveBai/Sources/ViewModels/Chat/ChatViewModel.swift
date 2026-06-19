@@ -22,10 +22,13 @@ final class ChatViewModel: ObservableObject {
     @Published var leaseRequests: [LeaseRequest] = []
     @Published var isLoadingLeaseRequests = false
 
-    /// Driver onboarding documents shared into this chat through one or more
-    /// lease requests. Deduplicated by document. Only the car owner should
-    /// render these in the UI — the view decides via `isOwnerOfChat`.
+    /// Driver onboarding documents (license) shared into this chat through
+    /// one or more lease requests. Surfaced to the OWNER side of the chat
+    /// only — `vehicleDocuments` is the matching driver-side payload.
     @Published var sharedDocuments: [SharedDocumentAPIResponse] = []
+    /// Vehicle/car documents (registration, insurance, …) the owner uploaded
+    /// for the listing this chat is about. Surfaced to the DRIVER side only.
+    @Published var vehicleDocuments: [VehicleDocumentAPIResponse] = []
     @Published var isLoadingSharedDocuments = false
 
     @Published var messageText = ""
@@ -319,15 +322,18 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Shared Driver Documents
 
-    /// Fetches the driver onboarding documents shared into this chat via lease
-    /// requests. Silent failure — driver docs are auxiliary to the chat; any
-    /// error is logged and the section simply stays empty.
+    /// Fetches the role-aware document payload for this chat. The backend
+    /// fills `driver_documents` for the OWNER and `vehicle_documents` for
+    /// the DRIVER — the empty array is populated for the wrong-side viewer
+    /// so the UI doesn't need to do extra gating. Silent failure: any
+    /// error is logged and the sections simply stay empty.
     func loadSharedDocuments() async {
         isLoadingSharedDocuments = true
         defer { isLoadingSharedDocuments = false }
         do {
             let response = try await apiClient.fetchSharedDocuments(chatId: chatId)
-            sharedDocuments = response.documents
+            sharedDocuments = response.driverDocumentsOrLegacy
+            vehicleDocuments = response.vehicleDocumentsOrEmpty
         } catch {
             #if DEBUG
             print("[ChatViewModel] Failed to fetch shared documents: \(error)")

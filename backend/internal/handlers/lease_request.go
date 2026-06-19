@@ -24,6 +24,7 @@ import (
 type LeaseRequestHandler struct {
 	leaseRepo       *repository.LeaseRequestRepository
 	carRepo         *repository.CarRepository
+	carDocRepo      *repository.CarDocumentRepository
 	userRepo        *repository.UserRepository
 	chatRepo        *repository.ChatRepository
 	docRepo         *repository.DocumentRepository
@@ -43,6 +44,7 @@ type LeaseRequestHandler struct {
 func NewLeaseRequestHandler(
 	leaseRepo *repository.LeaseRequestRepository,
 	carRepo *repository.CarRepository,
+	carDocRepo *repository.CarDocumentRepository,
 	userRepo *repository.UserRepository,
 	chatRepo *repository.ChatRepository,
 	docRepo *repository.DocumentRepository,
@@ -61,6 +63,7 @@ func NewLeaseRequestHandler(
 	return &LeaseRequestHandler{
 		leaseRepo:       leaseRepo,
 		carRepo:         carRepo,
+		carDocRepo:      carDocRepo,
 		userRepo:        userRepo,
 		chatRepo:        chatRepo,
 		docRepo:         docRepo,
@@ -1430,7 +1433,36 @@ type SharedDocumentResponse struct {
 	SharedAt   models.RFC3339Time    `json:"shared_at"`
 }
 
+// VehicleDocumentResponse is the driver-facing view of a car document
+// (registration, insurance, …) for the listing being requested. Owner
+// uploads these via /cars/{carId}/documents; this surface signs the URLs
+// so the driver can view them inside the chat without re-issuing them
+// publicly.
+type VehicleDocumentResponse struct {
+	ID           uuid.UUID              `json:"id"`
+	DocumentType models.CarDocumentType `json:"document_type"`
+	FileName     string                 `json:"file_name"`
+	FileURL      string                 `json:"file_url"`
+	FileSize     int                    `json:"file_size"`
+	MimeType     string                 `json:"mime_type"`
+	CreatedAt    models.RFC3339Time     `json:"created_at"`
+}
+
+// SharedDocumentsListResponse is role-aware. The same chat surface serves
+// both sides:
+//   - viewer_role=owner   → driver_documents populated (driver's license);
+//     vehicle_documents empty.
+//   - viewer_role=driver  → vehicle_documents populated (the listing's
+//     registration / insurance / …); driver_documents empty.
+//
+// Old clients that decoded just `documents` still work — the field is
+// preserved alongside driver_documents and contains the same payload.
 type SharedDocumentsListResponse struct {
+	ViewerRole       string                    `json:"viewer_role"`
+	DriverDocuments  []SharedDocumentResponse  `json:"driver_documents"`
+	VehicleDocuments []VehicleDocumentResponse `json:"vehicle_documents"`
+	// Documents mirrors DriverDocuments to keep older app versions working
+	// while they migrate. New clients should ignore this field.
 	Documents []SharedDocumentResponse `json:"documents"`
 }
 
@@ -1440,9 +1472,15 @@ type SharedDocumentsListResponse struct {
 // AFTER the lease request transaction commits and treated as best-effort:
 // a failure here must never prevent the lease request from being returned.
 func (h *LeaseRequestHandler) shareDriverDocs(ctx context.Context, lr *models.LeaseRequest) {
+	// Share only the driver's photo ID. The other onboarding doc
+	// (DocumentRegistration) is the driver's OWN vehicle registration, kept
+	// for identity verification — it's not relevant to the car owner
+	// deciding whether to rent THEIR car out, and the UI label "Vehicle
+	// Registration" caused owners to confuse it with the listing's car
+	// papers. Vehicle/car documents go through the dedicated car_documents
+	// surface on the driver side; see ListSharedDocuments below.
 	required := []models.DocumentType{
 		models.DocumentDriversLicense,
-		models.DocumentRegistration,
 	}
 
 	var docIDs []uuid.UUID
@@ -1497,30 +1535,82 @@ func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http
 		return
 	}
 
-	infos, err := h.sharedDocsRepo.ListByChatID(r.Context(), chatID)
-	if err != nil {
-		h.logger.Error("shared docs: list failed", "error", err, "chat_id", chatID)
+	// Resolve viewer role from the chat itself — chat.OwnerID / DriverID
+	// tell us which side this user is on without an extra DB call.
+	chat, err := h.chatRepo.GetChatByID(r.Context(), chatID)
+	if err != nil || chat == nil {
+		h.logger.Error("shared docs: chat lookup failed", "error", err, "chat_id", chatID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
-
-	out := make([]SharedDocumentResponse, 0, len(infos))
-	for _, info := range infos {
-		out = append(out, SharedDocumentResponse{
-			ID:         info.ID,
-			DocumentID: info.DocumentID,
-			UploaderID: info.UploaderID,
-			Type:       info.Type,
-			FileName:   info.FileName,
-			FileURL:    h.urlSigner.Sign(publicURLForDocument(info.UploaderID, info.FilePath)),
-			FileSize:   info.FileSize,
-			MimeType:   info.MimeType,
-			Status:     info.Status,
-			SharedAt:   models.NewRFC3339Time(info.SharedAt),
-		})
+	viewerRole := "driver"
+	if userID == chat.OwnerID {
+		viewerRole = "owner"
 	}
 
-	httputil.WriteJSON(w, http.StatusOK, SharedDocumentsListResponse{Documents: out})
+	// Driver documents (license) — populated for the OWNER viewer only.
+	// We filter to drivers_license to keep the surface correctly scoped
+	// even on lease requests created before shareDriverDocs was tightened
+	// (those have a stale `registration` row that we want to suppress).
+	driverDocs := make([]SharedDocumentResponse, 0)
+	if viewerRole == "owner" {
+		infos, err := h.sharedDocsRepo.ListByChatID(r.Context(), chatID)
+		if err != nil {
+			h.logger.Error("shared docs: list failed", "error", err, "chat_id", chatID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		for _, info := range infos {
+			if info.Type != models.DocumentDriversLicense {
+				continue
+			}
+			driverDocs = append(driverDocs, SharedDocumentResponse{
+				ID:         info.ID,
+				DocumentID: info.DocumentID,
+				UploaderID: info.UploaderID,
+				Type:       info.Type,
+				FileName:   info.FileName,
+				FileURL:    h.urlSigner.Sign(publicURLForDocument(info.UploaderID, info.FilePath)),
+				FileSize:   info.FileSize,
+				MimeType:   info.MimeType,
+				Status:     info.Status,
+				SharedAt:   models.NewRFC3339Time(info.SharedAt),
+			})
+		}
+	}
+
+	// Vehicle documents — populated for the DRIVER viewer only. These are
+	// the owner-uploaded car_documents (insurance, registration, …) for
+	// the listing this chat is about. The owner already has full access
+	// to their own car documents via /cars/{carId}/documents, so they
+	// don't need this surface.
+	vehicleDocs := make([]VehicleDocumentResponse, 0)
+	if viewerRole == "driver" {
+		docs, err := h.carDocRepo.GetByCarID(r.Context(), chat.CarID)
+		if err != nil {
+			h.logger.Error("shared docs: car docs list failed",
+				"error", err, "car_id", chat.CarID)
+		} else {
+			for _, d := range docs {
+				vehicleDocs = append(vehicleDocs, VehicleDocumentResponse{
+					ID:           d.ID,
+					DocumentType: d.DocumentType,
+					FileName:     d.FileName,
+					FileURL:      h.urlSigner.Sign(d.FileURL),
+					FileSize:     d.FileSize,
+					MimeType:     d.MimeType,
+					CreatedAt:    models.RFC3339Time(d.CreatedAt),
+				})
+			}
+		}
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, SharedDocumentsListResponse{
+		ViewerRole:       viewerRole,
+		DriverDocuments:  driverDocs,
+		VehicleDocuments: vehicleDocs,
+		Documents:        driverDocs, // back-compat for older clients
+	})
 }
 
 // publicURLForDocument derives the /uploads/... relative URL from a stored

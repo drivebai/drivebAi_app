@@ -242,6 +242,14 @@ struct ChatView: View {
         currentUserIsOwner && !viewModel.sharedDocuments.isEmpty
     }
 
+    /// Driver side of the chat sees the LISTING's car documents, not the
+    /// driver-onboarding docs. Owner already has full access to their own
+    /// car documents from the car detail screen, so we don't re-surface
+    /// them here.
+    private var shouldShowVehicleDocs: Bool {
+        !currentUserIsOwner && !viewModel.vehicleDocuments.isEmpty
+    }
+
     private var requestsContent: some View {
         Group {
             if isLoadingAnyRequests && !hasAnyRequests {
@@ -265,11 +273,15 @@ struct ChatView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        // Driver documents (owner-only). Shown above the lease
-                        // request cards so the owner can review identity docs
-                        // alongside the request they're deciding on.
+                        // Role-aware doc section. Owner sees the driver's
+                        // license; driver sees the car's papers
+                        // (registration, insurance, …). The two are
+                        // mutually exclusive per chat — the user is on
+                        // one side, not both.
                         if shouldShowDriverDocs {
                             DriverDocumentsSection(documents: viewModel.sharedDocuments)
+                        } else if shouldShowVehicleDocs {
+                            VehicleDocumentsSection(documents: viewModel.vehicleDocuments)
                         }
 
                         // Lease requests first

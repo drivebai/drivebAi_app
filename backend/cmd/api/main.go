@@ -152,7 +152,7 @@ func main() {
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
 	pickupDeadline := time.Duration(cfg.PickupDeadlineMinutes) * time.Minute
-	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
+	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, carDocRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, logger)

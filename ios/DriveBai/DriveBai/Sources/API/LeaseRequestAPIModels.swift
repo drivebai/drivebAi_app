@@ -202,6 +202,71 @@ struct SharedDocumentAPIResponse: Codable, Identifiable, Equatable {
     var documentType: DocumentType? { DocumentType(rawValue: type) }
 }
 
+/// A vehicle/car document the owner uploaded for the listing (registration,
+/// insurance, …). Surfaced to the DRIVER side of a chat. Mirrors
+/// `VehicleDocumentResponse` in the Go backend; `file_url` is the signed
+/// /uploads URL.
+struct VehicleDocumentAPIResponse: Codable, Identifiable, Equatable {
+    let id: UUID
+    let documentType: String
+    let fileName: String
+    let fileUrl: String
+    let fileSize: Int
+    let mimeType: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case documentType = "document_type"
+        case fileName = "file_name"
+        case fileUrl = "file_url"
+        case fileSize = "file_size"
+        case mimeType = "mime_type"
+        case createdAt = "created_at"
+    }
+
+    /// Owner-facing label for the car-document categories the backend ships.
+    /// Falls back to the raw string if the backend adds new types we don't
+    /// know about yet.
+    var displayName: String {
+        switch documentType {
+        case "registration": return "Vehicle Registration"
+        case "insurance":    return "Insurance"
+        case "inspection":   return "Inspection"
+        case "permit":       return "Permit"
+        default:             return documentType.capitalized
+        }
+    }
+}
+
+/// Role-aware response. `viewer_role` tells the iOS layer which section
+/// to render; the empty-but-typed arrays let SwiftUI ForEach stay simple
+/// regardless of role. The legacy `documents` field mirrors
+/// `driver_documents` for backwards-compatibility with older app builds.
 struct SharedDocumentsListAPIResponse: Codable {
-    let documents: [SharedDocumentAPIResponse]
+    let viewerRole: String?
+    let driverDocuments: [SharedDocumentAPIResponse]?
+    let vehicleDocuments: [VehicleDocumentAPIResponse]?
+    /// Legacy field — same payload as `driver_documents`. Older releases
+    /// of this app only knew about `documents`; the backend keeps emitting
+    /// it so they don't break. New code should use `driverDocuments`.
+    let documents: [SharedDocumentAPIResponse]?
+
+    enum CodingKeys: String, CodingKey {
+        case viewerRole = "viewer_role"
+        case driverDocuments = "driver_documents"
+        case vehicleDocuments = "vehicle_documents"
+        case documents
+    }
+
+    /// Normalized driver doc list across the two fields, in case we hit
+    /// an older or newer backend during a rolling deploy.
+    var driverDocumentsOrLegacy: [SharedDocumentAPIResponse] {
+        driverDocuments ?? documents ?? []
+    }
+
+    /// Empty array if the backend hasn't started returning vehicle docs yet.
+    var vehicleDocumentsOrEmpty: [VehicleDocumentAPIResponse] {
+        vehicleDocuments ?? []
+    }
 }
