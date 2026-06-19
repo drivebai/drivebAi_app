@@ -32,6 +32,11 @@ final class ChatViewModel: ObservableObject {
     @Published var selectedTab: ChatTab = .messages
     @Published var error: String?
 
+    /// One-shot flag the View flips after consuming `ChatView(initialTab:)`.
+    /// Stops the override from re-applying on every nav-stack re-appear,
+    /// which would otherwise stomp the user's later tab picks.
+    var didApplyInitialTab = false
+
     /// True while an attachment is uploading. Used to disable the + button so
     /// the user can't double-fire a picker mid-upload.
     @Published var isUploadingAttachment = false

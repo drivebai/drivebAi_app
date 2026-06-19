@@ -93,7 +93,13 @@ struct OwnerTodayView: View {
                         chatId: chatId,
                         currentUserId: userId,
                         counterpartyId: task.counterpartyId ?? UUID(),
-                        counterpartyName: task.counterpartyName ?? task.requestedBy
+                        counterpartyName: task.counterpartyName ?? task.requestedBy,
+                        // Lease requests: jump straight to the Requests tab so
+                        // the owner sees the Accept/Decline card on arrival
+                        // instead of an empty Messages thread. Other action
+                        // types (generic chat requests, etc.) keep the
+                        // default Messages-first behaviour.
+                        initialTab: task.requestType == "lease_request" ? .requests : nil
                     )
                 }
             }
@@ -223,8 +229,20 @@ struct OwnerTodayView: View {
             } else {
                 VStack(spacing: TodayLayout.cardSpacing) {
                     ForEach(viewModel.tasks) { task in
+                        // Owner side, lease_request action: collapse the
+                        // inline Accept/Decline pair into a single
+                        // "Go to requests" CTA. The Chat → Requests tab
+                        // is the single source of truth for accept/decline;
+                        // having both surfaces invited race conditions
+                        // (e.g. accept here while the owner decided in chat)
+                        // and made the action card busier than it needed
+                        // to be. Other action types (generic chat requests,
+                        // etc.) keep their original two-option layout.
+                        let displayTask = task.requestType == "lease_request"
+                            ? task.withSingleOption("Go to requests")
+                            : task
                         TaskCard(
-                            task: task,
+                            task: displayTask,
                             currentTime: viewModel.currentTime,
                             onOpenTap: {
                                 if task.isBackendAction {
@@ -233,7 +251,11 @@ struct OwnerTodayView: View {
                                 }
                             },
                             onOptionSelect: { index in
-                                if task.isBackendAction {
+                                if task.requestType == "lease_request" {
+                                    // Single CTA — always navigate.
+                                    navigateToChatTask = task
+                                    showChat = true
+                                } else if task.isBackendAction {
                                     let action = index == 0 ? "accept" : "decline"
                                     viewModel.respondToAction(task: task, action: action)
                                 } else {

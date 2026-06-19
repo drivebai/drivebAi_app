@@ -6,8 +6,15 @@ import "github.com/google/uuid"
 type TodayActionType string
 
 const (
+	// TodayActionLeaseRequest: owner-side card for a lease the driver
+	// just sent (status=requested) — Accept/Decline lives in the chat.
 	TodayActionLeaseRequest TodayActionType = "lease_request"
-	// Future: TodayActionChatRequest TodayActionType = "chat_request"
+	// TodayActionLeasePayment: driver-side card for a lease the owner
+	// accepted that's now waiting for the driver to pay
+	// (status=accepted, or payment_pending after a failed/retry attempt).
+	// The card is a fast-access surface; payment itself happens in the
+	// existing Chat → Requests lease card.
+	TodayActionLeasePayment TodayActionType = "lease_payment"
 )
 
 // TodayAction is a single item in the owner/driver's Today feed.

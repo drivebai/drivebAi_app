@@ -28,11 +28,24 @@ struct ChatView: View {
     @State private var showFileImporter = false
     @State private var relatedCarId: UUID?
 
-    init(chatId: UUID, currentUserId: UUID, counterpartyId: UUID, counterpartyName: String) {
+    /// Tab to focus when the view appears. Default `nil` keeps the
+    /// ViewModel's own default (.messages). Pass `.requests` from surfaces
+    /// that exist to surface a pending lease request — e.g. the owner
+    /// Today "Go to requests" button.
+    private let initialTab: ChatTab?
+
+    init(
+        chatId: UUID,
+        currentUserId: UUID,
+        counterpartyId: UUID,
+        counterpartyName: String,
+        initialTab: ChatTab? = nil
+    ) {
         self.chatId = chatId
         self.currentUserId = currentUserId
         self.counterpartyId = counterpartyId
         self.counterpartyName = counterpartyName
+        self.initialTab = initialTab
         _viewModel = StateObject(wrappedValue: ChatViewModel(chatId: chatId, currentUserId: currentUserId))
     }
 
@@ -117,6 +130,13 @@ struct ChatView: View {
         }
         .onAppear {
             ChatsListViewModel.shared.activelyReadingChatId = chatId
+            // Apply the caller-requested initial tab once on first appear.
+            // We don't overwrite the user's later picks, so re-appearing
+            // (e.g. push/pop in the nav stack) keeps their last selection.
+            if let initial = initialTab, viewModel.didApplyInitialTab == false {
+                viewModel.selectedTab = initial
+                viewModel.didApplyInitialTab = true
+            }
         }
         .onDisappear {
             if ChatsListViewModel.shared.activelyReadingChatId == chatId {

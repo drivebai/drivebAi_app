@@ -625,6 +625,103 @@ func (r *LeaseRequestRepository) HasUnreadActions(ctx context.Context, ownerID u
 	return exists, err
 }
 
+// ListTodayActionsForDriver returns lease requests where the user is the
+// driver AND the owner has accepted but no successful payment exists yet.
+// These are the cards that explain "your request was accepted — pay now"
+// on the driver's Today screen. The Pay button itself lives in the chat,
+// the Today card is only fast access to it.
+//
+// Statuses included:
+//   - accepted: owner just said yes, driver hasn't started Stripe yet.
+//   - payment_pending with no succeeded payment row: the driver tried to
+//     pay and failed/canceled — they need to retry from chat.
+//
+// Status=paid is excluded — once paid, the key-handover card takes over.
+func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, driverID uuid.UUID) ([]models.TodayAction, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT
+			lr.id,
+			lr.weekly_price, lr.currency, lr.weeks,
+			c.car_id,
+			(SELECT title FROM cars WHERE id = c.car_id) AS car_title,
+			lr.chat_id,
+			lr.owner_id,
+			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
+			lr.status,
+			lr.created_at,
+			lr.expires_at
+		FROM lease_requests lr
+		JOIN chats c ON c.id = lr.chat_id
+		WHERE lr.driver_id = $1
+			AND lr.status IN ('accepted', 'payment_pending')
+			AND NOT EXISTS (
+				SELECT 1 FROM payments p
+				WHERE p.lease_request_id = lr.id AND p.status = 'succeeded'
+			)
+		ORDER BY lr.updated_at DESC
+	`, driverID)
+	if err != nil {
+		return nil, fmt.Errorf("list driver today actions: %w", err)
+	}
+	defer rows.Close()
+
+	actions := make([]models.TodayAction, 0)
+	for rows.Next() {
+		var a models.TodayAction
+		var weeklyPrice float64
+		var currency string
+		var weeks int
+		var createdAt, expiresAt time.Time
+
+		err := rows.Scan(
+			&a.ID,
+			&weeklyPrice, &currency, &weeks,
+			&a.CarID, &a.CarTitle,
+			&a.ChatID,
+			&a.CounterpartyID, &a.CounterpartyName,
+			&a.Status,
+			&createdAt, &expiresAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan driver today action: %w", err)
+		}
+
+		a.Type = models.TodayActionLeasePayment
+		a.Title = "Request accepted"
+		a.Body = fmt.Sprintf("%s accepted your request for %s — %d week(s) at %s %.0f/week. Go to requests to complete payment.",
+			a.CounterpartyName, a.CarTitle, weeks, currency, weeklyPrice)
+		// One-CTA card; iOS collapses the layout to a single button labelled
+		// "Go to requests" when the type is lease_payment.
+		a.PrimaryAction = "go_to_requests"
+		a.SecondaryAction = ""
+		a.CreatedAt = models.RFC3339Time(createdAt)
+		a.ExpiresAt = models.RFC3339Time(expiresAt)
+
+		actions = append(actions, a)
+	}
+
+	return actions, nil
+}
+
+// HasUnreadActionsForDriver mirrors HasUnreadActions for the driver-side
+// card; we want the bell badge to light up when an owner just accepted.
+func (r *LeaseRequestRepository) HasUnreadActionsForDriver(ctx context.Context, driverID uuid.UUID, lastSeenAt time.Time) (bool, error) {
+	var exists bool
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM lease_requests
+			WHERE driver_id = $1
+			  AND status IN ('accepted', 'payment_pending')
+			  AND updated_at > $2
+			  AND NOT EXISTS (
+				  SELECT 1 FROM payments p
+				  WHERE p.lease_request_id = lease_requests.id AND p.status = 'succeeded'
+			  )
+		)
+	`, driverID, lastSeenAt).Scan(&exists)
+	return exists, err
+}
+
 // --- Payment repository methods ---
 
 // CreatePayment creates a payment record for a lease request.

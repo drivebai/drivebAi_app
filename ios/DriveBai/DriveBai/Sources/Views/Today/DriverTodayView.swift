@@ -70,7 +70,12 @@ struct DriverTodayView: View {
                         chatId: chatId,
                         currentUserId: userId,
                         counterpartyId: task.counterpartyId ?? UUID(),
-                        counterpartyName: task.counterpartyName ?? task.requestedBy
+                        counterpartyName: task.counterpartyName ?? task.requestedBy,
+                        // Lease-payment cards point at the accepted lease in
+                        // Chat → Requests, so land directly on that tab. Any
+                        // other Today action (generic chat request, etc.)
+                        // keeps the default Messages-first behaviour.
+                        initialTab: task.requestType == "lease_payment" ? .requests : nil
                     )
                 }
             }
@@ -180,8 +185,17 @@ struct DriverTodayView: View {
             } else {
                 VStack(spacing: TodayLayout.cardSpacing) {
                     ForEach(viewModel.tasks) { task in
+                        // Driver side, "lease_payment" action (owner just
+                        // accepted, payment pending): collapse the card to
+                        // a single "Go to requests" CTA and bounce into the
+                        // chat's Requests tab — payment itself stays in the
+                        // existing LeaseRequestCardView there, no
+                        // duplicated Pay logic on Today.
+                        let displayTask = task.requestType == "lease_payment"
+                            ? task.withSingleOption("Go to requests")
+                            : task
                         TaskCard(
-                            task: task,
+                            task: displayTask,
                             currentTime: viewModel.currentTime,
                             onOpenTap: {
                                 if task.isBackendAction {
@@ -190,7 +204,11 @@ struct DriverTodayView: View {
                                 }
                             },
                             onOptionSelect: { index in
-                                if task.isBackendAction {
+                                if task.requestType == "lease_payment" {
+                                    // Single CTA — always navigate.
+                                    navigateToChatTask = task
+                                    showChat = true
+                                } else if task.isBackendAction {
                                     let action = index == 0 ? "accept" : "decline"
                                     viewModel.respondToAction(task: task, action: action)
                                 } else {

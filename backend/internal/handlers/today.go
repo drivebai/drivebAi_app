@@ -28,7 +28,11 @@ func NewTodayHandler(
 }
 
 // GetActions returns actionable items for the current user's Today tab.
-// MVP: only lease requests where the user is the owner and status = "requested".
+//
+// A single user can be both an owner and a driver, so we always fetch both
+// sides and concatenate. The driver side is the "your request was accepted —
+// pay now" card; the owner side is the "Approve lease request" card. iOS
+// distinguishes them via `action.type` (lease_request vs lease_payment).
 func (h *TodayHandler) GetActions(w http.ResponseWriter, r *http.Request) {
 	userID, ok := httputil.GetUserID(r.Context())
 	if !ok {
@@ -36,14 +40,25 @@ func (h *TodayHandler) GetActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actions, err := h.leaseRepo.ListTodayActionsForOwner(r.Context(), userID)
+	ownerActions, err := h.leaseRepo.ListTodayActionsForOwner(r.Context(), userID)
 	if err != nil {
-		h.logger.Error("get today actions", "error", err)
+		h.logger.Error("get owner today actions", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
 
-	// Determine unread status
+	driverActions, err := h.leaseRepo.ListTodayActionsForDriver(r.Context(), userID)
+	if err != nil {
+		h.logger.Error("get driver today actions", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	actions := make([]models.TodayAction, 0, len(ownerActions)+len(driverActions))
+	actions = append(actions, ownerActions...)
+	actions = append(actions, driverActions...)
+
+	// Unread badge — true if either side has activity since last seen.
 	lastSeen, err := h.userRepo.GetLastSeenActionsAt(r.Context(), userID)
 	if err != nil {
 		h.logger.Error("get last seen actions at", "error", err)
@@ -51,15 +66,20 @@ func (h *TodayHandler) GetActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasUnread, err := h.leaseRepo.HasUnreadActions(r.Context(), userID, lastSeen)
+	hasUnreadOwner, err := h.leaseRepo.HasUnreadActions(r.Context(), userID, lastSeen)
 	if err != nil {
-		h.logger.Error("has unread actions", "error", err)
-		hasUnread = false // non-fatal
+		h.logger.Error("has unread owner actions", "error", err)
+		hasUnreadOwner = false
+	}
+	hasUnreadDriver, err := h.leaseRepo.HasUnreadActionsForDriver(r.Context(), userID, lastSeen)
+	if err != nil {
+		h.logger.Error("has unread driver actions", "error", err)
+		hasUnreadDriver = false
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, models.TodayActionsResponse{
 		Actions:          actions,
-		HasUnreadActions: hasUnread,
+		HasUnreadActions: hasUnreadOwner || hasUnreadDriver,
 	})
 }
 

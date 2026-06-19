@@ -114,6 +114,23 @@ struct OnboardingTask: Identifiable {
     /// Whether this task originated from the backend actions endpoint
     var isBackendAction: Bool { chatId != nil }
 
+    /// Returns a copy of this task whose `options` array contains a single
+    /// label. Used by surfaces that want to render the card with one CTA
+    /// instead of the backend-provided two-option (Accept/Decline) shape —
+    /// e.g. the owner Today card for lease requests, which collapses to a
+    /// single "Go to requests" button so accept/decline lives in one place.
+    func withSingleOption(_ label: String) -> OnboardingTask {
+        OnboardingTask(
+            id: id, title: title, description: description, dueDate: dueDate,
+            requestedBy: requestedBy, priority: priority,
+            options: [label],
+            selectedOptionIndex: nil,
+            countdown: countdown,
+            chatId: chatId, carTitle: carTitle, requestType: requestType,
+            counterpartyId: counterpartyId, counterpartyName: counterpartyName
+        )
+    }
+
     init(
         id: UUID, title: String, description: String, dueDate: Date,
         requestedBy: String, priority: TaskPriority, options: [String],
