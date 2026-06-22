@@ -176,6 +176,10 @@ struct CarSpecs: Equatable {
     var year: Int
     var make: String
     var model: String
+    /// 17-character VIN, normalized upper-case. Optional — listings created
+    /// before the VIN field existed (or owners who skip the VIN-autofill
+    /// step) have no value. Persisted server-side in `cars.vin`.
+    var vin: String? = nil
 
     var mileageFormatted: String {
         let formatter = NumberFormatter()

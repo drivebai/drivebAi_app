@@ -79,12 +79,13 @@ type Car struct {
 	Description sql.NullString   `json:"-"`
 
 	// Specs
-	Make     string      `json:"make"`
-	Model    string      `json:"model"`
-	Year     int         `json:"year"`
-	BodyType CarBodyType `json:"body_type"`
-	FuelType FuelType    `json:"fuel_type"`
-	Mileage  int         `json:"mileage"`
+	VIN      sql.NullString `json:"-"`
+	Make     string         `json:"make"`
+	Model    string         `json:"model"`
+	Year     int            `json:"year"`
+	BodyType CarBodyType    `json:"body_type"`
+	FuelType FuelType       `json:"fuel_type"`
+	Mileage  int            `json:"mileage"`
 
 	// Location
 	Address      sql.NullString  `json:"-"`
@@ -192,6 +193,7 @@ type CarResponse struct {
 }
 
 type CarSpecsResponse struct {
+	VIN      *string     `json:"vin,omitempty"`
 	Make     string      `json:"make"`
 	Model    string      `json:"model"`
 	Year     int         `json:"year"`
@@ -245,8 +247,19 @@ type CarOwnerResponse struct {
 	ReviewCount int     `json:"review_count"`
 }
 
-// ToResponse converts a Car model to CarResponse
-func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User) *CarResponse {
+// ToResponse converts a Car model to CarResponse.
+//
+// includeVIN gates the VIN field on the response. VINs are sensitive — a
+// VIN plus a make/model is enough to pull title history, file fraudulent
+// insurance claims, or run identity-grade vehicle lookups — so we expose
+// them ONLY when the viewer is the car's owner (or an admin path that
+// constructs its own DTO). Public listings, drivers browsing Discovery,
+// and chat surfaces must pass false and get nil under specs.vin.
+//
+// Phrased as a required parameter rather than an Options struct so that
+// every call site has to make an explicit decision — if you don't know
+// who the viewer is, the only safe default is false.
+func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User, includeVIN bool) *CarResponse {
 	resp := &CarResponse{
 		ID:          c.ID,
 		OwnerID:     c.OwnerID,
@@ -320,6 +333,10 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 		price := c.SalePrice.Float64
 		resp.SalePrice = &price
 	}
+	if includeVIN && c.VIN.Valid && c.VIN.String != "" {
+		vin := c.VIN.String
+		resp.Specs.VIN = &vin
+	}
 
 	// Convert photos
 	for _, p := range photos {
@@ -370,6 +387,7 @@ type CreateCarRequest struct {
 	Description *string `json:"description,omitempty"`
 
 	// Specs
+	VIN      *string     `json:"vin,omitempty"`
 	Make     string      `json:"make"`
 	Model    string      `json:"model"`
 	Year     int         `json:"year"`
@@ -405,6 +423,7 @@ type UpdateCarRequest struct {
 	Description *string `json:"description,omitempty"`
 
 	// Specs
+	VIN      *string      `json:"vin,omitempty"`
 	Make     *string      `json:"make,omitempty"`
 	Model    *string      `json:"model,omitempty"`
 	Year     *int         `json:"year,omitempty"`

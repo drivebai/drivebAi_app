@@ -146,6 +146,9 @@ protocol APIClientProtocol {
     func deleteCar(id: UUID) async throws -> MessageResponse
     func togglePauseCar(id: UUID) async throws -> Car
 
+    // VIN decode (NHTSA vPIC proxy)
+    func decodeVIN(_ vin: String) async throws -> VINDecodeAPIResponse
+
     // Listings (Driver - Public)
     func fetchListings(status: String?, search: String?) async throws -> [Car]
 
@@ -409,6 +412,18 @@ final class APIClient: APIClientProtocol {
     func togglePauseCar(id: UUID) async throws -> Car {
         let response: CarAPIResponse = try await postEmpty(path: "cars/\(id.uuidString)/pause", authenticated: true)
         return response.toCar()
+    }
+
+    // MARK: - VIN Decode
+
+    /// Decodes a 17-character VIN via our backend proxy of NHTSA's vPIC. The
+    /// caller is expected to send a value that already passed the local
+    /// 17-char alphanumeric shape check — the backend re-validates and
+    /// returns 400 with a clear message if it's malformed, 404 if NHTSA
+    /// returns no usable fields, or 502 if NHTSA itself is unreachable.
+    func decodeVIN(_ vin: String) async throws -> VINDecodeAPIResponse {
+        let trimmed = vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return try await get(path: "cars/vin-decode/\(trimmed)", authenticated: true)
     }
 
     // MARK: - Car Location Methods

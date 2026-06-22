@@ -82,7 +82,9 @@ func (h *CarHandler) ListCars(w http.ResponseWriter, r *http.Request) {
 	for _, car := range cars {
 		photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
 		documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
-		responses = append(responses, car.ToResponse(photos, documents, owner))
+		// ListCars is owner-scoped (SELECT WHERE owner_id = $1) so the caller
+		// is the owner of every row — VIN is safe to include.
+		responses = append(responses, car.ToResponse(photos, documents, owner, true))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
@@ -129,7 +131,8 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 	documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner))
+	// GetCar 403s above unless the caller is the owner — VIN is safe here.
+	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
 }
 
 // CreateCar creates a new car listing
@@ -193,6 +196,12 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	// Handle optional fields
 	if req.Description != nil {
 		car.Description = sql.NullString{String: *req.Description, Valid: true}
+	}
+	if req.VIN != nil {
+		vin := normalizeVIN(*req.VIN)
+		if vin != "" {
+			car.VIN = sql.NullString{String: vin, Valid: true}
+		}
 	}
 	if req.Address != nil {
 		car.Address = sql.NullString{String: *req.Address, Valid: true}
@@ -267,7 +276,8 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
 	slog.Info("car created", "car_id", car.ID, "user_id", userID, "auto_approved", h.autoApproveCars)
-	httputil.WriteJSON(w, http.StatusCreated, car.ToResponse(nil, nil, owner))
+	// Caller just created this car — they are the owner.
+	httputil.WriteJSON(w, http.StatusCreated, car.ToResponse(nil, nil, owner, true))
 }
 
 // UpdateCar updates an existing car listing
@@ -311,6 +321,14 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Description != nil {
 		car.Description = sql.NullString{String: *req.Description, Valid: true}
+	}
+	if req.VIN != nil {
+		vin := normalizeVIN(*req.VIN)
+		if vin == "" {
+			car.VIN = sql.NullString{}
+		} else {
+			car.VIN = sql.NullString{String: vin, Valid: true}
+		}
 	}
 	if req.Make != nil {
 		car.Make = *req.Make
@@ -408,7 +426,8 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
 	slog.Info("car updated", "car_id", car.ID, "user_id", userID)
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner))
+	// UpdateCar 403s above unless the caller is the owner.
+	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
 }
 
 // DeleteCar deletes a car listing
@@ -512,7 +531,8 @@ func (h *CarHandler) PauseCar(w http.ResponseWriter, r *http.Request) {
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
 	slog.Info("car paused toggled", "car_id", carID, "is_paused", newIsPaused)
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner))
+	// PauseCar 403s above unless the caller is the owner.
+	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
 }
 
 // ListCarPhotos returns all photos for a car
@@ -1018,12 +1038,18 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Build response with photos and owner info for each car
+	// Build response with photos and owner info for each car.
+	//
+	// This is the PUBLIC discovery surface — every authenticated driver can
+	// hit it. VINs must be omitted: a (VIN, make, model) tuple is enough to
+	// pull title/accident history or file fraudulent insurance claims, and
+	// nothing about Discovery's UX needs the VIN. Owners still see their own
+	// VINs via /cars and /cars/{id}, which gate on ownership.
 	var responses []*models.CarResponse
 	for _, car := range cars {
 		photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
 		owner, _ := h.userRepo.GetByID(ctx, car.OwnerID)
-		responses = append(responses, car.ToResponse(photos, nil, owner))
+		responses = append(responses, car.ToResponse(photos, nil, owner, false))
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
@@ -1113,7 +1139,8 @@ func (h *CarHandler) UpdateCarLocation(w http.ResponseWriter, r *http.Request) {
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
 	slog.Info("car location updated", "car_id", carID, "user_id", userID)
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner))
+	// UpdateCarLocation 403s above unless the caller is the owner.
+	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
 }
 
 // DeleteCarDocument deletes a car document

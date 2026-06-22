@@ -146,6 +146,7 @@ func main() {
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
+	vinDecodeHandler := handlers.NewVINDecodeHandler(logger)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, privateURLSigner, logger)
 	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
@@ -269,6 +270,11 @@ func main() {
 			r.Route("/cars", func(r chi.Router) {
 				r.Get("/", carHandler.ListCars)
 				r.Post("/", carHandler.CreateCar)
+				// VIN decode (NHTSA proxy). Mounted under /cars/vin-decode to
+				// stay grouped with the listing-flow endpoints; declared
+				// BEFORE /{carId} so chi doesn't route "vin-decode" as a
+				// car ID.
+				r.Get("/vin-decode/{vin}", vinDecodeHandler.DecodeVIN)
 				r.Get("/{carId}", carHandler.GetCar)
 				r.Put("/{carId}", carHandler.UpdateCar)
 				r.Delete("/{carId}", carHandler.DeleteCar)

@@ -54,6 +54,7 @@ struct CarAPIResponse: Codable {
 }
 
 struct CarSpecsResponse: Codable {
+    let vin: String?
     let make: String
     let model: String
     let year: Int
@@ -62,6 +63,7 @@ struct CarSpecsResponse: Codable {
     let mileage: Int
 
     enum CodingKeys: String, CodingKey {
+        case vin
         case make, model, year
         case bodyType = "body_type"
         case fuelType = "fuel_type"
@@ -150,6 +152,7 @@ struct CarOwnerAPIResponse: Codable {
 struct CreateCarRequest: Codable {
     var title: String?
     var description: String?
+    var vin: String?
     var make: String
     var model: String
     var year: Int
@@ -173,7 +176,8 @@ struct CreateCarRequest: Codable {
     var insuranceCoverage: String?
 
     enum CodingKeys: String, CodingKey {
-        case title, description, make, model, year
+        case title, description, vin
+        case make, model, year
         case bodyType = "body_type"
         case fuelType = "fuel_type"
         case mileage, address, neighborhood, latitude, longitude
@@ -228,6 +232,41 @@ struct UpdateCarRequest: Codable {
     }
 }
 
+// MARK: - VIN Decode
+
+/// Backend-normalized response for `/api/v1/cars/vin-decode/{vin}`.
+///
+/// The Go layer talks to NHTSA's vPIC `DecodeVinValues` upstream and:
+///   - maps `body_type` / `fuel_type` to the same enum strings the rest of
+///     our car APIs use (lower-cased: "suv", "plug_in_hybrid", …),
+///   - title-cases the manufacturer name,
+///   - parses the year string to an integer,
+///   - surfaces any partial-decode condition via `warning`.
+///
+/// Any of the optional fields may be missing — NHTSA frequently omits Model
+/// or BodyClass even for valid VINs. The UI autofills what it gets and
+/// leaves the rest for the user to enter manually.
+struct VINDecodeAPIResponse: Codable {
+    let vin: String
+    let make: String?
+    let model: String?
+    let year: Int?
+    let bodyType: String?
+    let fuelType: String?
+    let manufacturer: String?
+    let vehicleType: String?
+    let warning: String?
+
+    enum CodingKeys: String, CodingKey {
+        case vin, make, model, year
+        case bodyType = "body_type"
+        case fuelType = "fuel_type"
+        case manufacturer
+        case vehicleType = "vehicle_type"
+        case warning
+    }
+}
+
 // MARK: - Update Car Location Request
 
 struct UpdateCarLocationRequest: Codable {
@@ -268,7 +307,8 @@ extension CarAPIResponse {
             mileage: specs.mileage,
             year: specs.year,
             make: specs.make,
-            model: specs.model
+            model: specs.model,
+            vin: specs.vin
         )
 
         let carRequirements = CarRequirements(
@@ -363,6 +403,7 @@ extension Car {
         CreateCarRequest(
             title: title,
             description: description,
+            vin: specs.vin,
             make: specs.make,
             model: specs.model,
             year: specs.year,

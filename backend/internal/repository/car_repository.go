@@ -26,7 +26,7 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 	query := `
 		INSERT INTO cars (
 			id, owner_id, title, description,
-			make, model, year, body_type, fuel_type, mileage,
+			vin, make, model, year, body_type, fuel_type, mileage,
 			address, neighborhood, latitude, longitude, area, street, block, zip,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
@@ -34,18 +34,18 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 			created_at, updated_at
 		) VALUES (
 			$1, $2, $3, $4,
-			$5, $6, $7, $8, $9, $10,
-			$11, $12, $13, $14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23,
-			$24, $25, $26,
-			$27, $28, $29, $30,
-			$31, $32
+			$5, $6, $7, $8, $9, $10, $11,
+			$12, $13, $14, $15, $16, $17, $18, $19,
+			$20, $21, $22, $23, $24,
+			$25, $26, $27,
+			$28, $29, $30, $31,
+			$32, $33
 		)
 	`
 
 	_, err := r.db.Pool.Exec(ctx, query,
 		car.ID, car.OwnerID, car.Title, car.Description,
-		car.Make, car.Model, car.Year, car.BodyType, car.FuelType, car.Mileage,
+		car.VIN, car.Make, car.Model, car.Year, car.BodyType, car.FuelType, car.Mileage,
 		car.Address, car.Neighborhood, car.Latitude, car.Longitude, car.Area, car.Street, car.Block, car.Zip,
 		car.IsForRent, car.WeeklyRentPrice, car.IsForSale, car.SalePrice, car.Currency,
 		car.MinYearsLicensed, car.DepositAmount, car.InsuranceCoverage,
@@ -68,7 +68,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 	query := `
 		SELECT
 			id, owner_id, title, description,
-			make, model, year, body_type, fuel_type, mileage,
+			vin, make, model, year, body_type, fuel_type, mileage,
 			address, neighborhood, latitude, longitude, area, street, block, zip,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
@@ -81,7 +81,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 	var car models.Car
 	err := r.db.Pool.QueryRow(ctx, query, id).Scan(
 		&car.ID, &car.OwnerID, &car.Title, &car.Description,
-		&car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
+		&car.VIN, &car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
 		&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 		&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
@@ -104,7 +104,7 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 	query := `
 		SELECT
 			id, owner_id, title, description,
-			make, model, year, body_type, fuel_type, mileage,
+			vin, make, model, year, body_type, fuel_type, mileage,
 			address, neighborhood, latitude, longitude, area, street, block, zip,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
@@ -126,7 +126,7 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 		var car models.Car
 		err := rows.Scan(
 			&car.ID, &car.OwnerID, &car.Title, &car.Description,
-			&car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
+			&car.VIN, &car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
 			&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 			&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
@@ -147,17 +147,19 @@ func (r *CarRepository) Update(ctx context.Context, car *models.Car) error {
 	query := `
 		UPDATE cars SET
 			title = $2, description = $3,
-			make = $4, model = $5, year = $6, body_type = $7, fuel_type = $8, mileage = $9,
-			address = $10, neighborhood = $11, latitude = $12, longitude = $13,
-			area = $14, street = $15, block = $16, zip = $17,
-			is_for_rent = $18, weekly_rent_price = $19, is_for_sale = $20, sale_price = $21,
-			min_years_licensed = $22, deposit_amount = $23, insurance_coverage = $24,
-			status = $25, is_paused = $26
+			vin = $4,
+			make = $5, model = $6, year = $7, body_type = $8, fuel_type = $9, mileage = $10,
+			address = $11, neighborhood = $12, latitude = $13, longitude = $14,
+			area = $15, street = $16, block = $17, zip = $18,
+			is_for_rent = $19, weekly_rent_price = $20, is_for_sale = $21, sale_price = $22,
+			min_years_licensed = $23, deposit_amount = $24, insurance_coverage = $25,
+			status = $26, is_paused = $27
 		WHERE id = $1
 	`
 
 	result, err := r.db.Pool.Exec(ctx, query,
 		car.ID, car.Title, car.Description,
+		car.VIN,
 		car.Make, car.Model, car.Year, car.BodyType, car.FuelType, car.Mileage,
 		car.Address, car.Neighborhood, car.Latitude, car.Longitude,
 		car.Area, car.Street, car.Block, car.Zip,
@@ -212,7 +214,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 	query := `
 		SELECT
 			c.id, c.owner_id, c.title, c.description,
-			c.make, c.model, c.year, c.body_type, c.fuel_type, c.mileage,
+			c.vin, c.make, c.model, c.year, c.body_type, c.fuel_type, c.mileage,
 			c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
 			c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
 			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
@@ -255,7 +257,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 		var car models.Car
 		err := rows.Scan(
 			&car.ID, &car.OwnerID, &car.Title, &car.Description,
-			&car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
+			&car.VIN, &car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
 			&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 			&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,

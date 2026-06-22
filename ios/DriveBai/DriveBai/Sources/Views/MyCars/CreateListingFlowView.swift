@@ -34,9 +34,16 @@ enum CreateListingStep: Int, CaseIterable {
 @MainActor
 class CreateListingState: ObservableObject {
     // Basic Info
+    @Published var vin: String = ""
     @Published var make: String = ""
     @Published var model: String = ""
     @Published var year: Int = Calendar.current.component(.year, from: Date())
+
+    // VIN decode state
+    @Published var isDecodingVIN: Bool = false
+    @Published var vinDecodeError: String?
+    @Published var vinDecodeWarning: String?
+    @Published var vinDecodeSucceeded: Bool = false
 
     // Car Details
     @Published var bodyType: CarBodyType = .sedan
@@ -147,15 +154,83 @@ class CreateListingState: ObservableObject {
         error = nil
     }
 
+    // MARK: - VIN
+
+    /// Trimmed + uppercased view of the VIN field. Cheap to compute, used
+    /// for validation + the network call. We never mutate `vin` itself so
+    /// the user keeps whatever they typed (mixed-case is allowed in the
+    /// field; the API call normalizes).
+    var normalizedVIN: String {
+        vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    /// SAE J853 VIN shape check: exactly 17 alphanumeric chars, excluding
+    /// I/O/Q (they're forbidden to avoid 1/0 confusion). Same predicate the
+    /// backend enforces — we re-check it here so the "Decode" button only
+    /// lights up when the value can plausibly succeed upstream.
+    var isVINShapeValid: Bool {
+        let v = normalizedVIN
+        guard v.count == 17 else { return false }
+        let allowed: Set<Character> = Set("0123456789ABCDEFGHJKLMNPRSTUVWXYZ")
+        return v.allSatisfy { allowed.contains($0) }
+    }
+
+    /// Fetches decoded fields from the backend's NHTSA proxy and autofills
+    /// whatever the upstream knew. Never clobbers Model when NHTSA omits it
+    /// (older VINs frequently come back without a Model string) — that
+    /// avoids surprising the user with empty fields after an apparently-
+    /// successful decode.
+    func decodeVIN(using apiClient: APIClient = .shared) async {
+        guard !isDecodingVIN else { return }
+        guard isVINShapeValid else {
+            vinDecodeError = "VIN must be 17 characters, no I/O/Q."
+            vinDecodeSucceeded = false
+            return
+        }
+        isDecodingVIN = true
+        vinDecodeError = nil
+        vinDecodeWarning = nil
+        defer { isDecodingVIN = false }
+
+        do {
+            let resp = try await apiClient.decodeVIN(normalizedVIN)
+            // Persist the normalized VIN so future edits keep the canonical form.
+            vin = resp.vin
+            if let m = resp.make, !m.isEmpty { make = m }
+            if let m = resp.model, !m.isEmpty { model = m }
+            if let y = resp.year, y > 1989, y <= Calendar.current.component(.year, from: Date()) + 1 {
+                year = y
+            }
+            if let body = resp.bodyType, !body.isEmpty,
+               let mapped = CarBodyType.allCases.first(where: { $0.rawValue.lowercased() == body.lowercased() }) {
+                bodyType = mapped
+            }
+            if let fuel = resp.fuelType, !fuel.isEmpty,
+               let mapped = FuelType.allCases.first(where: { $0.rawValue.lowercased() == fuel.lowercased() }) {
+                fuelType = mapped
+            }
+            vinDecodeSucceeded = true
+            vinDecodeWarning = resp.warning?.isEmpty == false ? resp.warning : nil
+        } catch let APIError.serverError(_, message) {
+            vinDecodeError = message
+            vinDecodeSucceeded = false
+        } catch {
+            vinDecodeError = "Couldn't decode that VIN. Please try again or enter details manually."
+            vinDecodeSucceeded = false
+        }
+    }
+
     // Create Car
     func createCar(ownerId: UUID, ownerName: String) -> Car {
+        let normalizedVIN = vin.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let specs = CarSpecs(
             bodyType: bodyType,
             fuelType: fuelType,
             mileage: mileage,
             year: year,
             make: make,
-            model: model
+            model: model,
+            vin: normalizedVIN.isEmpty ? nil : normalizedVIN
         )
 
         let requirements = CarRequirements(
@@ -467,6 +542,11 @@ struct CreateListingBasicInfoStep: View {
             onContinue: { state.goToNextStep() }
         ) {
             VStack(spacing: 20) {
+                // VIN + Decode — optional shortcut. If decode succeeds we
+                // autofill Make / Model / Year (and later steps pre-fill
+                // Body / Fuel). User can still edit any of them afterwards.
+                VINAutofillSection()
+
                 // Make
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Make")
@@ -501,6 +581,88 @@ struct CreateListingBasicInfoStep: View {
                     .pickerStyle(.wheel)
                     .frame(height: 120)
                 }
+            }
+        }
+    }
+}
+
+// MARK: - VIN Autofill Section
+
+/// Optional VIN field + Decode button. Lives at the top of Step 1 because
+/// hitting Decode populates Make / Model / Year / Body / Fuel in one go,
+/// turning the rest of the wizard into review-and-tweak instead of typing
+/// everything from scratch.
+private struct VINAutofillSection: View {
+    @EnvironmentObject private var state: CreateListingState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("VIN")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Text("optional")
+                    .font(.caption)
+                    .foregroundColor(.secondary.opacity(0.7))
+                Spacer()
+                if state.vinDecodeSucceeded && state.vinDecodeError == nil {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("Autofilled")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.green)
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField("17-character VIN", text: $state.vin)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled(true)
+                    .onChange(of: state.vin) { _, _ in
+                        // Any keystroke invalidates a prior decode result so
+                        // the "Autofilled" pill doesn't lie about a stale VIN.
+                        state.vinDecodeSucceeded = false
+                        state.vinDecodeError = nil
+                        state.vinDecodeWarning = nil
+                    }
+
+                Button {
+                    Task { await state.decodeVIN() }
+                } label: {
+                    Group {
+                        if state.isDecodingVIN {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .tint(.white)
+                        } else {
+                            Text("Decode")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .frame(minWidth: 72, minHeight: 30)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(state.isVINShapeValid && !state.isDecodingVIN ? Color.driveBaiPrimary : Color(.systemGray3))
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                }
+                .disabled(!state.isVINShapeValid || state.isDecodingVIN)
+            }
+
+            if let error = state.vinDecodeError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            } else if let warning = state.vinDecodeWarning {
+                Text(warning)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            } else {
+                Text("Enter your VIN to autofill make, model, year, and more.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
     }
