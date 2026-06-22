@@ -9,6 +9,20 @@ private let kMinWeeklyRentPrice: Double = 1
 private let kMinWeeklyRentPrice: Double = 50
 #endif
 
+/// Save-state used by the autosave pill in CarDetailEditView's toolbar.
+///
+/// .idle is the at-rest state when nothing has been touched yet; once the
+/// user edits anything we flip to .dirty (debounce running), then .saving
+/// (network in flight), then either .saved or .failed(reason). The pill
+/// renders one of {checkmark, spinner, retry button} accordingly.
+enum SaveState: Equatable {
+    case idle
+    case dirty
+    case saving
+    case saved
+    case failed(String)
+}
+
 /// Car detail edit mode with collapsible sections - Figma accurate
 struct CarDetailEditView: View {
     let car: Car
@@ -26,6 +40,26 @@ struct CarDetailEditView: View {
     @State private var isDeleting: Bool = false
     @State private var errorMessage: String?
     @State private var showErrorAlert: Bool = false
+
+    // --- Autosave state ---
+    //
+    // Edits to any field of `editedCar` are persisted automatically after
+    // a short debounce so a user who walks away from the screen doesn't
+    // lose their changes. The Save button in the toolbar is repurposed
+    // into a save-state pill ("Saved ✓ / Saving… / Retry") to make the
+    // current state legible at a glance.
+    //
+    // Race safety: only ONE save is in-flight at a time (`inFlightSave`).
+    // If the user types DURING a save, the change is captured by the
+    // post-save Equatable check (snapshotBefore != editedCar) and a
+    // follow-up save is scheduled. This converges to last-write-wins
+    // without overlapping requests.
+    @State private var saveState: SaveState = .idle
+    @State private var autosaveTask: Task<Void, Never>?
+    @State private var inFlightSave: Bool = false
+    /// Set after the view has appeared once so we don't race the
+    /// initial `editedCar` assignment in `init` with an autosave.
+    @State private var hasAppeared: Bool = false
 
     // Section expansion state
     @State private var isGeneralExpanded: Bool = true
@@ -119,19 +153,40 @@ struct CarDetailEditView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    Task { await saveCar() }
-                } label: {
-                    if isSaving {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle())
-                    } else {
-                        Text("Save")
-                            .fontWeight(.semibold)
-                    }
+                saveStatusPill
+            }
+        }
+        .onAppear {
+            // Mark the view live AFTER the initial editedCar assignment has
+            // settled. Without this guard, the synthetic onChange that fires
+            // on first render would trigger a no-op autosave on entry.
+            hasAppeared = true
+        }
+        .onChange(of: editedCar) { _, _ in
+            // Any field edit, photo pick, or doc pick mutates editedCar.
+            // Debounce so rapid keystrokes coalesce into one save.
+            scheduleAutosave()
+        }
+        .onChange(of: isEditMode) { _, newValue in
+            // Leaving edit mode — make sure nothing is lost. We flush the
+            // pending debounce immediately. If a save is already in flight,
+            // it'll re-schedule itself if more changes are detected.
+            if newValue == false {
+                autosaveTask?.cancel()
+                autosaveTask = nil
+                if saveState == .dirty {
+                    Task { await performSave(triggeredByUser: false) }
                 }
-                .foregroundColor(Color.driveBaiPrimary)
-                .disabled(isSaving || isDeleting)
+            }
+        }
+        .onDisappear {
+            // Backstop in case the view leaves before edit-mode toggles
+            // (e.g. swipe-back, programmatic dismiss). Fire-and-forget;
+            // network request continues even after the view tears down.
+            autosaveTask?.cancel()
+            autosaveTask = nil
+            if saveState == .dirty {
+                Task { await performSave(triggeredByUser: false) }
             }
         }
         .sheet(isPresented: $showPhotosEditor) {
@@ -178,47 +233,132 @@ struct CarDetailEditView: View {
         }
     }
 
+    // MARK: - Save-state UI
+
+    /// Toolbar pill that surfaces the autosave state.
+    ///   - .idle / .saved  → grey "Saved" check, no tap target
+    ///   - .dirty / .saving → small spinner + "Saving…" label
+    ///   - .failed(reason)  → red "Retry" button that re-invokes saveCar()
+    /// We keep the Retry affordance on .failed so the user always has a
+    /// deterministic way to recover from a transient save error.
+    @ViewBuilder
+    private var saveStatusPill: some View {
+        switch saveState {
+        case .idle, .saved:
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark.circle.fill")
+                Text("Saved")
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundColor(.secondary)
+            .accessibilityLabel("All changes saved")
+        case .dirty, .saving:
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.75)
+                Text("Saving…")
+            }
+            .font(.subheadline)
+            .foregroundColor(.secondary)
+            .accessibilityLabel("Saving changes")
+        case .failed:
+            Button {
+                Task { await saveCar() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                    Text("Retry")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.red)
+            }
+            .disabled(isSaving)
+            .accessibilityLabel("Save failed — tap to retry")
+        }
+    }
+
     // MARK: - Actions
 
+    /// Manual flush. Called by the toolbar status pill on the .failed branch
+    /// (Retry) and by anything that needs a synchronous save (e.g. exiting
+    /// edit mode). NOT called on every keystroke — autosave handles that.
     private func saveCar() async {
-        isSaving = true
+        // Cancel any pending debounce so we don't double-save.
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        await performSave(triggeredByUser: true)
+    }
 
-        // First update the car data
-        let result = await store.updateCar(editedCar)
+    /// Schedule a save after `debounceMillis` of no further edits. Subsequent
+    /// edits restart the timer (autosaveTask is cancelled + replaced).
+    /// While a save is in-flight, scheduling is a no-op — the in-flight
+    /// save's post-condition Equatable check will pick up any change that
+    /// happened during the flight and re-schedule itself.
+    private func scheduleAutosave(debounceMillis: Int = 800) {
+        guard hasAppeared else { return }
+        if inFlightSave { return }
+        saveState = .dirty
+        autosaveTask?.cancel()
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(debounceMillis))
+            if Task.isCancelled { return }
+            await performSave(triggeredByUser: false)
+        }
+    }
 
-        if result == nil {
-            isSaving = false
-            errorMessage = store.error ?? "Failed to save changes"
-            showErrorAlert = true
+    /// One save round: PATCH the car attributes, then upload any freshly
+    /// picked photos / documents and clear their local bytes on success.
+    /// Re-runs itself if `editedCar` changed during the round so the user's
+    /// last keystroke always wins.
+    @MainActor
+    private func performSave(triggeredByUser: Bool) async {
+        if inFlightSave { return }
+        inFlightSave = true
+        saveState = .saving
+        if triggeredByUser { isSaving = true }
+        defer {
+            inFlightSave = false
+            if triggeredByUser { isSaving = false }
+        }
+
+        // Snapshot BEFORE the save so we can detect "user typed during the
+        // network round-trip" and trigger a follow-up save.
+        let snapshotBefore = editedCar
+
+        // 1. Persist car attributes (PATCH). Idempotent, so a repeated save
+        // with the same values is harmless.
+        guard let _ = await store.updateCar(editedCar) else {
+            let reason = store.error ?? "Couldn't save"
+            saveState = .failed(reason)
+            if triggeredByUser {
+                errorMessage = reason
+                showErrorAlert = true
+            }
             return
         }
 
-        // Then upload any new photos (photos with localImageData but no imageURL, or localImageData changed)
-        let photosToUpload = editedCar.photoSlots.filter { slot in
-            // Upload if there's local data and either no existing URL or it's a new selection
-            slot.localImageData != nil
-        }
-
-        for slot in photosToUpload {
-            if let imageData = slot.localImageData {
-                let success = await store.uploadPhoto(
-                    data: imageData,
-                    carId: car.id,
-                    slotType: slot.slotType
-                )
-                if !success {
-                    print("[CarDetailEditView] Failed to upload photo for slot: \(slot.slotType.rawValue)")
-                }
+        // 2. Push any freshly-picked photos. We mutate editedCar in place
+        // to clear localImageData on success — this keeps the next autosave
+        // a no-op for that slot (filter checks localImageData != nil).
+        for idx in editedCar.photoSlots.indices {
+            guard let data = editedCar.photoSlots[idx].localImageData else { continue }
+            let slotType = editedCar.photoSlots[idx].slotType
+            let ok = await store.uploadPhoto(data: data, carId: car.id, slotType: slotType)
+            if ok {
+                editedCar.photoSlots[idx].localImageData = nil
+            } else {
+                #if DEBUG
+                print("[CarDetailEditView] Photo upload failed for slot \(slotType.rawValue)")
+                #endif
             }
         }
 
-        // Push every freshly-picked car document. Without this, the document
-        // picker's bytes never reach the server — owner sees the row in the
-        // edit UI but the driver-side Chat → Requests "Vehicle Documents"
-        // section stays empty because car_documents has no row to return.
-        let docsToUpload = editedCar.documents.filter { $0.needsUpload }
-        for doc in docsToUpload {
-            guard let data = doc.localData else { continue }
+        // 3. Push any freshly-picked car documents. Same clear-on-success
+        // pattern so the next autosave doesn't re-upload identical bytes.
+        for idx in editedCar.documents.indices {
+            guard editedCar.documents[idx].needsUpload,
+                  let data = editedCar.documents[idx].localData
+            else { continue }
+            let doc = editedCar.documents[idx]
             let mime = doc.localMimeType ?? "application/octet-stream"
             let resp = await store.uploadDocument(
                 carId: car.id,
@@ -227,16 +367,30 @@ struct CarDetailEditView: View {
                 filename: doc.filename,
                 mimeType: mime
             )
-            if resp == nil {
+            if resp != nil {
+                editedCar.documents[idx].localData = nil
+                editedCar.documents[idx].localMimeType = nil
+            } else {
                 #if DEBUG
-                print("[CarDetailEditView] Failed to upload document: \(doc.documentType.rawValue) — \(store.error ?? "no error")")
+                print("[CarDetailEditView] Document upload failed: \(doc.documentType.rawValue) — \(store.error ?? "no error")")
                 #endif
             }
         }
 
-        isSaving = false
-        // Success - exit edit mode
-        isEditMode = false
+        // 4. Did the user type / pick something new during the round-trip?
+        // If yes, schedule another save without debounce delay (changes are
+        // already old). If no, we're caught up.
+        if editedCar != snapshotBefore {
+            saveState = .dirty
+            // No debounce — user changes are already "stable" from this
+            // method's perspective. Re-fire on the next runloop tick.
+            autosaveTask?.cancel()
+            autosaveTask = Task { @MainActor in
+                await performSave(triggeredByUser: false)
+            }
+        } else {
+            saveState = .saved
+        }
     }
 
     private func resetLocation() {

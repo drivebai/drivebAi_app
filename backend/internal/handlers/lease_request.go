@@ -1579,28 +1579,42 @@ func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http
 		}
 	}
 
-	// Vehicle documents — populated for the DRIVER viewer only. These are
-	// the owner-uploaded car_documents (insurance, registration, …) for
-	// the listing this chat is about. The owner already has full access
-	// to their own car documents via /cars/{carId}/documents, so they
-	// don't need this surface.
+	// Vehicle documents — populated for the DRIVER viewer only, AND only
+	// after the owner has accepted at least one lease request in this chat.
+	// Car documents (registration, insurance, …) can be misused for fraud,
+	// so we refuse to reveal them — and refuse to issue signed URLs for
+	// them — until the owner has explicitly opted in by accepting. Once a
+	// request is accepted/payment_pending/paid, access flips on; on
+	// terminal cancellation/expiry it flips back off. Owners always have
+	// full access to their own car documents via /cars/{carId}/documents,
+	// so they don't need this surface.
 	vehicleDocs := make([]VehicleDocumentResponse, 0)
 	if viewerRole == "driver" {
-		docs, err := h.carDocRepo.GetByCarID(r.Context(), chat.CarID)
+		allowed, err := h.leaseRepo.HasAcceptedLeaseForChat(r.Context(), chatID, userID)
 		if err != nil {
-			h.logger.Error("shared docs: car docs list failed",
-				"error", err, "car_id", chat.CarID)
-		} else {
-			for _, d := range docs {
-				vehicleDocs = append(vehicleDocs, VehicleDocumentResponse{
-					ID:           d.ID,
-					DocumentType: d.DocumentType,
-					FileName:     d.FileName,
-					FileURL:      h.urlSigner.Sign(d.FileURL),
-					FileSize:     d.FileSize,
-					MimeType:     d.MimeType,
-					CreatedAt:    models.RFC3339Time(d.CreatedAt),
-				})
+			h.logger.Error("shared docs: acceptance gate check failed",
+				"error", err, "chat_id", chatID, "driver_id", userID)
+			// Fail closed: if we can't prove the gate is open, do not leak
+			// signed URLs. The driver simply sees an empty section.
+			allowed = false
+		}
+		if allowed {
+			docs, err := h.carDocRepo.GetByCarID(r.Context(), chat.CarID)
+			if err != nil {
+				h.logger.Error("shared docs: car docs list failed",
+					"error", err, "car_id", chat.CarID)
+			} else {
+				for _, d := range docs {
+					vehicleDocs = append(vehicleDocs, VehicleDocumentResponse{
+						ID:           d.ID,
+						DocumentType: d.DocumentType,
+						FileName:     d.FileName,
+						FileURL:      h.urlSigner.Sign(d.FileURL),
+						FileSize:     d.FileSize,
+						MimeType:     d.MimeType,
+						CreatedAt:    models.RFC3339Time(d.CreatedAt),
+					})
+				}
 			}
 		}
 	}

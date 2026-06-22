@@ -51,13 +51,15 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tab picker
-            Picker("", selection: $viewModel.selectedTab) {
-                ForEach(ChatTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
+            // Tab picker. Custom segmented control instead of SwiftUI's
+            // `.segmented` Picker so we can overlay an unread/attention dot
+            // on the Requests label without fighting UIKit's segmented
+            // renderer. Visually matches the native segmented look the
+            // screen used before.
+            ChatTabsBar(
+                selection: $viewModel.selectedTab,
+                requestsHasBadge: viewModel.hasRequestsAttentionBadge
+            )
             .padding(.horizontal)
             .padding(.vertical, 8)
 
@@ -421,5 +423,65 @@ struct ChatView: View {
             viewModel.error = "Payment failed: \(error.localizedDescription)"
             Task { await viewModel.loadLeaseRequests() }
         }
+    }
+}
+
+// MARK: - Tabs Bar
+
+/// In-chat segmented control with a small red attention dot above the
+/// Requests label. Replaces `Picker(.segmented)` so the dot can live inside
+/// the bar (a UIKit-rendered Picker doesn't expose per-segment overlays).
+/// Styled to match the native segmented look the screen used before.
+private struct ChatTabsBar: View {
+    @Binding var selection: ChatTab
+    let requestsHasBadge: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(ChatTab.allCases, id: \.self) { tab in
+                tabButton(tab)
+            }
+        }
+        .padding(4)
+        .background(Color(.systemGray5))
+        .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func tabButton(_ tab: ChatTab) -> some View {
+        let isSelected = selection == tab
+        let showBadge = tab == .requests && requestsHasBadge
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { selection = tab }
+        } label: {
+            // Inline label + dot — keeps the indicator visually attached to
+            // the word "Requests" instead of pinned to the segment's edge.
+            HStack(spacing: 6) {
+                Text(tab.rawValue)
+                    .font(.subheadline)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .foregroundColor(.primary)
+
+                if showBadge {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .overlay(
+                            Circle()
+                                .stroke(Color(.systemBackground), lineWidth: 1.5)
+                        )
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(isSelected ? Color(.systemBackground) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showBadge ? "\(tab.rawValue), needs attention" : tab.rawValue)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

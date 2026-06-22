@@ -98,11 +98,19 @@ final class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // On any lease status flip we also refresh shared documents. This
+        // matters for the driver side: vehicle documents (registration /
+        // insurance / …) are gated by `HasAcceptedLeaseForChat` on the
+        // backend, so they appear the moment the owner taps Accept and
+        // disappear again if the rental terminates (declined / cancelled /
+        // expired_refunded). Refreshing here keeps the chat surface in sync
+        // without forcing the user to leave and re-enter the screen.
         WebSocketManager.shared.leaseRequestUpdatedPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 Task { [weak self] in
                     await self?.loadLeaseRequests()
+                    await self?.loadSharedDocuments()
                 }
             }
             .store(in: &cancellables)
@@ -308,6 +316,37 @@ final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Lease Requests
+
+    /// Red-dot signal on the in-chat "Requests" segmented tab. True when the
+    /// current user has a lease request that needs their action.
+    ///
+    ///   - Owner: at least one lease request is still `requested` (waiting on
+    ///     them to Accept/Decline).
+    ///   - Driver:
+    ///       • a request the owner has accepted is awaiting payment
+    ///         (`driverCanPay` — covers fresh accepts and failed/canceled
+    ///         retries), OR
+    ///       • the rental is paid and pickup confirmation is still pending
+    ///         (driver must tap "I've picked up the car" before the deadline).
+    ///
+    /// Suppressed while the user is already on the Requests tab — the action
+    /// card itself is visible there, so a persistent dot on the tab label
+    /// would be redundant. Auto-clears the moment the underlying status flips
+    /// (action taken, owner declined, payment succeeded, pickup confirmed, …)
+    /// because `leaseRequests` is updated in place by every mutation path.
+    var hasRequestsAttentionBadge: Bool {
+        if selectedTab == .requests { return false }
+        return leaseRequests.contains { lr in
+            if lr.ownerId == currentUserId, lr.status == .requested {
+                return true
+            }
+            if lr.driverId == currentUserId {
+                if lr.driverCanPay { return true }
+                if lr.isAwaitingPickupConfirmation { return true }
+            }
+            return false
+        }
+    }
 
     func loadLeaseRequests() async {
         isLoadingLeaseRequests = true

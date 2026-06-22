@@ -212,6 +212,43 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 	return results, nil
 }
 
+// HasAcceptedLeaseForChat reports whether the given driver has at least one
+// lease request in this chat that the owner has already accepted (or that has
+// progressed further into the payment / paid flow). Used as the visibility
+// gate for vehicle documents on the driver side — car docs (registration,
+// insurance, …) must not be revealed to a driver who has only created a
+// request that the owner has not yet acted on.
+//
+// Gating statuses (driver may see vehicle docs):
+//
+//	accepted, payment_pending, paid
+//
+// Excluded by design:
+//
+//   - requested: the owner has not yet acted; this is exactly the case the
+//     bug report is about.
+//   - declined / cancelled: rental never started; access to docs ends with
+//     the request.
+//   - expired / expired_refunded: terminal states after a missed pickup or a
+//     deadline lapse; per the safest-default rule we drop access once the
+//     rental is no longer active.
+func (r *LeaseRequestRepository) HasAcceptedLeaseForChat(ctx context.Context, chatID, driverID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM lease_requests
+			WHERE chat_id = $1
+			  AND driver_id = $2
+			  AND status IN ('accepted', 'payment_pending', 'paid')
+		)
+	`, chatID, driverID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check accepted lease for chat: %w", err)
+	}
+	return exists, nil
+}
+
 // AcceptLeaseRequest transitions a lease request from requested → accepted AND
 // atomically reserves the car listing so it disappears from discovery for
 // other drivers. Only the car owner may call. Failure to reserve (e.g., the

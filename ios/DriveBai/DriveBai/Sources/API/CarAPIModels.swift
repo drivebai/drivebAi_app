@@ -252,8 +252,13 @@ struct CarDocumentsListResponse: Codable {
 extension CarAPIResponse {
     /// Convert API response to local Car model
     func toCar() -> Car {
-        let bodyType = CarBodyType(rawValue: specs.bodyType.capitalized) ?? .sedan
-        let fuelType = FuelType(rawValue: specs.fuelType.capitalized) ?? .gas
+        // Case-insensitive lookup: the backend stores enum strings lower-cased
+        // ("suv", "plug-in hybrid"), but our raw values keep their canonical
+        // display case ("SUV", "Plug-in Hybrid"). A naive `.capitalized` round-trip
+        // mangles them ("Suv", "Plug-In Hybrid") and silently coerces every save
+        // back to the default — making autosaved Body/Fuel picks appear lost.
+        let bodyType = CarBodyType.allCases.first { $0.rawValue.lowercased() == specs.bodyType.lowercased() } ?? .sedan
+        let fuelType = FuelType.allCases.first { $0.rawValue.lowercased() == specs.fuelType.lowercased() } ?? .gas
         let insuranceCoverage = InsuranceCoverage(rawValue: requirements.insuranceCoverage) ?? .fullCoverage
         let carStatus = CarListingStatus(rawValue: status) ?? .pending
 
