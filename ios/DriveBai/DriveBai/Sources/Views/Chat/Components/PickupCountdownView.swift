@@ -1,15 +1,16 @@
 import SwiftUI
 
-/// Live HH/MM countdown to the pickup deadline. Visual urgency tiers:
+/// Live HH/MM/SS countdown to the pickup deadline. Visual urgency tiers:
 ///
 /// * **normal**  — > 60 min left. Calm primary tint.
 /// * **warning** — 15…60 min left. Amber accent.
 /// * **critical** — < 15 min left. Red accent + bold weight.
 ///
-/// Hours/minutes only (no seconds) by design: prevents the card from
-/// constantly twitching while still communicating the time pressure.
-/// `TimelineView(.periodic)` is what drives the redraws, so callers don't
-/// need to manage their own timer.
+/// Seconds are part of the readout so the post-payment pickup deadline
+/// (default 2 hours) visibly counts down — the product wants the urgency
+/// without waiting through silent 60-second jumps. `monospacedDigit()`
+/// keeps the layout from twitching as digits change. `TimelineView` drives
+/// the per-second redraws so callers don't have to manage a timer.
 struct PickupCountdownView: View {
     /// Absolute deadline. The card stops counting at this point and renders
     /// the "Deadline passed" state (driver-facing copy is owned by the card).
@@ -40,10 +41,11 @@ struct PickupCountdownView: View {
     }
 
     var body: some View {
-        // 15s tick keeps HH/MM accurate and crosses the tier boundaries
-        // (60 → 59 min, 15 → 14 min) without burning CPU on per-second
-        // re-renders.
-        TimelineView(.periodic(from: .now, by: 15)) { context in
+        // 1s tick so the seconds digit actually ticks. TimelineView is paused
+        // while the view is off-screen, so this doesn't burn CPU in the
+        // background — and monospacedDigit() in the readout below keeps the
+        // layout from shifting as digits change width.
+        TimelineView(.periodic(from: .now, by: 1)) { context in
             content(now: context.date)
         }
     }
@@ -71,6 +73,7 @@ struct PickupCountdownView: View {
                         .font(tier.timerFont)
                         .foregroundColor(tier.accentColor)
                         .monospacedDigit()
+                        .accessibilityLabel(Self.accessibilityLabel(remainingSeconds: remaining))
                 }
 
                 Spacer(minLength: 8)
@@ -137,12 +140,29 @@ struct PickupCountdownView: View {
 
     // MARK: - Formatting
 
-    /// Formats remaining time as `HHh MMm` (always two digits per field).
-    /// Examples: `01h 45m`, `00h 23m`, `00h 00m` (at the deadline).
+    /// Formats remaining time as `HHh MMm SSs` (always two digits per field).
+    /// Examples: `01h 45m 09s`, `00h 23m 07s`, `00h 00m 00s` (at the
+    /// deadline). The seconds field is what turns the card into a visibly
+    /// ticking countdown post-payment.
     static func format(remainingSeconds: TimeInterval) -> String {
         let total = Int(remainingSeconds)
         let hours = total / 3600
         let minutes = (total % 3600) / 60
-        return String(format: "%02dh %02dm", hours, minutes)
+        let seconds = total % 60
+        return String(format: "%02dh %02dm %02ds", hours, minutes, seconds)
+    }
+
+    /// Spoken form for VoiceOver — long form so the urgency is clear
+    /// without forcing the user to parse "h" / "m" / "s" abbreviations.
+    static func accessibilityLabel(remainingSeconds: TimeInterval) -> String {
+        let total = Int(remainingSeconds)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours) \(hours == 1 ? "hour" : "hours")") }
+        if minutes > 0 { parts.append("\(minutes) \(minutes == 1 ? "minute" : "minutes")") }
+        parts.append("\(seconds) \(seconds == 1 ? "second" : "seconds")")
+        return "Pickup deadline: " + parts.joined(separator: ", ") + " remaining"
     }
 }

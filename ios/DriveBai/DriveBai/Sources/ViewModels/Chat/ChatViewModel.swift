@@ -341,6 +341,9 @@ final class ChatViewModel: ObservableObject {
                 return true
             }
             if lr.driverId == currentUserId {
+                // Driver must review a price change before payment — Pay
+                // Now is held, so this is the top-priority signal.
+                if lr.driverShouldReviewPrice { return true }
                 if lr.driverCanPay { return true }
                 if lr.isAwaitingPickupConfirmation { return true }
             }
@@ -395,6 +398,36 @@ final class ChatViewModel: ObservableObject {
     func declineLeaseRequest(id: UUID) async {
         do {
             let response = try await apiClient.declineLeaseRequest(id: id)
+            let updated = response.toLeaseRequest()
+            if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
+                leaseRequests[idx] = updated
+            }
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    /// Driver: accept the owner's adjusted price so Pay Now reappears.
+    /// On success the LR's `priceChangePending` flips false and the card
+    /// renders the existing Pay Now flow on the next SwiftUI tick.
+    func acceptPriceChange(id: UUID) async {
+        do {
+            let response = try await apiClient.acceptLeasePriceChange(id: id)
+            let updated = response.toLeaseRequest()
+            if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
+                leaseRequests[idx] = updated
+            }
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    /// Driver: decline the owner's adjusted price. The lease is cancelled
+    /// server-side (car unreserved, any pending PaymentIntent voided), so
+    /// the card transitions to its cancelled terminal state.
+    func declinePriceChange(id: UUID) async {
+        do {
+            let response = try await apiClient.declineLeasePriceChange(id: id)
             let updated = response.toLeaseRequest()
             if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
                 leaseRequests[idx] = updated
@@ -536,6 +569,9 @@ final class ChatViewModel: ObservableObject {
                     pickupExtensionCount: lr.pickupExtensionCount,
                     pickupExtensionRemainingMinutes: lr.pickupExtensionRemainingMinutes,
                     pickupLastExtendedAt: lr.pickupLastExtendedAt,
+                    priceChangePending: lr.priceChangePending,
+                    previousOfferedWeeklyPrice: lr.previousOfferedWeeklyPrice,
+                    priceChangeActedAt: lr.priceChangeActedAt,
                     createdAt: lr.createdAt, updatedAt: lr.updatedAt
                 )
             } else {
@@ -556,6 +592,9 @@ final class ChatViewModel: ObservableObject {
                     pickupExtensionCount: lr.pickupExtensionCount,
                     pickupExtensionRemainingMinutes: lr.pickupExtensionRemainingMinutes,
                     pickupLastExtendedAt: lr.pickupLastExtendedAt,
+                    priceChangePending: lr.priceChangePending,
+                    previousOfferedWeeklyPrice: lr.previousOfferedWeeklyPrice,
+                    priceChangeActedAt: lr.priceChangeActedAt,
                     createdAt: lr.createdAt, updatedAt: lr.updatedAt
                 )
             }

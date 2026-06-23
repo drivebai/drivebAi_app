@@ -197,6 +197,12 @@ protocol APIClientProtocol {
     /// with 409 once payment is in flight.
     func rescindAcceptedLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func updateLeaseRequestPrice(id: UUID, offeredWeeklyPrice: Double) async throws -> LeaseRequestAPIResponse
+    /// Driver-only: accept the price the owner just adjusted. Clears the
+    /// price-review flag so Pay Now reappears in the chat card.
+    func acceptLeasePriceChange(id: UUID) async throws -> LeaseRequestAPIResponse
+    /// Driver-only: decline the price the owner just adjusted. Cancels
+    /// the lease, unreserves the car, voids any pending PaymentIntent.
+    func declineLeasePriceChange(id: UUID) async throws -> LeaseRequestAPIResponse
 
     // Actions (Today tab) — chat requests
     func fetchMyActions() async throws -> ActionsListAPIResponse
@@ -663,6 +669,14 @@ final class APIClient: APIClientProtocol {
     func updateLeaseRequestPrice(id: UUID, offeredWeeklyPrice: Double) async throws -> LeaseRequestAPIResponse {
         let body = UpdateLeaseRequestPriceAPIRequest(offeredWeeklyPrice: offeredWeeklyPrice)
         return try await patch(path: "lease-requests/\(id.uuidString)/price", body: body, authenticated: true)
+    }
+
+    func acceptLeasePriceChange(id: UUID) async throws -> LeaseRequestAPIResponse {
+        try await postEmpty(path: "lease-requests/\(id.uuidString)/accept-price", authenticated: true)
+    }
+
+    func declineLeasePriceChange(id: UUID) async throws -> LeaseRequestAPIResponse {
+        try await postEmpty(path: "lease-requests/\(id.uuidString)/decline-price", authenticated: true)
     }
 
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse {

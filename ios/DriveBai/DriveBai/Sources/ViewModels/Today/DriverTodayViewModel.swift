@@ -205,8 +205,11 @@ final class DriverTodayViewModel: ObservableObject {
     // MARK: - Countdown Timer
 
     private func startCountdownTimer() {
-        // Update every 60 seconds for countdown display (no seconds shown)
-        timerCancellable = Timer.publish(every: 60, on: .main, in: .common)
+        // 1 Hz tick so the post-payment pickup countdown card (and any other
+        // sub-hour task badges) visibly counts down second-by-second. The
+        // timer only fires while the VM is alive, and `currentTime` is the
+        // only field it touches, so the publish radius is tight.
+        timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] date in
                 self?.currentTime = date

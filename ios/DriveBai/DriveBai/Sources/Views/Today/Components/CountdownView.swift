@@ -1,13 +1,21 @@
 import SwiftUI
 
-/// Displays a countdown timer showing Days, Hours, Minutes only.
-/// Designed to be visually calm and informational (not stressful).
-/// Updates once per minute since seconds are not displayed.
+/// Displays a countdown timer.
+///
+/// Adapts the precision to the time scale so multi-day countdowns don't
+/// twitch on a per-second redraw and short countdowns convey urgency:
+///   - ≥ 1 day remaining: shows D / H / M chips (parent timer can tick once
+///     per minute — there's nothing to update faster than that).
+///   - < 1 day remaining: drops the D chip and adds an S chip; meant to be
+///     driven by a 1-second-cadence parent so the post-payment pickup
+///     deadline counts down visibly.
+///
+/// The parent owns the timer cadence via `currentTime`; this view is pure.
 struct CountdownView: View {
     let countdown: CountdownConfig
     let currentTime: Date
 
-    private var remaining: (days: Int, hours: Int, minutes: Int) {
+    private var remaining: (days: Int, hours: Int, minutes: Int, seconds: Int) {
         countdown.remainingTime(from: currentTime)
     }
 
@@ -32,7 +40,12 @@ struct CountdownView: View {
     // MARK: - Countdown View
 
     private var countdownView: some View {
-        CountdownRow(days: remaining.days, hours: remaining.hours, minutes: remaining.minutes)
+        CountdownRow(
+            days: remaining.days,
+            hours: remaining.hours,
+            minutes: remaining.minutes,
+            seconds: remaining.seconds
+        )
     }
 }
 
@@ -66,6 +79,7 @@ private struct CountdownRow: View {
     let days: Int
     let hours: Int
     let minutes: Int
+    let seconds: Int
 
     var body: some View {
         HStack(spacing: 4) {
@@ -73,9 +87,20 @@ private struct CountdownRow: View {
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
 
-            CountdownChip(value: days, unit: "d")
-            CountdownChip(value: hours, unit: "h")
-            CountdownChip(value: minutes, unit: "m")
+            // Multi-day countdowns: keep the calm D/H/M layout — adding a
+            // seconds chip at this scale just turns the card into a flicker.
+            // Sub-day countdowns: drop the always-zero "d" chip and add an
+            // "s" chip so the post-payment pickup deadline visibly counts
+            // down (the urgent product cue this view was changed for).
+            if days > 0 {
+                CountdownChip(value: days, unit: "d")
+                CountdownChip(value: hours, unit: "h")
+                CountdownChip(value: minutes, unit: "m")
+            } else {
+                CountdownChip(value: hours, unit: "h")
+                CountdownChip(value: minutes, unit: "m")
+                CountdownChip(value: seconds, unit: "s")
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -85,6 +110,21 @@ private struct CountdownRow: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(TodayLayout.tealAccent.opacity(0.2), lineWidth: 1)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.accessibilityLabel(days: days, hours: hours, minutes: minutes, seconds: seconds))
+    }
+
+    /// Spoken form for VoiceOver: "Due in 1 hour, 42 minutes, 18 seconds".
+    /// Skipped fields say nothing (1 minute 0 seconds → "1 minute"), and
+    /// long countdowns keep the days/hours/minutes form they used before.
+    private static func accessibilityLabel(days: Int, hours: Int, minutes: Int, seconds: Int) -> String {
+        var parts: [String] = []
+        if days > 0 { parts.append("\(days) \(days == 1 ? "day" : "days")") }
+        if hours > 0 { parts.append("\(hours) \(hours == 1 ? "hour" : "hours")") }
+        if minutes > 0 { parts.append("\(minutes) \(minutes == 1 ? "minute" : "minutes")") }
+        if days == 0 && seconds > 0 { parts.append("\(seconds) \(seconds == 1 ? "second" : "seconds")") }
+        if parts.isEmpty { return "Due now" }
+        return "Due in " + parts.joined(separator: ", ")
     }
 }
 

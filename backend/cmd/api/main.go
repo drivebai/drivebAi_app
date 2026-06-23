@@ -322,6 +322,11 @@ func main() {
 			r.Post("/lease-requests/{id}/cancel", leaseHandler.CancelLeaseRequest)
 			r.Post("/lease-requests/{id}/rescind", leaseHandler.RescindAcceptedLeaseRequest)
 			r.Patch("/lease-requests/{id}/price", leaseHandler.UpdateOfferedPrice)
+			// Price-review (migration 000028): when the owner adjusts the
+			// price post-acceptance, Pay Now is held until the driver
+			// explicitly accepts or declines the new offer.
+			r.Post("/lease-requests/{id}/accept-price", leaseHandler.AcceptPriceChange)
+			r.Post("/lease-requests/{id}/decline-price", leaseHandler.DeclinePriceChange)
 			r.Post("/lease-requests/{id}/pickup-confirm", leaseHandler.ConfirmPickup)
 			r.Post("/lease-requests/{id}/pickup-deadline/extend", leaseHandler.ExtendPickupDeadline)
 

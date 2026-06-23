@@ -221,8 +221,10 @@ final class OwnerTodayViewModel: ObservableObject {
     // MARK: - Countdown Timer
 
     private func startCountdownTimer() {
-        // Update every 60 seconds for countdown display (no seconds shown)
-        timerCancellable = Timer.publish(every: 60, on: .main, in: .common)
+        // 1 Hz tick so countdown badges that show seconds (under one hour
+        // remaining) actually count down on screen. The timer only fires
+        // while the VM is alive and only touches `currentTime`.
+        timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] date in
                 self?.currentTime = date

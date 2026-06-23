@@ -389,6 +389,15 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Block payment while the driver still has to act on a price change.
+	// We refuse with 409 PRICE_REVIEW_PENDING so iOS can map this to the
+	// "Owner updated the price — accept or decline before paying" surface.
+	// Check this BEFORE the status check so the more-specific error wins.
+	if lr.PriceChangePending {
+		httputil.WriteError(w, http.StatusConflict, models.ErrPriceReviewPending)
+		return
+	}
+
 	// Must be in accepted status (or payment_pending if retrying)
 	if lr.Status != models.LeaseStatusAccepted && lr.Status != models.LeaseStatusPaymentPending {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Lease request must be accepted before payment"))
@@ -1108,7 +1117,7 @@ func (h *LeaseRequestHandler) UpdateOfferedPrice(w http.ResponseWriter, r *http.
 		return
 	}
 
-	updated, err := h.leaseRepo.UpdateOfferedPrice(r.Context(), leaseID, userID, body.OfferedWeeklyPrice)
+	updated, staleIntentID, err := h.leaseRepo.UpdateOfferedPrice(r.Context(), leaseID, userID, body.OfferedWeeklyPrice)
 	if err != nil {
 		if apiErr := models.GetAPIError(err); apiErr != nil {
 			status := http.StatusBadRequest
@@ -1125,14 +1134,174 @@ func (h *LeaseRequestHandler) UpdateOfferedPrice(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Best-effort: cancel the stale Stripe PaymentIntent so the driver's
+	// saved PaymentSheet can't submit the OLD amount. The driver will be
+	// issued a fresh intent the next time they tap Pay Now (after
+	// accepting the new price). Failures here are logged but not fatal —
+	// the backend payment-gate (LeaseRequest.PriceChangePending) is the
+	// authoritative defence; the Stripe cancel is the belt to the gate's
+	// suspenders.
+	if staleIntentID != "" {
+		if cancelErr := h.stripe.CancelPaymentIntent(staleIntentID); cancelErr != nil {
+			h.logger.Warn("price change: cancel stale PaymentIntent failed",
+				"error", cancelErr, "lease_request_id", leaseID, "intent_id", staleIntentID)
+		} else {
+			// Mark the local payment row as canceled so subsequent
+			// retries don't try to reuse the dead client_secret.
+			if p, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID); perr == nil && p != nil {
+				_ = h.leaseRepo.UpdatePaymentStatus(r.Context(), p.ID, models.PaymentStatusCanceled)
+			}
+		}
+	}
+
 	resp := h.buildLeaseRequestResponse(r, updated, nil)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 
 	h.wsHub.Broadcast(&ws.Event{
 		Type:          "lease_request_updated",
 		Payload:       resp,
-		TargetUserIDs: []uuid.UUID{updated.DriverID},
+		TargetUserIDs: []uuid.UUID{updated.DriverID, updated.OwnerID},
 	})
+
+	// In-app + push for driver — Pay Now is now hidden until they review.
+	chatID := updated.ChatID
+	lrID := updated.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "the car"
+	}
+	go h.notifHandler.Notify(updated.DriverID, models.NotificationTypeLeaseRequest,
+		"Price updated",
+		fmt.Sprintf("The owner changed the price for %s — review before paying.", carTitle),
+		&chatID, &lrID)
+}
+
+// AcceptPriceChange handles POST /api/v1/lease-requests/{id}/accept-price.
+// Driver-only path: clears the price-review flag so Pay Now becomes
+// available again. Sends a gray "Driver accepted the new price" system
+// message and notifies the owner.
+func (h *LeaseRequestHandler) AcceptPriceChange(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	updated, err := h.leaseRepo.AcceptPriceChange(r.Context(), leaseID, userID)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			status := http.StatusBadRequest
+			switch apiErr.Code {
+			case models.ErrCodeLeaseRequestNotFound:
+				status = http.StatusNotFound
+			case models.ErrCodeNoPriceChangePending:
+				status = http.StatusConflict
+			case models.ErrCodeInvalidLeaseAction:
+				status = http.StatusForbidden
+			}
+			httputil.WriteError(w, status, apiErr)
+			return
+		}
+		h.logger.Error("accept price change", "error", err, "lease_request_id", leaseID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resp := h.buildLeaseRequestResponse(r, updated, nil)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{updated.DriverID, updated.OwnerID},
+	})
+
+	chatID := updated.ChatID
+	lrID := updated.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "your listing"
+	}
+	go h.notifHandler.Notify(updated.OwnerID, models.NotificationTypeLeaseRequest,
+		"Driver accepted the new price",
+		fmt.Sprintf("The driver accepted your updated price for %s. Waiting on payment.", carTitle),
+		&chatID, &lrID)
+}
+
+// DeclinePriceChange handles POST /api/v1/lease-requests/{id}/decline-price.
+// Driver-only path: cancels the lease, unreserves the car (handled inside
+// the repo transaction), and best-effort cancels any stale Stripe
+// PaymentIntent. Sends a "Driver declined the new price" system message
+// and notifies the owner.
+func (h *LeaseRequestHandler) DeclinePriceChange(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	updated, staleIntentID, err := h.leaseRepo.DeclinePriceChange(r.Context(), leaseID, userID)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			status := http.StatusBadRequest
+			switch apiErr.Code {
+			case models.ErrCodeLeaseRequestNotFound:
+				status = http.StatusNotFound
+			case models.ErrCodeNoPriceChangePending:
+				status = http.StatusConflict
+			case models.ErrCodeInvalidLeaseAction:
+				status = http.StatusForbidden
+			}
+			httputil.WriteError(w, status, apiErr)
+			return
+		}
+		h.logger.Error("decline price change", "error", err, "lease_request_id", leaseID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	// Belt + suspenders: kill the Stripe PaymentIntent the driver could
+	// otherwise still submit from a backgrounded PaymentSheet.
+	if staleIntentID != "" {
+		if cancelErr := h.stripe.CancelPaymentIntent(staleIntentID); cancelErr != nil {
+			h.logger.Warn("decline price: cancel stale PaymentIntent failed",
+				"error", cancelErr, "lease_request_id", leaseID, "intent_id", staleIntentID)
+		} else {
+			if p, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID); perr == nil && p != nil {
+				_ = h.leaseRepo.UpdatePaymentStatus(r.Context(), p.ID, models.PaymentStatusCanceled)
+			}
+		}
+	}
+
+	resp := h.buildLeaseRequestResponse(r, updated, nil)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "lease_request_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{updated.DriverID, updated.OwnerID},
+	})
+
+	chatID := updated.ChatID
+	lrID := updated.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "your listing"
+	}
+	go h.notifHandler.Notify(updated.OwnerID, models.NotificationTypeLeaseRequest,
+		"Driver declined the new price",
+		fmt.Sprintf("The driver declined your updated price for %s. The rental was cancelled and your car is back on the market.", carTitle),
+		&chatID, &lrID)
 }
 
 // --- Pickup deadline / confirmation ---
@@ -1356,6 +1525,12 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 		PickupExtensionTotalMinutes: lr.PickupExtensionTotalMinutes,
 		PickupExtensionCount:        lr.PickupExtensionCount,
 		PickupExtensionRemainingMin: lr.RemainingExtensionMinutes(),
+		PriceChangePending:          lr.PriceChangePending,
+		PreviousOfferedWeeklyPrice:  lr.PreviousOfferedWeeklyPrice,
+	}
+	if lr.PriceChangeActedAt != nil {
+		t := models.RFC3339Time(*lr.PriceChangeActedAt)
+		resp.PriceChangeActedAt = &t
 	}
 	if lr.PickupDeadlineAt != nil {
 		t := models.RFC3339Time(*lr.PickupDeadlineAt)

@@ -72,13 +72,15 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 	err = tx.QueryRow(ctx, `
 		INSERT INTO lease_requests (id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, lr.ID, lr.ChatID, lr.ListingID, lr.OwnerID, lr.DriverID, lr.Status,
 		lr.WeeklyPrice, lr.Currency, lr.Weeks, lr.Message, lr.ExpiresAt, now,
 	).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err != nil {
 		// Check for unique constraint violation (duplicate active request)
@@ -116,14 +118,16 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 }
 
 // GetByID returns a lease request by its ID, including migration-000024
-// pickup-deadline + refund fields so callers can render the pickup countdown
-// and refund status.
+// pickup-deadline + refund fields and the migration-000028 price-review
+// fields so callers can render the pickup countdown, refund status, AND
+// the "owner changed the price, driver must review" state.
 func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
 	var lr models.LeaseRequest
 	err := r.db.Pool.QueryRow(ctx, `
 		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
-		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests WHERE id = $1
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
@@ -131,6 +135,7 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -147,6 +152,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 		SELECT
 			lr.id, lr.chat_id, lr.listing_id, lr.owner_id, lr.driver_id, lr.status,
 			lr.weekly_price, lr.offered_weekly_price, lr.currency, lr.weeks, lr.message, lr.expires_at, lr.created_at, lr.updated_at,
+			lr.price_change_pending, lr.previous_offered_weekly_price, lr.price_change_acted_at,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.driver_id) AS driver_name,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
 			(SELECT title FROM cars WHERE id = lr.listing_id) AS car_title,
@@ -167,6 +173,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 		var resp models.LeaseRequestResponse
 		var expiresAt, createdAt, updatedAt time.Time
 		var message *string
+		var priceChangeActedAt *time.Time
 		// Payment fields (nullable from LEFT JOIN)
 		var paymentID *uuid.UUID
 		var paymentIntentID *string
@@ -178,6 +185,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 		err := rows.Scan(
 			&resp.ID, &resp.ChatID, &resp.ListingID, &resp.OwnerID, &resp.DriverID, &resp.Status,
 			&resp.WeeklyPrice, &resp.OfferedWeeklyPrice, &resp.Currency, &resp.Weeks, &message, &expiresAt, &createdAt, &updatedAt,
+			&resp.PriceChangePending, &resp.PreviousOfferedWeeklyPrice, &priceChangeActedAt,
 			&resp.DriverName, &resp.OwnerName, &resp.CarTitle,
 			&paymentID, &paymentIntentID, &paymentAmount,
 			&platformFee, &paymentCurrency, &paymentStatus,
@@ -186,6 +194,10 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			return nil, fmt.Errorf("scan lease request: %w", err)
 		}
 		resp.Message = message
+		if priceChangeActedAt != nil {
+			t := models.RFC3339Time(*priceChangeActedAt)
+			resp.PriceChangeActedAt = &t
+		}
 		effectivePrice := resp.WeeklyPrice
 		if resp.OfferedWeeklyPrice != nil {
 			effectivePrice = *resp.OfferedWeeklyPrice
@@ -264,12 +276,14 @@ func (r *LeaseRequestRepository) AcceptLeaseRequest(ctx context.Context, id, own
 	// Lock the row, validate actor + current status.
 	var lr models.LeaseRequest
 	err = tx.QueryRow(ctx, `
-		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests WHERE id = $1 FOR UPDATE
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -290,11 +304,13 @@ func (r *LeaseRequestRepository) AcceptLeaseRequest(ctx context.Context, id, own
 	err = tx.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = $3
 		WHERE id = $1
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, id, models.LeaseStatusAccepted, now).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update lease status: %w", err)
@@ -397,11 +413,13 @@ func (r *LeaseRequestRepository) SetPaymentPending(ctx context.Context, id uuid.
 	err := r.db.Pool.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = NOW()
 		WHERE id = $1 AND status = 'accepted'
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, id, models.LeaseStatusPaymentPending).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrInvalidLeaseAction
@@ -419,11 +437,13 @@ func (r *LeaseRequestRepository) SetPaid(ctx context.Context, id uuid.UUID) (*mo
 	err := r.db.Pool.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = NOW()
 		WHERE id = $1 AND status IN ('accepted', 'payment_pending')
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, id, models.LeaseStatusPaid).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrInvalidLeaseAction
@@ -445,12 +465,14 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 	// Lock and validate
 	var lr models.LeaseRequest
 	err = tx.QueryRow(ctx, `
-		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests WHERE id = $1 FOR UPDATE
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -480,11 +502,13 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 	err = tx.QueryRow(ctx, `
 		UPDATE lease_requests SET status = $2, updated_at = $3
 		WHERE id = $1
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, id, toStatus, now).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -511,9 +535,135 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 	return &lr, nil
 }
 
-// UpdateOfferedPrice sets the owner's offered price for a pending lease request.
-// Only allowed while status == 'requested'. Inserts a system chat message.
-func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, ownerID uuid.UUID, offeredPrice float64) (*models.LeaseRequest, error) {
+// UpdateOfferedPrice sets the owner's offered price and flips the lease
+// into the "price changed, driver must review" state. Allowed at any
+// non-terminal pre-payment status (requested / accepted / payment_pending)
+// — basically anywhere the driver hasn't paid yet.
+//
+// Behaviour:
+//   - snapshots the current offered_weekly_price (or weekly_price if there's
+//     no prior offer) into previous_offered_weekly_price so the UI can show
+//     old → new,
+//   - sets price_change_pending=TRUE (driver must accept or decline before
+//     Pay Now reappears — enforced by LeaseRequest.IsPayable() + the
+//     handler payment gate),
+//   - clears price_change_acted_at (last decision is now stale),
+//   - inserts a gray "Owner updated the weekly price" system message,
+//   - returns the existing payment_intent_id if any so the handler can
+//     cancel the stale Stripe PaymentIntent (price is going to change,
+//     the saved payment sheet must not be able to submit the old amount).
+//
+// Refuses ErrPriceLocked once the lease has actually been paid (status
+// `paid`, `expired`, `expired_refunded`, `declined`, `cancelled`) — after
+// payment we'd need a refund flow, which is out of scope.
+func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, ownerID uuid.UUID, offeredPrice float64) (*models.LeaseRequest, string, error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var lr models.LeaseRequest
+	err = tx.QueryRow(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
+		FROM lease_requests WHERE id = $1 FOR UPDATE
+	`, id).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, "", models.ErrLeaseRequestNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	if ownerID != lr.OwnerID {
+		return nil, "", models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the owner can adjust the price")
+	}
+
+	switch lr.Status {
+	case models.LeaseStatusRequested, models.LeaseStatusAccepted, models.LeaseStatusPaymentPending:
+		// OK — price adjustable while no payment has actually succeeded.
+	default:
+		return nil, "", models.ErrPriceLocked
+	}
+
+	// Capture the prior offered price so the UI can render old vs new. If
+	// there was no previous offer (first adjust), fall back to the base
+	// listing price so the comparison still has something to show.
+	prev := lr.WeeklyPrice
+	if lr.OfferedWeeklyPrice != nil {
+		prev = *lr.OfferedWeeklyPrice
+	}
+
+	now := time.Now().UTC()
+	err = tx.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET offered_weekly_price          = $2,
+		    offered_price_updated_at      = $3,
+		    previous_offered_weekly_price = $4,
+		    price_change_pending          = TRUE,
+		    price_change_acted_at         = NULL,
+		    updated_at                    = $3
+		WHERE id = $1
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
+	`, id, offeredPrice, now, prev).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("update offered price: %w", err)
+	}
+
+	sysMsg := fmt.Sprintf("Owner updated the weekly price to %s %.2f/wk — driver must review before paying.", lr.Currency, offeredPrice)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
+		VALUES ($1, $2, $3, 'system', $4, $5)
+	`, uuid.New(), lr.ChatID, ownerID, sysMsg, now)
+	if err != nil {
+		return nil, "", fmt.Errorf("insert system message: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1`, lr.ChatID, now)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Pull the still-active PaymentIntent (if any) so the caller can cancel
+	// it on Stripe. We do this inside the same transaction so a concurrent
+	// CreatePaymentIntent racing with this update either commits first
+	// (we get its intent ID and cancel it) or rolls back behind our row
+	// lock.
+	var intentID string
+	err = tx.QueryRow(ctx, `
+		SELECT payment_intent_id FROM payments
+		WHERE lease_request_id = $1
+		  AND payment_intent_id IS NOT NULL
+		  AND status <> 'succeeded'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, id).Scan(&intentID)
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, "", fmt.Errorf("look up pending intent: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", err
+	}
+	return &lr, intentID, nil
+}
+
+// AcceptPriceChange clears the price-review flag so Pay Now becomes
+// available again. Driver-only, only allowed when price_change_pending=TRUE.
+// Inserts a gray system message announcing the acceptance.
+func (r *LeaseRequestRepository) AcceptPriceChange(ctx context.Context, id, driverID uuid.UUID) (*models.LeaseRequest, error) {
 	tx, err := r.db.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -522,12 +672,14 @@ func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, own
 
 	var lr models.LeaseRequest
 	err = tx.QueryRow(ctx, `
-		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests WHERE id = $1 FOR UPDATE
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -536,40 +688,39 @@ func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, own
 		return nil, err
 	}
 
-	if ownerID != lr.OwnerID {
-		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the owner can adjust the price")
+	if driverID != lr.DriverID {
+		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the driver can review the price change")
 	}
-
-	if lr.Status != models.LeaseStatusRequested {
-		return nil, models.ErrPriceLocked
+	if !lr.PriceChangePending {
+		return nil, models.ErrNoPriceChangePending
 	}
 
 	now := time.Now().UTC()
 	err = tx.QueryRow(ctx, `
 		UPDATE lease_requests
-		SET offered_weekly_price = $2, offered_price_updated_at = $3, updated_at = $3
+		SET price_change_pending  = FALSE,
+		    price_change_acted_at = $2,
+		    updated_at            = $2
 		WHERE id = $1
-		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at
-	`, id, offeredPrice, now).Scan(
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
+	`, id, now).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("update offered price: %w", err)
+		return nil, fmt.Errorf("accept price change: %w", err)
 	}
 
-	sysMsg := fmt.Sprintf("Owner updated the weekly price to %s %.2f/wk", lr.Currency, offeredPrice)
-	_, err = tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
-		VALUES ($1, $2, $3, 'system', $4, $5)
-	`, uuid.New(), lr.ChatID, ownerID, sysMsg, now)
-	if err != nil {
+		VALUES ($1, $2, $3, 'system', 'Driver accepted the new price', $4)
+	`, uuid.New(), lr.ChatID, driverID, now); err != nil {
 		return nil, fmt.Errorf("insert system message: %w", err)
 	}
-
-	_, err = tx.Exec(ctx, `UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1`, lr.ChatID, now)
-	if err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1`, lr.ChatID, now); err != nil {
 		return nil, err
 	}
 
@@ -577,6 +728,108 @@ func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, own
 		return nil, err
 	}
 	return &lr, nil
+}
+
+// DeclinePriceChange cancels the lease — same terminal effect as the
+// regular driver-cancel path. Driver-only, only allowed when
+// price_change_pending=TRUE. Unreserves the car so the listing returns
+// to Discovery and inserts a tailored system message that names the
+// trigger (price decline) rather than the generic "cancelled".
+//
+// The caller is responsible for cancelling any unpaid Stripe
+// PaymentIntent — we return its ID alongside the updated lease so the
+// handler can do that best-effort outside the DB transaction.
+func (r *LeaseRequestRepository) DeclinePriceChange(ctx context.Context, id, driverID uuid.UUID) (*models.LeaseRequest, string, error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var lr models.LeaseRequest
+	err = tx.QueryRow(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
+		FROM lease_requests WHERE id = $1 FOR UPDATE
+	`, id).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, "", models.ErrLeaseRequestNotFound
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	if driverID != lr.DriverID {
+		return nil, "", models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Only the driver can review the price change")
+	}
+	if !lr.PriceChangePending {
+		return nil, "", models.ErrNoPriceChangePending
+	}
+
+	now := time.Now().UTC()
+	err = tx.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET status                = 'cancelled',
+		    price_change_pending  = FALSE,
+		    price_change_acted_at = $2,
+		    updated_at            = $2
+		WHERE id = $1
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
+	`, id, now).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("decline price change: %w", err)
+	}
+
+	// Unreserve the car if THIS lease was the one holding the reservation.
+	// Safe inside the same transaction — uses the same predicate as the
+	// regular cancel path.
+	if _, err := tx.Exec(ctx, `
+		UPDATE cars SET reserved_by_lease_request_id = NULL
+		WHERE reserved_by_lease_request_id = $1
+	`, lr.ID); err != nil {
+		return nil, "", fmt.Errorf("unreserve car: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
+		VALUES ($1, $2, $3, 'system', 'Driver declined the new price — request cancelled', $4)
+	`, uuid.New(), lr.ChatID, driverID, now); err != nil {
+		return nil, "", fmt.Errorf("insert system message: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1`, lr.ChatID, now); err != nil {
+		return nil, "", err
+	}
+
+	// Grab the still-pending PaymentIntent (if any) so the caller can
+	// cancel it on Stripe — same pattern as UpdateOfferedPrice.
+	var intentID string
+	err = tx.QueryRow(ctx, `
+		SELECT payment_intent_id FROM payments
+		WHERE lease_request_id = $1
+		  AND payment_intent_id IS NOT NULL
+		  AND status <> 'succeeded'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, id).Scan(&intentID)
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, "", fmt.Errorf("look up pending intent: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", err
+	}
+	return &lr, intentID, nil
 }
 
 // --- Today Actions ---
@@ -662,19 +915,92 @@ func (r *LeaseRequestRepository) HasUnreadActions(ctx context.Context, ownerID u
 	return exists, err
 }
 
-// ListTodayActionsForDriver returns lease requests where the user is the
-// driver AND the owner has accepted but no successful payment exists yet.
-// These are the cards that explain "your request was accepted — pay now"
-// on the driver's Today screen. The Pay button itself lives in the chat,
-// the Today card is only fast access to it.
+// ListTodayActionsForDriver returns the driver's Today feed. Two kinds of
+// card are produced, both backed by the lease_requests table:
 //
-// Statuses included:
-//   - accepted: owner just said yes, driver hasn't started Stripe yet.
-//   - payment_pending with no succeeded payment row: the driver tried to
-//     pay and failed/canceled — they need to retry from chat.
+//   - lease_price_review (priority, listed first): the owner just adjusted
+//     the offered price and the driver hasn't accepted or declined yet.
+//     Pay Now is held until they review, so this card is the only path
+//     forward — pull it to the top of the feed.
+//   - lease_payment: the owner accepted (or driver is mid-retry) and no
+//     successful payment exists yet. Same shape as before.
 //
 // Status=paid is excluded — once paid, the key-handover card takes over.
+// We exclude price-review rows from the lease_payment query so a single
+// lease never produces two cards simultaneously.
 func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, driverID uuid.UUID) ([]models.TodayAction, error) {
+	actions := make([]models.TodayAction, 0)
+
+	// --- 1. Price-review cards (priority). ---
+	prRows, err := r.db.Pool.Query(ctx, `
+		SELECT
+			lr.id,
+			lr.weekly_price, lr.offered_weekly_price, lr.previous_offered_weekly_price,
+			lr.currency, lr.weeks,
+			c.car_id,
+			(SELECT title FROM cars WHERE id = c.car_id) AS car_title,
+			lr.chat_id,
+			lr.owner_id,
+			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
+			lr.status,
+			lr.created_at,
+			lr.expires_at
+		FROM lease_requests lr
+		JOIN chats c ON c.id = lr.chat_id
+		WHERE lr.driver_id = $1
+			AND lr.price_change_pending = TRUE
+			AND lr.status IN ('requested', 'accepted', 'payment_pending')
+		ORDER BY lr.updated_at DESC
+	`, driverID)
+	if err != nil {
+		return nil, fmt.Errorf("list driver price-review actions: %w", err)
+	}
+	defer prRows.Close()
+	for prRows.Next() {
+		var a models.TodayAction
+		var weeklyPrice float64
+		var offered, prev *float64
+		var currency string
+		var weeks int
+		var createdAt, expiresAt time.Time
+
+		if err := prRows.Scan(
+			&a.ID,
+			&weeklyPrice, &offered, &prev,
+			&currency, &weeks,
+			&a.CarID, &a.CarTitle,
+			&a.ChatID,
+			&a.CounterpartyID, &a.CounterpartyName,
+			&a.Status,
+			&createdAt, &expiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan driver price-review action: %w", err)
+		}
+
+		newPrice := weeklyPrice
+		if offered != nil {
+			newPrice = *offered
+		}
+		a.Type = models.TodayActionLeasePriceReview
+		a.Title = "Price updated"
+		if prev != nil {
+			a.Body = fmt.Sprintf("%s changed the weekly price for %s — was %s %.0f, now %s %.0f. Review before paying.",
+				a.CounterpartyName, a.CarTitle, currency, *prev, currency, newPrice)
+		} else {
+			a.Body = fmt.Sprintf("%s changed the price for %s to %s %.0f/week. Review before paying.",
+				a.CounterpartyName, a.CarTitle, currency, newPrice)
+		}
+		a.PrimaryAction = "go_to_requests"
+		a.SecondaryAction = ""
+		a.CreatedAt = models.RFC3339Time(createdAt)
+		a.ExpiresAt = models.RFC3339Time(expiresAt)
+		actions = append(actions, a)
+	}
+	if err := prRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// --- 2. Payment cards. ---
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT
 			lr.id,
@@ -691,6 +1017,7 @@ func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, 
 		JOIN chats c ON c.id = lr.chat_id
 		WHERE lr.driver_id = $1
 			AND lr.status IN ('accepted', 'payment_pending')
+			AND lr.price_change_pending = FALSE
 			AND NOT EXISTS (
 				SELECT 1 FROM payments p
 				WHERE p.lease_request_id = lr.id AND p.status = 'succeeded'
@@ -702,7 +1029,6 @@ func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, 
 	}
 	defer rows.Close()
 
-	actions := make([]models.TodayAction, 0)
 	for rows.Next() {
 		var a models.TodayAction
 		var weeklyPrice float64
@@ -741,18 +1067,27 @@ func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, 
 }
 
 // HasUnreadActionsForDriver mirrors HasUnreadActions for the driver-side
-// card; we want the bell badge to light up when an owner just accepted.
+// card; we want the bell badge to light up when an owner just accepted OR
+// when the owner just adjusted the price (price-review pending).
 func (r *LeaseRequestRepository) HasUnreadActionsForDriver(ctx context.Context, driverID uuid.UUID, lastSeenAt time.Time) (bool, error) {
 	var exists bool
 	err := r.db.Pool.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM lease_requests
 			WHERE driver_id = $1
-			  AND status IN ('accepted', 'payment_pending')
 			  AND updated_at > $2
-			  AND NOT EXISTS (
-				  SELECT 1 FROM payments p
-				  WHERE p.lease_request_id = lease_requests.id AND p.status = 'succeeded'
+			  AND (
+			    -- Standard "accepted, awaiting payment" path
+			    (status IN ('accepted', 'payment_pending')
+			     AND price_change_pending = FALSE
+			     AND NOT EXISTS (
+				     SELECT 1 FROM payments p
+				     WHERE p.lease_request_id = lease_requests.id AND p.status = 'succeeded'
+			     ))
+			    OR
+			    -- New: owner just changed the price, driver must review
+			    (status IN ('requested', 'accepted', 'payment_pending')
+			     AND price_change_pending = TRUE)
 			  )
 		)
 	`, driverID, lastSeenAt).Scan(&exists)
@@ -950,7 +1285,8 @@ func (r *LeaseRequestRepository) ListStuckRefunds(ctx context.Context, staleAfte
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
-		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests
 		WHERE status = 'expired_refunded'
 		  AND refund_id   IS NULL
@@ -974,6 +1310,7 @@ func (r *LeaseRequestRepository) ListStuckRefunds(ctx context.Context, staleAfte
 			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 			&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 			&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+			&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -991,7 +1328,8 @@ func (r *LeaseRequestRepository) ListExpiredAwaitingPickup(ctx context.Context, 
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
-		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests
 		WHERE status = 'paid'
 		  AND pickup_confirmed_at IS NULL
@@ -1014,6 +1352,7 @@ func (r *LeaseRequestRepository) ListExpiredAwaitingPickup(ctx context.Context, 
 			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 			&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 			&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+			&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1039,13 +1378,15 @@ func (r *LeaseRequestRepository) ClaimForExpiry(ctx context.Context, id uuid.UUI
 		  AND pickup_deadline_at <= NOW()
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
-		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, id, models.LeaseStatusExpiredRefunded).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1123,13 +1464,15 @@ func (r *LeaseRequestRepository) ExtendPickupDeadline(
 		  AND pickup_extension_total_minutes + $3 <= $5
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
-		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, id, ownerID, minutes, now, models.PickupMaxExtensionMinutes).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == nil {
 		return &lr, nil
@@ -1182,14 +1525,16 @@ func (r *LeaseRequestRepository) classifyExtendFailure(
 }
 
 // scanFullLeaseLocked SELECT ... FOR UPDATE with the full lease columns
-// (including the migration-000024 pickup + refund fields). Used by
-// ConfirmPickup; ErrLeaseRequestNotFound on miss.
+// (including the migration-000024 pickup + refund fields AND the
+// migration-000028 price-review fields). Used by ConfirmPickup;
+// ErrLeaseRequestNotFound on miss.
 func scanFullLeaseLocked(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*models.LeaseRequest, error) {
 	var lr models.LeaseRequest
 	err := tx.QueryRow(ctx, `
 		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
-		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
 		FROM lease_requests
 		WHERE id = $1
 		FOR UPDATE
@@ -1199,6 +1544,7 @@ func scanFullLeaseLocked(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*models.
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
 		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound

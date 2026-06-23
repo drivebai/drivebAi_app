@@ -15,6 +15,12 @@ const (
 	// The card is a fast-access surface; payment itself happens in the
 	// existing Chat → Requests lease card.
 	TodayActionLeasePayment TodayActionType = "lease_payment"
+	// TodayActionLeasePriceReview: driver-side card that fires the moment
+	// the owner adjusts the offered price on a non-terminal lease. Pay Now
+	// is held until the driver explicitly accepts or declines the new
+	// offer from Chat → Requests; this card is the fast-access shortcut
+	// so they don't miss the update.
+	TodayActionLeasePriceReview TodayActionType = "lease_price_review"
 )
 
 // TodayAction is a single item in the owner/driver's Today feed.

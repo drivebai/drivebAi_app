@@ -15,6 +15,11 @@ struct LeaseRequestCardView: View {
     let onRescindAccept: () -> Void
     /// Owner-only: invoked with one of LeaseRequest.allowedPickupExtensionMinutes.
     let onExtendPickup: (Int) -> Void
+    /// Driver-only: the owner adjusted the price; accept it to re-enable
+    /// Pay Now. Defaults to a no-op so legacy call sites still compile.
+    var onAcceptPriceChange: () -> Void = {}
+    /// Driver-only: decline the new price. Cancels the lease server-side.
+    var onDeclinePriceChange: () -> Void = {}
 
     private var isOwner: Bool { currentUserId == leaseRequest.ownerId }
     private var isDriver: Bool { currentUserId == leaseRequest.driverId }
@@ -72,15 +77,21 @@ struct LeaseRequestCardView: View {
                     .lineLimit(3)
             }
 
-            // Price-adjusted banner (driver only, while still pending)
-            if isDriver && leaseRequest.isPriceAdjusted && leaseRequest.status == .requested {
+            // Price-review banner. Driver-side, fires whenever the owner's
+            // last price change is still awaiting accept/decline. Replaces
+            // the older "Price updated by owner" hint that only fired in
+            // the requested state — the new flow gates Pay Now until the
+            // driver makes a call regardless of status.
+            if isDriver && leaseRequest.driverShouldReviewPrice {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundColor(.orange)
-                    Text("Price updated by owner")
+                    Text("Owner updated the price — review before paying")
                         .font(.caption.weight(.medium))
                         .foregroundColor(.orange)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -88,17 +99,41 @@ struct LeaseRequestCardView: View {
                 .background(Color.orange.opacity(0.1))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+            // Owner-side mirror so the owner knows they're waiting on the
+            // driver's decision (rather than wondering why Pay Now hasn't
+            // fired). Quiet styling — owner is not the actor here.
+            if isOwner && leaseRequest.driverShouldReviewPrice {
+                HStack(spacing: 6) {
+                    Image(systemName: "hourglass")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("Waiting for driver to review the new price")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
 
-            // Pricing details
+            // Pricing details. When a price review is pending, the "old"
+            // line should be the price the driver previously agreed to
+            // (the prior offered price, if any) rather than the base
+            // listing price — that's the actual delta they're being asked
+            // to accept.
             HStack(spacing: 16) {
                 Label {
-                    if leaseRequest.isPriceAdjusted, let base = leaseRequest.formattedWeeklyPrice,
-                       let offered = leaseRequest.formattedEffectiveWeeklyPrice {
+                    if let new = leaseRequest.formattedEffectiveWeeklyPrice,
+                       let oldText = leaseRequest.priceComparisonOld {
                         HStack(spacing: 4) {
-                            Text("\(base)/wk")
+                            Text("\(oldText)/wk")
                                 .strikethrough()
                                 .foregroundColor(.secondary)
-                            Text("\(offered)/wk")
+                            Text("\(new)/wk")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundColor(.primary)
                         }
@@ -199,6 +234,12 @@ struct LeaseRequestCardView: View {
         if leaseRequest.status == .paid || leaseRequest.isPaymentSucceededAwaitingWebhook {
             return ("Paid", .green)
         }
+        // Pending price review wins over the underlying status — this is
+        // the "you need to do something" signal the rest of the card layout
+        // is hanging on.
+        if leaseRequest.priceChangePending && !leaseRequest.status.isTerminal {
+            return ("Price updated", .orange)
+        }
         switch leaseRequest.status {
         case .requested: return ("Requested", .blue)
         case .accepted: return ("Accepted", .green)
@@ -262,7 +303,31 @@ struct LeaseRequestCardView: View {
 
     @ViewBuilder
     private var actionButtons: some View {
-        if isOwner && leaseRequest.status.ownerCanRespond {
+        // Priority branch: the owner just changed the price and the driver
+        // hasn't reviewed yet. This MUST come before Pay Now so we never
+        // show the payment button against a stale offer.
+        if isDriver && leaseRequest.driverShouldReviewPrice {
+            HStack(spacing: 12) {
+                Button(action: onDeclinePriceChange) {
+                    Text("Decline")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemGray5))
+                        .foregroundColor(.red)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                Button(action: onAcceptPriceChange) {
+                    Text("Accept new price")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color.driveBaiPrimary)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        } else if isOwner && leaseRequest.status.ownerCanRespond {
             // Owner: adjust price + accept/decline
             Button(action: onAdjustPrice) {
                 HStack(spacing: 6) {

@@ -33,7 +33,12 @@ struct DueBadgeModel {
 
     var isOverdue: Bool { urgency == .overdue }
 
-    /// Creates a due badge from countdown config
+    /// Creates a due badge from countdown config.
+    ///
+    /// Seconds appear once we're inside the final hour — that's where the
+    /// pickup-deadline UI lives (default 2-hour deadline ticks down through
+    /// "1h 42m" then into the seconds-visible zone) and where the urgency
+    /// is high enough to justify the per-second redraw.
     static func from(countdown: CountdownConfig?, currentTime: Date) -> DueBadgeModel? {
         guard let countdown = countdown else { return nil }
 
@@ -55,6 +60,7 @@ struct DueBadgeModel {
         let days = remaining.days
         let hours = remaining.hours
         let minutes = remaining.minutes
+        let seconds = remaining.seconds
         let totalHours = days * 24 + hours
 
         // Smart formatting with urgency tiers
@@ -65,9 +71,13 @@ struct DueBadgeModel {
         } else if totalHours >= 2 {
             return DueBadgeModel(text: "Due in \(hours)h \(minutes)m", urgency: .soon)
         } else if hours >= 1 {
-            return DueBadgeModel(text: "Due in \(hours)h \(minutes)m", urgency: .urgent)
+            // Last hour and a bit: show seconds so the badge counts down
+            // visibly. Urgent tier already drives the warning color.
+            return DueBadgeModel(text: "Due in \(hours)h \(minutes)m \(seconds)s", urgency: .urgent)
+        } else if minutes >= 1 {
+            return DueBadgeModel(text: "Due in \(minutes)m \(seconds)s", urgency: .urgent)
         } else {
-            return DueBadgeModel(text: "Due in \(minutes)m", urgency: .urgent)
+            return DueBadgeModel(text: "Due in \(seconds)s", urgency: .urgent)
         }
     }
 }

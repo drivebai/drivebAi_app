@@ -93,8 +93,32 @@ type LeaseRequest struct {
 	PickupExtensionTotalMinutes int        `json:"pickup_extension_total_minutes"`
 	PickupExtensionCount        int        `json:"pickup_extension_count"`
 	PickupLastExtendedAt        *time.Time `json:"pickup_last_extended_at,omitempty"`
-	CreatedAt                   time.Time  `json:"created_at"`
-	UpdatedAt                   time.Time  `json:"updated_at"`
+	// Owner-changed-price review (migration 000028). When the owner adjusts
+	// `OfferedWeeklyPrice` mid-flow (before payment has actually succeeded)
+	// we set PriceChangePending=true and snapshot the prior price into
+	// PreviousOfferedWeeklyPrice so the driver UI can render an
+	// old-vs-new comparison. The driver must explicitly accept or decline
+	// before payment is allowed again — `IsPayable` enforces the gate.
+	// PriceChangeActedAt records when the driver's decision landed
+	// (useful for audit + idempotency).
+	PriceChangePending         bool       `json:"price_change_pending"`
+	PreviousOfferedWeeklyPrice *float64   `json:"previous_offered_weekly_price,omitempty"`
+	PriceChangeActedAt         *time.Time `json:"price_change_acted_at,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
+}
+
+// IsPayable reports whether the driver is allowed to initiate a payment
+// for this lease right now. Excludes everything that isn't `accepted` or
+// `payment_pending` and additionally refuses while a price change is
+// still awaiting the driver's accept/decline decision — paying through a
+// stale offered price would silently lock in an amount the driver never
+// agreed to.
+func (lr *LeaseRequest) IsPayable() bool {
+	if lr.PriceChangePending {
+		return false
+	}
+	return lr.Status == LeaseStatusAccepted || lr.Status == LeaseStatusPaymentPending
 }
 
 // RemainingExtensionMinutes returns how many more minutes can still be added
@@ -143,6 +167,14 @@ const (
 	ErrCodePaymentAlreadyExists = "PAYMENT_ALREADY_EXISTS"
 	ErrCodeInvalidLeaseAction   = "INVALID_LEASE_ACTION"
 	ErrCodePriceLocked          = "PRICE_LOCKED"
+	// ErrCodePriceReviewPending: caller tried to pay (or otherwise progress
+	// the lease) while the driver still needs to accept/decline a price
+	// change the owner just made.
+	ErrCodePriceReviewPending = "PRICE_REVIEW_PENDING"
+	// ErrCodeNoPriceChangePending: caller hit /accept-price or
+	// /decline-price on a lease that has no pending price change. Could be
+	// a stale client view or a double-tap after the other side acted.
+	ErrCodeNoPriceChangePending = "NO_PRICE_CHANGE_PENDING"
 )
 
 var (
@@ -153,7 +185,9 @@ var (
 	ErrPaymentNotFound      = &APIError{Code: ErrCodePaymentNotFound, Message: "Payment not found"}
 	ErrPaymentAlreadyExists = &APIError{Code: ErrCodePaymentAlreadyExists, Message: "Payment already exists for this lease request"}
 	ErrInvalidLeaseAction   = &APIError{Code: ErrCodeInvalidLeaseAction, Message: "Invalid action for the current lease request status"}
-	ErrPriceLocked          = &APIError{Code: ErrCodePriceLocked, Message: "Price can only be adjusted while the request is pending"}
+	ErrPriceLocked          = &APIError{Code: ErrCodePriceLocked, Message: "Price can no longer be adjusted — payment has already succeeded."}
+	ErrPriceReviewPending   = &APIError{Code: ErrCodePriceReviewPending, Message: "The owner updated the price. Accept or decline the new offer before continuing."}
+	ErrNoPriceChangePending = &APIError{Code: ErrCodeNoPriceChangePending, Message: "There is no pending price change on this request."}
 	ErrPickupDeadlinePassed = &APIError{Code: "PICKUP_DEADLINE_PASSED", Message: "The pickup deadline has already passed; the rental was refunded."}
 	ErrPickupExtensionCap   = &APIError{Code: "PICKUP_EXTENSION_CAP_REACHED", Message: "Pickup deadline can't be extended further; the cap has been reached."}
 	ErrInvalidExtensionMin  = &APIError{Code: "INVALID_EXTENSION_MINUTES", Message: "Pickup extension must be 15, 30, or 60 minutes."}
@@ -210,8 +244,15 @@ type LeaseRequestResponse struct {
 	PickupExtensionCount        int          `json:"pickup_extension_count"`
 	PickupExtensionRemainingMin int          `json:"pickup_extension_remaining_minutes"`
 	PickupLastExtendedAt        *RFC3339Time `json:"pickup_last_extended_at,omitempty"`
-	CreatedAt                   RFC3339Time  `json:"created_at"`
-	UpdatedAt                   RFC3339Time  `json:"updated_at"`
+	// Price-review (migration 000028). PriceChangePending drives the
+	// driver-side accept/decline gate on iOS — Pay Now is hidden while
+	// it's true. PreviousOfferedWeeklyPrice gives the UI an "old → new"
+	// comparison without the client having to remember stale values.
+	PriceChangePending         bool         `json:"price_change_pending"`
+	PreviousOfferedWeeklyPrice *float64     `json:"previous_offered_weekly_price,omitempty"`
+	PriceChangeActedAt         *RFC3339Time `json:"price_change_acted_at,omitempty"`
+	CreatedAt                  RFC3339Time  `json:"created_at"`
+	UpdatedAt                  RFC3339Time  `json:"updated_at"`
 }
 
 type PaymentSummary struct {

@@ -102,6 +102,14 @@ struct LeaseRequest: Identifiable, Equatable {
     let pickupExtensionCount: Int
     let pickupExtensionRemainingMinutes: Int
     let pickupLastExtendedAt: Date?
+    /// Owner-changed-price review (backend migration 000028). When the
+    /// owner adjusts the offered price mid-flow, `priceChangePending`
+    /// flips to true and the driver MUST accept or decline before Pay Now
+    /// becomes available — `driverCanPay` enforces the gate. The previous
+    /// offered price is captured so the card can show old → new.
+    let priceChangePending: Bool
+    let previousOfferedWeeklyPrice: Double?
+    let priceChangeActedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -139,14 +147,51 @@ struct LeaseRequest: Identifiable, Equatable {
         return formatter.string(from: NSNumber(value: totalAmount))
     }
 
-    /// Whether the driver can initiate or retry payment
+    /// Whether the driver can initiate or retry payment.
+    ///
+    /// Critically, this also returns false while the driver still has to
+    /// accept or decline a price change the owner just made — paying
+    /// through a stale offer would silently lock in an amount the driver
+    /// never agreed to. Backend enforces the same gate on
+    /// `/payments/intent` (409 PRICE_REVIEW_PENDING) as defence in depth.
     var driverCanPay: Bool {
+        if priceChangePending { return false }
         if status == .accepted { return true }
         // payment_pending: only allow retry if payment failed or was canceled
         if status == .paymentPending, let p = payment {
             return p.status == .failed || p.status == .canceled
         }
         return false
+    }
+
+    /// Formatted "old price" line for the strikethrough comparison on the
+    /// card. Prefers the prior offered price (the thing the driver was
+    /// last shown) when a review is pending; falls back to the base
+    /// listing price when the current offered price simply differs from
+    /// the listing price. Returns nil when there's nothing to compare.
+    var priceComparisonOld: String? {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = currency
+        if priceChangePending, let prev = previousOfferedWeeklyPrice {
+            return formatter.string(from: NSNumber(value: prev))
+        }
+        if isPriceAdjusted {
+            return formatter.string(from: NSNumber(value: weeklyPrice))
+        }
+        return nil
+    }
+
+    /// True iff the driver-side card should render the Accept/Decline
+    /// price-review buttons. Non-terminal lease + price-review pending.
+    var driverShouldReviewPrice: Bool {
+        guard priceChangePending else { return false }
+        switch status {
+        case .requested, .accepted, .paymentPending:
+            return true
+        case .declined, .cancelled, .paid, .expired, .expiredRefunded:
+            return false
+        }
     }
 
     /// Payment is in-flight (Stripe processing, webhook pending)

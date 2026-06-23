@@ -31,6 +31,12 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
     let pickupExtensionCount: Int?
     let pickupExtensionRemainingMinutes: Int?
     let pickupLastExtendedAt: Date?
+    // Price-review (backend migration 000028). Always present on new
+    // backends; optional here so older builds talking to a newer backend
+    // simply default the flag to false / nil.
+    let priceChangePending: Bool?
+    let previousOfferedWeeklyPrice: Double?
+    let priceChangeActedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -58,6 +64,9 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
         case pickupExtensionCount = "pickup_extension_count"
         case pickupExtensionRemainingMinutes = "pickup_extension_remaining_minutes"
         case pickupLastExtendedAt = "pickup_last_extended_at"
+        case priceChangePending = "price_change_pending"
+        case previousOfferedWeeklyPrice = "previous_offered_weekly_price"
+        case priceChangeActedAt = "price_change_acted_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -82,6 +91,9 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
             pickupExtensionCount: pickupExtensionCount ?? 0,
             pickupExtensionRemainingMinutes: pickupExtensionRemainingMinutes ?? LeaseRequest.maxPickupExtensionMinutes,
             pickupLastExtendedAt: pickupLastExtendedAt,
+            priceChangePending: priceChangePending ?? false,
+            previousOfferedWeeklyPrice: previousOfferedWeeklyPrice,
+            priceChangeActedAt: priceChangeActedAt,
             createdAt: createdAt, updatedAt: updatedAt
         )
     }

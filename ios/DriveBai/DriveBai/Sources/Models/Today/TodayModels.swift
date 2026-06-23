@@ -66,21 +66,26 @@ enum TaskPriority: Int, CaseIterable, Comparable {
 struct CountdownConfig {
     let deadline: Date
 
-    /// Returns remaining time components (days, hours, minutes)
-    func remainingTime(from now: Date = Date()) -> (days: Int, hours: Int, minutes: Int) {
+    /// Returns remaining time components (days, hours, minutes, seconds).
+    /// Clamped at zero — never returns negatives so the UI doesn't have to.
+    /// Callers that don't need second-precision can simply ignore the
+    /// `seconds` field; the lone-second tick is what drives urgency on the
+    /// post-payment pickup deadline card.
+    func remainingTime(from now: Date = Date()) -> (days: Int, hours: Int, minutes: Int, seconds: Int) {
         let interval = deadline.timeIntervalSince(now)
 
         // Clamp at zero if overdue
         guard interval > 0 else {
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
         }
 
         let totalSeconds = Int(interval)
         let days = totalSeconds / 86400
         let hours = (totalSeconds % 86400) / 3600
         let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
 
-        return (days, hours, minutes)
+        return (days, hours, minutes, seconds)
     }
 
     var isOverdue: Bool {

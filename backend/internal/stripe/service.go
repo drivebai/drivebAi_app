@@ -192,6 +192,53 @@ func (s *Service) RetrievePaymentIntent(id string) (*PaymentIntent, error) {
 	return &pi, nil
 }
 
+// CancelPaymentIntent cancels a Stripe PaymentIntent that hasn't actually
+// charged the customer yet. Used by the price-review flow: when the owner
+// adjusts the offered price (or the driver declines the new price), any
+// unpaid PaymentIntent for the lease becomes stale — leaving it active
+// would let a driver's saved PaymentSheet submit the old amount.
+//
+// Stripe accepts cancellation on intents in non-terminal states. If the
+// intent is already terminal (succeeded/canceled), Stripe returns an
+// error; the caller should treat that as benign (nothing to cancel)
+// because the payment either already landed or is already void.
+//
+// Best-effort by design — failure logs but should not block the user-
+// facing flow that triggered it. Errors are returned so the caller can
+// decide their own logging story.
+func (s *Service) CancelPaymentIntent(paymentIntentID string) error {
+	if paymentIntentID == "" {
+		return fmt.Errorf("stripe cancel: payment intent id required")
+	}
+	// `cancellation_reason=abandoned` is the Stripe-recommended value when
+	// the customer didn't actually opt out — we want a neutral reason
+	// since the cancellation is driven by an upstream price change, not
+	// by the customer.
+	params := url.Values{}
+	params.Set("cancellation_reason", "abandoned")
+
+	req, err := http.NewRequest("POST",
+		"https://api.stripe.com/v1/payment_intents/"+paymentIntentID+"/cancel",
+		strings.NewReader(params.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("cancel payment intent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("stripe cancel error %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // --- Refunds ---
 
 // Refund represents a Stripe Refund object (subset of fields we care about).
