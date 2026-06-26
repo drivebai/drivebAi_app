@@ -55,6 +55,21 @@ enum SignupMode: Equatable {
     case otp(registrationToken: String, email: String)
 }
 
+// MARK: - Email Availability
+
+/// State machine for the inline "is this email already in use?" check on
+/// Step 1 of signup. Lives on SignupFlowState; driven by a debounced Task
+/// that calls APIClient.checkEmail. Continue is gated on `!= .taken` and
+/// `!= .checking`; on `.networkError` the flow falls through to the
+/// backend's 409 EMAIL_TAKEN at register-time.
+enum EmailAvailability: Equatable {
+    case idle
+    case checking
+    case available
+    case taken
+    case networkError
+}
+
 // MARK: - Signup Flow State
 
 @MainActor
@@ -82,6 +97,16 @@ final class SignupFlowState: ObservableObject {
     @Published var profilePhotoData: Data?
     @Published var profilePhotoImage: UIImage?
 
+    // Email availability (Step 1, normal mode only)
+    @Published var emailAvailability: EmailAvailability = .idle
+    /// Debounced check task. Held so a follow-up edit can cancel the prior
+    /// in-flight check before a stale result arrives. Also cancelled when
+    /// the user goes back / dismisses the wizard.
+    private var emailCheckTask: Task<Void, Never>?
+    /// Last email value we kicked a check for. Lets us skip duplicate work
+    /// when SwiftUI fires .onChange for no-op edits.
+    private var lastCheckedEmail: String = ""
+
     // General State
     @Published var isLoading: Bool = false
     @Published var error: String?
@@ -108,7 +133,18 @@ final class SignupFlowState: ObservableObject {
         if case .otp = mode {
             emailOK = true // already verified via OTP
         } else {
-            emailOK = isValidEmail
+            // Format must be valid AND the availability check must not be
+            // mid-flight or known-taken. `.idle`, `.available`, and
+            // `.networkError` all pass (network error falls through to the
+            // register-time 409 EMAIL_TAKEN backstop).
+            guard isValidEmail else { return false }
+            switch emailAvailability {
+            case .taken, .checking:
+                return false
+            case .idle, .available, .networkError:
+                break
+            }
+            emailOK = true
         }
         return !firstName.isEmpty &&
         !lastName.isEmpty &&
@@ -171,6 +207,72 @@ final class SignupFlowState: ObservableObject {
         }
     }
 
+    // MARK: - Email Availability Check
+
+    /// Schedule an availability check for the current email value with a
+    /// debounce. Idempotent: caller can call this on every keystroke;
+    /// the prior task is cancelled if it hasn't completed yet. No-ops in
+    /// OTP mode (email is pre-verified) and when the format is invalid
+    /// (we never spam the backend with junk).
+    ///
+    /// - Parameters:
+    ///   - debounceMillis: how long to wait after the last keystroke
+    ///     before hitting the network. 600ms is gentle enough that a
+    ///     fast typist generates exactly one request per email change.
+    ///   - apiClient: injected so tests can sub in a fake; defaults to
+    ///     the shared client used everywhere else in signup.
+    func scheduleEmailAvailabilityCheck(
+        debounceMillis: Int = 600,
+        apiClient: APIClientProtocol = APIClient.shared
+    ) {
+        // OTP path: email is already verified; never bother the backend.
+        if case .otp = mode { return }
+
+        emailCheckTask?.cancel()
+
+        let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else {
+            emailAvailability = .idle
+            return
+        }
+        guard isValidEmail else {
+            // Bad format already shown by the existing validation row; clear
+            // any stale availability so the user isn't shown a contradiction.
+            emailAvailability = .idle
+            return
+        }
+
+        emailAvailability = .checking
+        emailCheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(debounceMillis))
+            guard let self else { return }
+            if Task.isCancelled { return }
+            // Bail if the user kept typing past the debounce — there's
+            // already a fresh task scheduled with the newer value.
+            guard normalized == self.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return }
+
+            do {
+                let available = try await apiClient.checkEmail(normalized)
+                if Task.isCancelled { return }
+                self.lastCheckedEmail = normalized
+                self.emailAvailability = available ? .available : .taken
+            } catch is CancellationError {
+                // Superseded by a later check; nothing to do.
+            } catch {
+                if Task.isCancelled { return }
+                self.emailAvailability = .networkError
+            }
+        }
+    }
+
+    /// Cancel any pending availability check — used on back navigation /
+    /// wizard dismiss so a slow network response can't repaint state for
+    /// a screen the user already left.
+    func cancelEmailAvailabilityCheck() {
+        emailCheckTask?.cancel()
+        emailCheckTask = nil
+    }
+
     // MARK: - Navigation
 
     func goToNextStep() {
@@ -199,6 +301,7 @@ final class SignupFlowState: ObservableObject {
     // MARK: - Reset
 
     func reset() {
+        cancelEmailAvailabilityCheck()
         currentStep = .userInfo
         firstName = ""
         lastName = ""
@@ -207,6 +310,8 @@ final class SignupFlowState: ObservableObject {
         password = ""
         confirmPassword = ""
         acceptedTerms = false
+        emailAvailability = .idle
+        lastCheckedEmail = ""
         selectedRole = nil
         profilePhotoData = nil
         profilePhotoImage = nil

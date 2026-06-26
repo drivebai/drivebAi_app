@@ -114,6 +114,12 @@ protocol APIClientProtocol {
     func logout(request: RefreshTokenRequest) async throws -> MessageResponse
     func resendOTP(request: ResendOTPRequest) async throws -> MessageResponse
 
+    /// POST /auth/check-email — used by signup to show "email already in
+    /// use" inline. Returns `true` if the email is NOT registered yet (i.e.
+    /// the caller may proceed with signup). Throws on network/server errors;
+    /// callers fail open and let the final submit be the source of truth.
+    func checkEmail(_ email: String) async throws -> Bool
+
     // OTP passwordless login
     func requestLoginOTP(email: String) async throws -> MessageResponse
     func verifyLoginOTP(email: String, code: String) async throws -> OTPVerifyResponse
@@ -307,6 +313,16 @@ final class APIClient: APIClientProtocol {
 
     func logout(request: RefreshTokenRequest) async throws -> MessageResponse {
         try await post(path: "auth/logout", body: request)
+    }
+
+    func checkEmail(_ email: String) async throws -> Bool {
+        struct Req: Encodable { let email: String }
+        struct Resp: Decodable { let available: Bool }
+        let resp: Resp = try await post(
+            path: "auth/check-email",
+            body: Req(email: email)
+        )
+        return resp.available
     }
 
     func resendOTP(request: ResendOTPRequest) async throws -> MessageResponse {

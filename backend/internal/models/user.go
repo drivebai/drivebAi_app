@@ -121,16 +121,33 @@ func (u *User) NextOnboardingStep() string {
 }
 
 // Document types
+//
+// `drivers_license` is the only REQUIRED document for driver onboarding.
+// The rest are accepted as optional supporting documents the driver can
+// upload if they want (TLC / commercial / generic "other"). `registration`
+// predates this split — it was historically required as the driver's own
+// vehicle registration — and stays in the enum so existing rows remain
+// valid; iOS now exposes it as one of the optional slots.
+//
+// Stored as plain text in the `documents.type` column; validation is the
+// IsValid() allow-list below.
 type DocumentType string
 
 const (
-	DocumentDriversLicense DocumentType = "drivers_license"
-	DocumentRegistration   DocumentType = "registration"
+	DocumentDriversLicense    DocumentType = "drivers_license"
+	DocumentRegistration      DocumentType = "registration"
+	DocumentCommercialLicense DocumentType = "commercial_license"
+	DocumentTLCLicense        DocumentType = "tlc_license"
+	DocumentOther             DocumentType = "other"
 )
 
 func (d DocumentType) IsValid() bool {
 	switch d {
-	case DocumentDriversLicense, DocumentRegistration:
+	case DocumentDriversLicense,
+		DocumentRegistration,
+		DocumentCommercialLicense,
+		DocumentTLCLicense,
+		DocumentOther:
 		return true
 	}
 	return false

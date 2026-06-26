@@ -260,17 +260,29 @@ struct LikedListingsResponse: Codable {
 
 // MARK: - Document
 
-enum DocumentType: String, Codable {
+enum DocumentType: String, Codable, CaseIterable {
     case driversLicense = "drivers_license"
     case registration = "registration"
+    case commercialLicense = "commercial_license"
+    case tlcLicense = "tlc_license"
+    case other = "other"
 
     var displayName: String {
         switch self {
-        case .driversLicense:
-            return "Driver's License"
-        case .registration:
-            return "Vehicle Registration"
+        case .driversLicense:    return "Driver's License"
+        case .registration:      return "Vehicle Registration"
+        case .commercialLicense: return "Commercial License"
+        case .tlcLicense:        return "TLC License"
+        case .other:             return "Other Document"
         }
+    }
+
+    /// Optional supporting documents a driver can attach during onboarding.
+    /// The required document — drivers_license — is handled separately by
+    /// AuthStore.hasRequiredDocuments() so this list only enumerates the
+    /// slots that should appear under the "Optional" header.
+    static var optionalDriverDocs: [DocumentType] {
+        [.registration, .commercialLicense, .tlcLicense, .other]
     }
 }
 

@@ -413,11 +413,16 @@ final class AuthStore: ObservableObject {
         return user.role == .driver && user.needsOnboarding
     }
 
-    /// Check if driver has all required documents uploaded
+    /// Check if driver has all REQUIRED documents uploaded.
+    ///
+    /// As of the optional-docs change, the only document gating onboarding
+    /// is the driver's license. The remaining iOS DocumentType cases
+    /// (registration / commercial / TLC / other) are optional supporting
+    /// documents the driver may attach; legacy users who already uploaded
+    /// a registration doc still see it on the card, but it no longer
+    /// blocks them from completing onboarding.
     func hasRequiredDocuments() -> Bool {
-        let hasLicense = documents.contains { $0.type == .driversLicense }
-        let hasRegistration = documents.contains { $0.type == .registration }
-        return hasLicense && hasRegistration
+        documents.contains { $0.type == .driversLicense }
     }
 
     // MARK: - Helpers

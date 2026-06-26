@@ -157,9 +157,17 @@ struct LeaseRequest: Identifiable, Equatable {
     var driverCanPay: Bool {
         if priceChangePending { return false }
         if status == .accepted { return true }
-        // payment_pending: only allow retry if payment failed or was canceled
+        // payment_pending: a Stripe PaymentIntent exists but no payment has
+        // succeeded yet. The driver should be able to (re)submit when the
+        // intent is in any non-terminal, non-in-flight state. Critically
+        // this includes `.requiresPaymentMethod` — that's the state Stripe
+        // leaves the intent in after the user dismisses PaymentSheet
+        // without confirming. Before this fix the card stayed on a yellow
+        // "Processing" spinner forever in that scenario.
         if status == .paymentPending, let p = payment {
-            return p.status == .failed || p.status == .canceled
+            return p.status == .failed
+                || p.status == .canceled
+                || p.status == .requiresPaymentMethod
         }
         return false
     }
@@ -194,10 +202,18 @@ struct LeaseRequest: Identifiable, Equatable {
         }
     }
 
-    /// Payment is in-flight (Stripe processing, webhook pending)
+    /// Payment is genuinely in-flight (Stripe processing, webhook pending).
+    ///
+    /// `.requiresPaymentMethod` is intentionally NOT in this set: that's the
+    /// state Stripe assigns at intent creation and the state it returns to
+    /// after the user dismisses PaymentSheet without confirming — there is
+    /// no work happening on Stripe's side and the user must act. Counting it
+    /// as "processing" was the cause of the stuck yellow-spinner bug.
+    /// `.requiresConfirmation` IS in-flight (Stripe needs a confirm to
+    /// finalize the payment).
     var isPaymentProcessing: Bool {
         guard status == .paymentPending, let p = payment else { return false }
-        return p.status == .processing || p.status == .requiresPaymentMethod || p.status == .requiresConfirmation
+        return p.status == .processing || p.status == .requiresConfirmation
     }
 
     /// Payment succeeded on Stripe but webhook hasn't flipped lease to paid yet

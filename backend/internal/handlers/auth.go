@@ -81,15 +81,15 @@ type LoginResponse struct {
 }
 
 type UserProfile struct {
-	ID               uuid.UUID              `json:"id"`
-	Email            string                 `json:"email"`
-	Role             models.Role            `json:"role"`
-	FirstName        string                 `json:"first_name"`
-	LastName         string                 `json:"last_name"`
-	Phone            *string                `json:"phone,omitempty"`
-	IsEmailVerified  bool                   `json:"is_email_verified"`
+	ID               uuid.UUID               `json:"id"`
+	Email            string                  `json:"email"`
+	Role             models.Role             `json:"role"`
+	FirstName        string                  `json:"first_name"`
+	LastName         string                  `json:"last_name"`
+	Phone            *string                 `json:"phone,omitempty"`
+	IsEmailVerified  bool                    `json:"is_email_verified"`
 	OnboardingStatus models.OnboardingStatus `json:"onboarding_status"`
-	ProfilePhotoURL  *string                `json:"profile_photo_url,omitempty"`
+	ProfilePhotoURL  *string                 `json:"profile_photo_url,omitempty"`
 }
 
 type RefreshTokenRequest struct {
@@ -500,6 +500,53 @@ func (h *AuthHandler) ResendOTP(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusAccepted, map[string]string{
 		"message": "If an account exists with this email, a new code will be sent.",
 	})
+}
+
+// CheckEmailRequest is the body for POST /auth/check-email.
+type CheckEmailRequest struct {
+	Email string `json:"email"`
+}
+
+// CheckEmailResponse is the response. We deliberately surface only an
+// `available` boolean; no per-error-code branching beyond malformed input
+// so the client decides UX cleanly.
+type CheckEmailResponse struct {
+	Available bool `json:"available"`
+}
+
+// CheckEmail handles POST /auth/check-email. It exists so the signup form
+// can render an inline "this email is already in use" hint after a short
+// debounce, instead of making the user fill in every other field and
+// then hitting them with a 409 on submit.
+//
+// Privacy: this endpoint reveals whether an email is registered. That
+// signal is already exposed today by POST /auth/otp/verify (its `kind`
+// field discriminates login vs register), so adding this surface does
+// not change the privacy posture — it just makes the signup UX honest.
+// Rate-limiting is inherited from the /auth route group's middleware.
+func (h *AuthHandler) CheckEmail(w http.ResponseWriter, r *http.Request) {
+	var req CheckEmailRequest
+	if err := DecodeJSON(r, &req); err != nil {
+		WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+
+	// Normalize identically to the OTP + register paths so callers can't
+	// trick the answer with whitespace / casing.
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		WriteError(w, http.StatusBadRequest, models.NewValidationError("A valid email address is required"))
+		return
+	}
+
+	exists, err := h.userRepo.EmailExists(r.Context(), email)
+	if err != nil {
+		h.logger.Error("check-email: lookup failed", "error", err)
+		WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, CheckEmailResponse{Available: !exists})
 }
 
 // Helper methods
