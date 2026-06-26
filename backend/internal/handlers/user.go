@@ -191,7 +191,10 @@ func (h *UserHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 	docTypeStr := chi.URLParam(r, "type")
 	docType := models.DocumentType(docTypeStr)
 	if !docType.IsValid() {
-		WriteError(w, http.StatusBadRequest, models.NewAPIError("INVALID_DOCUMENT_TYPE", "Document type must be 'drivers_license' or 'registration'"))
+		WriteError(w, http.StatusBadRequest, models.NewAPIError(
+			"INVALID_DOCUMENT_TYPE",
+			"Document type must be one of: drivers_license, registration, commercial_license, tlc_license, other",
+		))
 		return
 	}
 
@@ -508,18 +511,18 @@ func (h *UserHandler) CompleteOnboarding(w http.ResponseWriter, r *http.Request)
 // iOS "Switch to Driver/Owner mode" UI calls.
 
 type ProfileSummary struct {
-	ID               uuid.UUID              `json:"id"`
-	Role             models.Role            `json:"role"`
+	ID               uuid.UUID               `json:"id"`
+	Role             models.Role             `json:"role"`
 	OnboardingStatus models.OnboardingStatus `json:"onboarding_status"`
-	HasRequiredDocs  bool                   `json:"has_required_docs"`
-	IsActive         bool                   `json:"is_active"`
-	CreatedAt        string                 `json:"created_at"`
+	HasRequiredDocs  bool                    `json:"has_required_docs"`
+	IsActive         bool                    `json:"is_active"`
+	CreatedAt        string                  `json:"created_at"`
 }
 
 type ListProfilesResponse struct {
-	Profiles         []ProfileSummary `json:"profiles"`
-	ActiveProfileID  *uuid.UUID       `json:"active_profile_id,omitempty"`
-	ActiveRole       *models.Role     `json:"active_role,omitempty"`
+	Profiles        []ProfileSummary `json:"profiles"`
+	ActiveProfileID *uuid.UUID       `json:"active_profile_id,omitempty"`
+	ActiveRole      *models.Role     `json:"active_role,omitempty"`
 }
 
 type CreateProfileRequest struct {
@@ -532,11 +535,11 @@ type SwitchProfileRequest struct {
 }
 
 type SwitchProfileResponse struct {
-	AccessToken    string             `json:"access_token"`
-	RefreshToken   string             `json:"refresh_token"`
-	ExpiresAt      models.RFC3339Time `json:"expires_at"`
-	User           UserProfile        `json:"user"`
-	ActiveProfile  ProfileSummary     `json:"active_profile"`
+	AccessToken   string             `json:"access_token"`
+	RefreshToken  string             `json:"refresh_token"`
+	ExpiresAt     models.RFC3339Time `json:"expires_at"`
+	User          UserProfile        `json:"user"`
+	ActiveProfile ProfileSummary     `json:"active_profile"`
 }
 
 // ensureActiveProfile self-heals users missing an active_profile_id (e.g. legacy

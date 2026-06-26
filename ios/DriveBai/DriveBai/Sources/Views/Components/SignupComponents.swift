@@ -173,11 +173,20 @@ struct SignupStepContainer<Content: View>: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
                 if showBackButton, let onBack = onBack {
+                    // Visible "Back" affordance — icon alone was too easy to
+                    // miss in QA. Includes a tappable text label so users
+                    // know they can return to the previous step (or, on
+                    // step 1, dismiss the signup sheet back to login).
                     Button(action: onBack) {
-                        Image(systemName: "arrow.left")
-                            .foregroundColor(.primary)
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                            Text("Back")
+                        }
+                        .font(.body)
+                        .foregroundColor(.driveBaiPrimary)
                     }
                     .disabled(isLoading)
+                    .accessibilityLabel("Back")
                 }
             }
         }

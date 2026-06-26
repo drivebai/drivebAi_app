@@ -150,7 +150,14 @@ struct SignupUserInfoStepView: View {
             showBackButton: true,
             isLoading: signupFlow.isLoading,
             canContinue: signupFlow.isUserInfoValid,
-            onBack: { dismiss() },
+            onBack: {
+                // Back from Step 1 closes the signup sheet entirely (returns
+                // to login). Cancel any pending email-availability check so
+                // a late network response can't repaint state for a screen
+                // the user already left.
+                signupFlow.cancelEmailAvailabilityCheck()
+                dismiss()
+            },
             onContinue: { signupFlow.goToNextStep() }
         ) {
             VStack(spacing: 20) {
@@ -200,20 +207,19 @@ struct SignupUserInfoStepView: View {
                             .textContentType(.emailAddress)
                             .autocapitalization(.none)
                             .keyboardType(.emailAddress)
-
-                        if !signupFlow.email.isEmpty && !signupFlow.isValidEmail {
-                            Text("This email is not valid. Please check the spelling.")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                        } else if signupFlow.isValidEmail && !signupFlow.email.isEmpty {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.green)
-                                Text("The email is valid")
+                            .onChange(of: signupFlow.email) { _, _ in
+                                // Reset the availability flag immediately so the
+                                // stale "already in use" or green-check banner
+                                // never lingers under a freshly-edited address.
+                                // The scheduler below will re-decide after the
+                                // debounce.
+                                if signupFlow.emailAvailability != .idle {
+                                    signupFlow.emailAvailability = .idle
+                                }
+                                signupFlow.scheduleEmailAvailabilityCheck()
                             }
-                            .font(.caption)
-                            .foregroundColor(.green)
-                        }
+
+                        emailValidationRow
                     }
                 }
 
@@ -285,6 +291,59 @@ struct SignupUserInfoStepView: View {
             }
             .padding(.horizontal)
             .padding(.top, 16)
+        }
+    }
+
+    /// Inline status line under the email field. Combines the existing
+    /// format check with the new debounced availability check. Order of
+    /// precedence (format → checking → server result) matches Continue
+    /// gating in SignupFlowState.isUserInfoValid.
+    @ViewBuilder
+    private var emailValidationRow: some View {
+        if signupFlow.email.isEmpty {
+            EmptyView()
+        } else if !signupFlow.isValidEmail {
+            Text("This email is not valid. Please check the spelling.")
+                .font(.caption)
+                .foregroundColor(.red)
+        } else {
+            switch signupFlow.emailAvailability {
+            case .checking:
+                HStack(spacing: 6) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Checking email…")
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+            case .taken:
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                    Text("This email is already in use. Try logging in instead.")
+                }
+                .font(.caption)
+                .foregroundColor(.red)
+            case .available:
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("Email is available")
+                }
+                .font(.caption)
+                .foregroundColor(.green)
+            case .networkError:
+                // Non-blocking: format is valid, we just can't reach the
+                // server right now. The final /auth/register call will
+                // surface 409 EMAIL_TAKEN if needed.
+                Text("Couldn't verify email right now — we'll check when you continue.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            case .idle:
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text("The email is valid")
+                }
+                .font(.caption)
+                .foregroundColor(.green)
+            }
         }
     }
 }
@@ -680,60 +739,128 @@ struct SignupDocumentsStepView: View {
 
 // MARK: - Embedded Document Upload Content
 
+/// Driver-onboarding document step.
+///
+/// Layout:
+///   - REQUIRED section: drivers_license only. Continue is gated on this
+///     being uploaded (AuthStore.hasRequiredDocuments).
+///   - OPTIONAL section: any DocumentType in `optionalDriverDocs` that
+///     either already has an upload (legacy registration counts here) or
+///     was explicitly added via "+ Add another document".
+///
+/// Drivers do NOT need a vehicle registration to complete onboarding —
+/// registration is a vehicle-owner concern. Existing users with a
+/// previously-uploaded registration doc still see it under "Optional"
+/// (rendered identically) so nothing visually breaks for them.
 struct EmbeddedDocumentUploadContent: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var signupFlow: SignupFlowState
 
-    @State private var isUploadingLicense = false
-    @State private var isUploadingRegistration = false
+    @State private var uploadingTypes: Set<DocumentType> = []
+    @State private var addedOptionalTypes: Set<DocumentType> = []
+    @State private var showAddOptionalSheet = false
 
-    private var licenseDocument: Document? {
-        authStore.documents.first { $0.type == .driversLicense }
+    private func document(of type: DocumentType) -> Document? {
+        authStore.documents.first { $0.type == type }
     }
 
-    private var registrationDocument: Document? {
-        authStore.documents.first { $0.type == .registration }
+    /// Optional slots that should render right now: any optional type the
+    /// user has already uploaded (so legacy registration docs stay visible)
+    /// plus any the user explicitly added via the "+ Add" picker.
+    private var visibleOptionalTypes: [DocumentType] {
+        DocumentType.optionalDriverDocs.filter { type in
+            document(of: type) != nil || addedOptionalTypes.contains(type)
+        }
+    }
+
+    /// Optional types not yet visible — drives the "+ Add" picker sheet.
+    private var addableOptionalTypes: [DocumentType] {
+        DocumentType.optionalDriverDocs.filter { type in
+            document(of: type) == nil && !addedOptionalTypes.contains(type)
+        }
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            DocumentUploadCard(
-                type: .driversLicense,
-                document: licenseDocument,
-                isUploading: isUploadingLicense,
-                onFileSelected: { data, filename, mimeType in
-                    Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: .driversLicense) }
-                },
-                onDelete: { deleteLicense() }
-            )
+        VStack(alignment: .leading, spacing: 20) {
+            // ── Required ─────────────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Required")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                    .padding(.horizontal, 4)
 
-            DocumentUploadCard(
-                type: .registration,
-                document: registrationDocument,
-                isUploading: isUploadingRegistration,
-                onFileSelected: { data, filename, mimeType in
-                    Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: .registration) }
-                },
-                onDelete: { deleteRegistration() }
-            )
+                DocumentUploadCard(
+                    type: .driversLicense,
+                    document: document(of: .driversLicense),
+                    isUploading: uploadingTypes.contains(.driversLicense),
+                    onFileSelected: { data, filename, mimeType in
+                        Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: .driversLicense) }
+                    },
+                    onDelete: { delete(type: .driversLicense) }
+                )
+            }
+
+            // ── Optional ─────────────────────────────────────────────────
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Optional")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.secondary)
+                        .textCase(.uppercase)
+                    Spacer()
+                    Text("Add anything supporting (TLC, commercial, etc.)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 4)
+
+                ForEach(visibleOptionalTypes, id: \.self) { type in
+                    DocumentUploadCard(
+                        type: type,
+                        document: document(of: type),
+                        isUploading: uploadingTypes.contains(type),
+                        onFileSelected: { data, filename, mimeType in
+                            Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: type) }
+                        },
+                        onDelete: { delete(type: type) }
+                    )
+                }
+
+                if !addableOptionalTypes.isEmpty {
+                    Button {
+                        showAddOptionalSheet = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "plus.circle.fill")
+                            Text("Add another document")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .foregroundColor(.driveBaiPrimary)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.driveBaiPrimary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                        )
+                    }
+                }
+            }
         }
         .padding(.horizontal)
+        .confirmationDialog("Add a supporting document", isPresented: $showAddOptionalSheet, titleVisibility: .visible) {
+            ForEach(addableOptionalTypes, id: \.self) { type in
+                Button(type.displayName) {
+                    addedOptionalTypes.insert(type)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        }
     }
 
     private func uploadDocument(data: Data, filename: String, mimeType: String, type: DocumentType) async {
-        if type == .driversLicense {
-            isUploadingLicense = true
-        } else {
-            isUploadingRegistration = true
-        }
-
-        defer {
-            if type == .driversLicense {
-                isUploadingLicense = false
-            } else {
-                isUploadingRegistration = false
-            }
-        }
+        uploadingTypes.insert(type)
+        defer { uploadingTypes.remove(type) }
 
         signupFlow.clearError()
 
@@ -752,17 +879,15 @@ struct EmbeddedDocumentUploadContent: View {
         }
     }
 
-    private func deleteLicense() {
-        guard let doc = licenseDocument else { return }
+    private func delete(type: DocumentType) {
+        guard let doc = document(of: type) else { return }
         Task {
             try? await authStore.deleteDocument(id: doc.id)
-        }
-    }
-
-    private func deleteRegistration() {
-        guard let doc = registrationDocument else { return }
-        Task {
-            try? await authStore.deleteDocument(id: doc.id)
+            // If the user deletes an optional doc they just added, also clear
+            // it from the visible-set so the "+ Add" picker offers it again.
+            if type != .driversLicense {
+                addedOptionalTypes.remove(type)
+            }
         }
     }
 }

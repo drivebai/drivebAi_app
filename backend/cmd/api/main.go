@@ -211,6 +211,12 @@ func main() {
 			r.Post("/logout", authHandler.Logout)
 			r.Post("/resend-otp", authHandler.ResendOTP)
 
+			// Email-availability check (signup inline UX). Public, rate-limited
+			// by the same middleware as everything else in /auth; privacy
+			// posture matches /auth/otp/verify which already reveals account
+			// existence via its kind discriminator.
+			r.Post("/check-email", authHandler.CheckEmail)
+
 			// OTP email login (passwordless)
 			r.Post("/otp/request", otpAuthHandler.RequestOTP)
 			r.Post("/otp/verify", otpAuthHandler.VerifyOTP)

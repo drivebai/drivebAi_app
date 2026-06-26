@@ -53,9 +53,12 @@ private struct DriverDocumentRow: View {
 
     private var iconName: String {
         switch document.documentType {
-        case .driversLicense: return "person.text.rectangle"
-        case .registration:   return "car.fill"
-        case .none:           return "doc.fill"
+        case .driversLicense:    return "person.text.rectangle"
+        case .registration:      return "car.fill"
+        case .commercialLicense: return "briefcase.fill"
+        case .tlcLicense:        return "creditcard.fill"
+        case .other:             return "doc.fill"
+        case .none:              return "doc.fill"
         }
     }
 
