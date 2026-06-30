@@ -123,39 +123,38 @@ func goodProdConfig() *Config {
 	}
 }
 
-func TestValidateForProduction_RejectsMissingAPNsTeamID(t *testing.T) {
+// APNs is a soft requirement: push degrades gracefully without it (in-app +
+// WebSocket still fire), so ValidateForProduction does NOT fail-loud on
+// missing APNs fields — that would chicken-and-egg first deploys. The
+// startup WARN driven by HasPushConfigured() is the loud-enough signal.
+func TestHasPushConfigured_TrueWhenAllFieldsSet(t *testing.T) {
 	c := goodProdConfig()
-	c.AppleTeamID = ""
-	err := c.ValidateForProduction()
-	if err == nil || !strings.Contains(err.Error(), "APPLE_TEAM_ID") {
-		t.Errorf("expected APPLE_TEAM_ID complaint, got %v", err)
+	if !c.HasPushConfigured() {
+		t.Errorf("expected HasPushConfigured=true with all APNs fields set")
 	}
 }
 
-func TestValidateForProduction_RejectsMissingAPNsKeyID(t *testing.T) {
-	c := goodProdConfig()
-	c.APNSKeyID = ""
-	err := c.ValidateForProduction()
-	if err == nil || !strings.Contains(err.Error(), "APNS_KEY_ID") {
-		t.Errorf("expected APNS_KEY_ID complaint, got %v", err)
+func TestHasPushConfigured_FalseAndValidateOK_WhenAnyAPNsFieldMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		mod  func(*Config)
+	}{
+		{"team_id", func(c *Config) { c.AppleTeamID = "" }},
+		{"key_id", func(c *Config) { c.APNSKeyID = "" }},
+		{"auth_key_p8", func(c *Config) { c.APNSAuthKeyP8 = "" }},
+		{"bundle_id", func(c *Config) { c.IOSBundleID = "" }},
 	}
-}
-
-func TestValidateForProduction_RejectsMissingAPNsAuthKey(t *testing.T) {
-	c := goodProdConfig()
-	c.APNSAuthKeyP8 = ""
-	err := c.ValidateForProduction()
-	if err == nil || !strings.Contains(err.Error(), "APNS_AUTH_KEY_P8") {
-		t.Errorf("expected APNS_AUTH_KEY_P8 complaint, got %v", err)
-	}
-}
-
-func TestValidateForProduction_RejectsMissingIOSBundleID(t *testing.T) {
-	c := goodProdConfig()
-	c.IOSBundleID = ""
-	err := c.ValidateForProduction()
-	if err == nil || !strings.Contains(err.Error(), "IOS_BUNDLE_ID") {
-		t.Errorf("expected IOS_BUNDLE_ID complaint, got %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := goodProdConfig()
+			tc.mod(c)
+			if c.HasPushConfigured() {
+				t.Errorf("HasPushConfigured should be false when %s is empty", tc.name)
+			}
+			if err := c.ValidateForProduction(); err != nil {
+				t.Errorf("ValidateForProduction must NOT fail on missing APNs %s; got %v", tc.name, err)
+			}
+		})
 	}
 }
 
