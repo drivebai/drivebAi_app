@@ -70,7 +70,16 @@ func main() {
 
 	// Initialize services
 	jwtSvc := auth.NewJWTService(cfg.JWTSecret, cfg.JWTAccessTokenTTL, cfg.JWTRefreshTokenTTL)
-	emailSvc := email.NewSender(cfg.SendGridAPIKey, cfg.SendGridFromEmail, cfg.SendGridFromName, cfg.AppDeeplinkScheme, cfg.AppBaseURL, logger)
+	emailSvc := email.NewSender(email.SenderConfig{
+		SendGridAPIKey:      cfg.SendGridAPIKey,
+		SendGridFromEmail:   cfg.SendGridFromEmail,
+		SendGridFromName:    cfg.SendGridFromName,
+		MailerSendAPIKey:    cfg.MailerSendAPIKey,
+		MailerSendFromEmail: cfg.MailerFromEmail,
+		MailerSendFromName:  cfg.MailerFromName,
+		DeeplinkScheme:      cfg.AppDeeplinkScheme,
+		BaseURL:             cfg.AppBaseURL,
+	}, logger)
 	otpEmailSvc := email.NewOTPSender(cfg.MailerSendAPIKey, cfg.MailerFromEmail, cfg.MailerFromName, logger)
 
 	// Initialize repositories

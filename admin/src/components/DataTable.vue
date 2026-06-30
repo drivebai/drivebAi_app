@@ -30,26 +30,28 @@ function pageCount(total: number, limit: number) {
 
 <template>
   <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><slot name="header" /></tr>
-      </thead>
-      <tbody v-if="!loading && rows.length">
-        <tr
-          v-for="row in rows" :key="row.id"
-          :class="{ clickable: !!onRowClick }"
-          @click="onRowClick?.(row)"
-        >
-          <slot name="row" :row="row" />
-        </tr>
-      </tbody>
-      <tbody v-else-if="loading">
-        <tr><td class="state" colspan="99">Loading…</td></tr>
-      </tbody>
-      <tbody v-else>
-        <tr><td class="state" colspan="99"><slot name="empty">No data.</slot></td></tr>
-      </tbody>
-    </table>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><slot name="header" /></tr>
+        </thead>
+        <tbody v-if="!loading && rows.length">
+          <tr
+            v-for="row in rows" :key="row.id"
+            :class="{ clickable: !!onRowClick }"
+            @click="onRowClick?.(row)"
+          >
+            <slot name="row" :row="row" />
+          </tr>
+        </tbody>
+        <tbody v-else-if="loading">
+          <tr><td class="state" colspan="99">Loading…</td></tr>
+        </tbody>
+        <tbody v-else>
+          <tr><td class="state" colspan="99"><slot name="empty">No data.</slot></td></tr>
+        </tbody>
+      </table>
+    </div>
 
     <footer v-if="total > 0">
       <span class="muted">
@@ -71,6 +73,13 @@ function pageCount(total: number, limit: number) {
   border-radius: var(--radius);
   overflow: hidden;
 }
+/* Wrapping the table itself in an overflow-x scroller keeps the page layout
+   from blowing out horizontally on narrow screens — the table scrolls within
+   its card rather than pushing the sidebar/main offscreen. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .state {
   text-align: center;
   padding: 32px;
@@ -81,13 +90,20 @@ footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
   background: var(--surface);
   color: var(--text-muted);
   font-size: 13px;
+  flex-wrap: wrap;
 }
 .muted { color: var(--text-muted); }
-.pager { display: flex; align-items: center; gap: 12px; }
+.pager { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .page-num { color: var(--text-muted); }
+
+@media (max-width: 640px) {
+  footer { justify-content: center; text-align: center; }
+  .pager button { min-height: 44px; }
+}
 </style>

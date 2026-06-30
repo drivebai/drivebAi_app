@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import CoreLocation
+import UniformTypeIdentifiers
 
 // Minimum weekly rent price: 1 in debug builds (testing), 50 in release (production).
 #if DEBUG
@@ -17,6 +18,7 @@ enum CreateListingStep: Int, CaseIterable {
     case pricing
     case requirements
     case photos
+    case documents
     case review
 
     var title: String {
@@ -26,9 +28,24 @@ enum CreateListingStep: Int, CaseIterable {
         case .pricing: return "Pricing"
         case .requirements: return "Requirements"
         case .photos: return "Photos"
+        case .documents: return "Vehicle Documents"
         case .review: return "Review"
         }
     }
+}
+
+// MARK: - Pending Car Document Slot
+//
+// In-flight container for a document the user picks during the wizard.
+// We hold the bytes locally and upload them only after the car is created
+// (POST /cars/{carId}/documents) — same lifecycle as photo slots.
+struct PendingCarDocument: Identifiable, Equatable {
+    let id = UUID()
+    let type: CarDocumentType
+    var filename: String
+    var fileSize: Int
+    var data: Data
+    var mimeType: String
 }
 
 @MainActor
@@ -92,11 +109,29 @@ class CreateListingState: ObservableObject {
     // Photos
     @Published var photoSlots: [CarPhotoSlot] = Car.createEmptyPhotoSlots()
 
+    // Documents (optional; uploaded after createCar succeeds)
+    // Keyed by CarDocumentType so the user can only stage one per slot —
+    // a Replace overwrites the entry, a Remove deletes it.
+    @Published var pendingDocuments: [CarDocumentType: PendingCarDocument] = [:]
+
+    // Non-blocking warning shown after the listing is created if any of
+    // the document uploads failed. Photo of the car was created OK; we
+    // just couldn't attach the docs.
+    @Published var docUploadWarning: String?
+
     // Navigation
     @Published var currentStep: CreateListingStep = .basicInfo
     @Published var isNavigatingForward: Bool = true
     @Published var isLoading: Bool = false
     @Published var error: String?
+
+    /// True when the latest store error is the "VIN already in use" duplicate
+    /// conflict. Used by the BasicInfo step to render the message inline
+    /// under the VIN field and by Review to color it appropriately.
+    var isVINConflictError: Bool {
+        guard let error = error else { return false }
+        return error.localizedCaseInsensitiveContains("vin already in use")
+    }
 
     // Computed
     var currentStepIndex: Int {
@@ -166,7 +201,7 @@ class CreateListingState: ObservableObject {
 
     /// SAE J853 VIN shape check: exactly 17 alphanumeric chars, excluding
     /// I/O/Q (they're forbidden to avoid 1/0 confusion). Same predicate the
-    /// backend enforces — we re-check it here so the "Decode" button only
+    /// backend enforces — we re-check it here so the "Search" button only
     /// lights up when the value can plausibly succeed upstream.
     var isVINShapeValid: Bool {
         let v = normalizedVIN
@@ -312,6 +347,9 @@ struct CreateListingFlowView: View {
                     case .photos:
                         CreateListingPhotosStep()
                             .transition(stepTransition)
+                    case .documents:
+                        CreateListingDocumentsStep()
+                            .transition(stepTransition)
                     case .review:
                         CreateListingReviewStep(onSubmit: submitListing)
                             .transition(stepTransition)
@@ -329,6 +367,24 @@ struct CreateListingFlowView: View {
         }
         .environmentObject(state)
         .interactiveDismissDisabled(state.isLoading)
+        .alert(
+            "Listing created",
+            isPresented: Binding(
+                get: { state.docUploadWarning != nil },
+                set: { newValue in
+                    if !newValue {
+                        state.docUploadWarning = nil
+                        dismiss()
+                    }
+                }
+            ),
+            actions: {
+                Button("OK", role: .cancel) {}
+            },
+            message: {
+                Text(state.docUploadWarning ?? "")
+            }
+        )
     }
 
     private func submitListing() {
@@ -392,6 +448,36 @@ struct CreateListingFlowView: View {
             }
         }
 
+        // Upload any documents the user staged in the Documents step. Each
+        // failure is non-fatal — the car is already created; we collect
+        // them and surface a single warning toast at the end so the user
+        // can retry uploads from the car detail screen.
+        let docsToUpload = Array(state.pendingDocuments.values)
+        if !docsToUpload.isEmpty {
+            print("[CreateListingFlow] Found \(docsToUpload.count) documents to upload")
+            var failedDocs: [CarDocumentType] = []
+            for doc in docsToUpload {
+                print("[CreateListingFlow] Uploading document: \(doc.type.rawValue), size: \(doc.data.count) bytes")
+                let response = await store.uploadDocument(
+                    carId: createdCar.id,
+                    documentType: doc.type,
+                    data: doc.data,
+                    filename: doc.filename,
+                    mimeType: doc.mimeType
+                )
+                if response != nil {
+                    print("[CreateListingFlow] Successfully uploaded document: \(doc.type.rawValue)")
+                } else {
+                    print("[CreateListingFlow] FAILED to upload document: \(doc.type.rawValue): \(store.error ?? "nil")")
+                    failedDocs.append(doc.type)
+                }
+            }
+            if !failedDocs.isEmpty {
+                let names = failedDocs.map { $0.displayText }.joined(separator: ", ")
+                state.docUploadWarning = "Couldn't attach: \(names). You can add them later from your car detail."
+            }
+        }
+
         // Refresh the car from backend to get the updated status and photo URLs
         // This ensures the UI shows the correct state immediately (including "available" status
         // which is set automatically when cover photo is uploaded)
@@ -418,7 +504,14 @@ struct CreateListingFlowView: View {
 
         print("[CreateListingFlow] Listing submission complete!")
         state.isLoading = false
-        dismiss()
+
+        // If any docs failed to upload, hold the flow open with a warning
+        // so the user knows the car was created but the docs didn't stick.
+        // Tapping "OK" dismisses; the warning is non-blocking — the listing
+        // is already on the server.
+        if state.docUploadWarning == nil {
+            dismiss()
+        }
     }
 }
 
@@ -542,10 +635,24 @@ struct CreateListingBasicInfoStep: View {
             onContinue: { state.goToNextStep() }
         ) {
             VStack(spacing: 20) {
-                // VIN + Decode — optional shortcut. If decode succeeds we
+                // VIN + Search — optional shortcut. If lookup succeeds we
                 // autofill Make / Model / Year (and later steps pre-fill
                 // Body / Fuel). User can still edit any of them afterwards.
                 VINAutofillSection()
+
+                // VIN-conflict surface: if addCar() bubbled a 409 about a
+                // duplicate VIN, show it right under the VIN row so the
+                // user fixes the field without scrolling to Review.
+                if let error = state.error, state.isVINConflictError {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 // Make
                 VStack(alignment: .leading, spacing: 8) {
@@ -588,8 +695,8 @@ struct CreateListingBasicInfoStep: View {
 
 // MARK: - VIN Autofill Section
 
-/// Optional VIN field + Decode button. Lives at the top of Step 1 because
-/// hitting Decode populates Make / Model / Year / Body / Fuel in one go,
+/// Optional VIN field + Search button. Lives at the top of Step 1 because
+/// hitting Search populates Make / Model / Year / Body / Fuel in one go,
 /// turning the rest of the wizard into review-and-tweak instead of typing
 /// everything from scratch.
 private struct VINAutofillSection: View {
@@ -626,6 +733,12 @@ private struct VINAutofillSection: View {
                         state.vinDecodeSucceeded = false
                         state.vinDecodeError = nil
                         state.vinDecodeWarning = nil
+                        // Clear a stale "VIN already in use" conflict so the
+                        // inline banner disappears as soon as the user starts
+                        // typing a different value.
+                        if state.isVINConflictError {
+                            state.clearError()
+                        }
                     }
 
                 Button {
@@ -637,7 +750,7 @@ private struct VINAutofillSection: View {
                                 .progressViewStyle(.circular)
                                 .tint(.white)
                         } else {
-                            Text("Decode")
+                            Text("Search")
                                 .font(.subheadline.weight(.semibold))
                         }
                     }
@@ -648,6 +761,7 @@ private struct VINAutofillSection: View {
                     .foregroundColor(.white)
                     .cornerRadius(8)
                 }
+                .accessibilityLabel("Search VIN")
                 .disabled(!state.isVINShapeValid || state.isDecodingVIN)
             }
 
@@ -1285,7 +1399,193 @@ struct IndependentPhotoSlotPicker: View {
     }
 }
 
-// MARK: - Step 6: Review
+// MARK: - Step 6: Vehicle Documents
+
+/// Optional documents step. Users can stage up to one of each
+/// CarDocumentType (registration, insurance, inspection, permit). All
+/// uploads are deferred until after the car is created in the final
+/// submit step; failures there are non-fatal.
+struct CreateListingDocumentsStep: View {
+    @EnvironmentObject private var state: CreateListingState
+
+    var body: some View {
+        CreateListingStepContainer(
+            title: "Vehicle Documents",
+            subtitle: "Optional — speeds up admin review.",
+            currentStep: state.currentStepIndex,
+            totalSteps: state.totalSteps,
+            canContinue: true, // Documents are always optional
+            continueTitle: state.pendingDocuments.isEmpty ? "Skip for now" : "Continue",
+            onBack: { state.goToPreviousStep() },
+            onContinue: { state.goToNextStep() }
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(CarDocumentType.allCases) { type in
+                    PendingDocumentSlotCard(type: type)
+                }
+
+                Text("Documents help admin review faster — you can also add them later from your car detail.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 4)
+            }
+        }
+    }
+}
+
+/// One row per document type. Shows an Upload control when nothing is
+/// staged, switches to a filename + Replace/Remove menu after the user
+/// picks a file (photo or PDF).
+private struct PendingDocumentSlotCard: View {
+    let type: CarDocumentType
+    @EnvironmentObject private var state: CreateListingState
+
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var showingSourceChooser = false
+    @State private var showingPhotoPicker = false
+    @State private var showingFilePicker = false
+
+    private var pending: PendingCarDocument? {
+        state.pendingDocuments[type]
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: type.iconName)
+                .font(.title3)
+                .foregroundColor(Color.driveBaiPrimary)
+                .frame(width: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(type.displayText)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundColor(.primary)
+
+                if let pending = pending {
+                    Text("\(pending.filename) · \(byteCountFormatted(pending.fileSize))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text("Optional")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
+
+            if pending == nil {
+                Button {
+                    showingSourceChooser = true
+                } label: {
+                    Text("Upload")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(Color.driveBaiPrimary)
+                        .cornerRadius(8)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Menu {
+                    Button {
+                        showingSourceChooser = true
+                    } label: {
+                        Label("Replace", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    Button(role: .destructive) {
+                        state.pendingDocuments[type] = nil
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundColor(.secondary)
+                        .frame(width: 32, height: 32)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(.systemGray6))
+        .cornerRadius(10)
+        .confirmationDialog("Upload Document", isPresented: $showingSourceChooser, titleVisibility: .visible) {
+            Button("Photo Library") { showingPhotoPicker = true }
+            Button("Files") { showingFilePicker = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $pickerItem, matching: .images)
+        .onChange(of: pickerItem) { _, newItem in
+            guard let item = newItem else { return }
+            pickerItem = nil
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                let ext: String
+                let mimeType: String
+                if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
+                    ext = "png"
+                    mimeType = "image/png"
+                } else {
+                    ext = "jpg"
+                    mimeType = "image/jpeg"
+                }
+                let filename = "\(type.rawValue).\(ext)"
+                await MainActor.run {
+                    state.pendingDocuments[type] = PendingCarDocument(
+                        type: type,
+                        filename: filename,
+                        fileSize: data.count,
+                        data: data,
+                        mimeType: mimeType
+                    )
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.pdf, .jpeg, .png, .image],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                guard url.startAccessingSecurityScopedResource() else { return }
+                defer { url.stopAccessingSecurityScopedResource() }
+                guard let data = try? Data(contentsOf: url) else { return }
+                let filename = url.lastPathComponent
+                let mimeType = mimeTypeForExtension(url.pathExtension.lowercased())
+                state.pendingDocuments[type] = PendingCarDocument(
+                    type: type,
+                    filename: filename,
+                    fileSize: data.count,
+                    data: data,
+                    mimeType: mimeType
+                )
+            case .failure:
+                break
+            }
+        }
+    }
+
+    private func byteCountFormatted(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    private func mimeTypeForExtension(_ ext: String) -> String {
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "heic": return "image/heic"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+// MARK: - Step 7: Review
 
 struct CreateListingReviewStep: View {
     @EnvironmentObject private var state: CreateListingState

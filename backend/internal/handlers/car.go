@@ -203,6 +203,22 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 			car.VIN = sql.NullString{String: vin, Valid: true}
 		}
 	}
+	// Pre-flight VIN-uniqueness check. The partial unique index
+	// `cars_vin_unique_lower_idx` is the source of truth (and catches the race
+	// below) — this lookup just lets us return a clean 409 in the common case
+	// instead of an opaque 500. Empty / NULL VINs are exempt.
+	if car.VIN.Valid && car.VIN.String != "" {
+		exists, err := h.carRepo.ExistsByVIN(ctx, car.VIN.String)
+		if err != nil {
+			slog.Error("vin existence check failed", "error", err, "user_id", userID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if exists {
+			writeVINConflict(w)
+			return
+		}
+	}
 	if req.Address != nil {
 		car.Address = sql.NullString{String: *req.Address, Valid: true}
 	}
@@ -259,6 +275,14 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 
 	// Save to database
 	if err := h.carRepo.Create(ctx, car); err != nil {
+		// Race-condition fallback: two concurrent inserts can both pass the
+		// pre-flight ExistsByVIN check and only one will land. The partial
+		// unique index `cars_vin_unique_lower_idx` rejects the loser with
+		// Postgres SQLSTATE 23505; surface the same 409 we return above.
+		if isVINUniqueViolation(err) {
+			writeVINConflict(w)
+			return
+		}
 		slog.Error("failed to create car", "error", err, "error_type", fmt.Sprintf("%T", err), "user_id", userID, "car_id", car.ID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
@@ -413,8 +437,33 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-flight VIN uniqueness check, excluding this car so a no-op VIN
+	// round-trip on PATCH doesn't false-positive. Mirrors the CreateCar 409
+	// contract so the iOS client can render the same "VIN already in use"
+	// inline error.
+	if req.VIN != nil && car.VIN.Valid && car.VIN.String != "" {
+		exists, vinErr := h.carRepo.ExistsByVINExcludingID(ctx, car.VIN.String, car.ID)
+		if vinErr != nil {
+			slog.Error("ExistsByVINExcludingID failed", "error", vinErr, "car_id", car.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if exists {
+			writeVINConflict(w)
+			return
+		}
+	}
+
 	// Save to database
 	if err := h.carRepo.Update(ctx, car); err != nil {
+		// Race fallback: a concurrent insert could have claimed the same VIN
+		// between our pre-flight check and this UPDATE. The partial unique
+		// index will raise 23505 — surface it as the same 409 the create
+		// path uses.
+		if isVINUniqueViolation(err) {
+			writeVINConflict(w)
+			return
+		}
 		slog.Error("failed to update car", "error", err, "car_id", carID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
@@ -1202,4 +1251,34 @@ func (h *CarHandler) DeleteCarDocument(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("car document deleted", "car_id", carID, "doc_id", docID)
 	httputil.WriteSuccess(w, http.StatusOK, "Document deleted successfully", nil)
+}
+
+// writeVINConflict returns the exact 409 body the iOS client expects when a
+// VIN is already in use. The shape (`error` as a string, plus `message`)
+// intentionally differs from httputil.WriteError's nested APIError envelope —
+// that's why we build the response inline instead of going through
+// httputil.WriteError.
+func writeVINConflict(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error":   "vin_already_in_use",
+		"message": "VIN already in use",
+	})
+}
+
+// isVINUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505) raised by the VIN index. We string-match here
+// to stay consistent with how lease_request_repository handles 23505 — no
+// new dependency on pgconn — and we require the index name so we don't
+// mis-attribute violations from other unique constraints on the cars table.
+func isVINUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "23505") && !strings.Contains(msg, "duplicate key") {
+		return false
+	}
+	return strings.Contains(msg, "cars_vin_unique_lower_idx")
 }

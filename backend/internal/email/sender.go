@@ -3,6 +3,7 @@ package email
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/sendgrid/sendgrid-go"
 	"github.com/sendgrid/sendgrid-go/helpers/mail"
@@ -28,43 +29,73 @@ type ConsoleSender struct {
 	logger         *slog.Logger
 }
 
-// NewSender creates the appropriate email sender based on configuration.
-// When apiKey is empty, it falls back to console sender (for development).
-// deeplinkScheme should be the app's URL scheme (e.g., "drivebai").
-// baseURL is the API base URL used for web fallback links.
-func NewSender(apiKey, fromEmail, fromName, deeplinkScheme, baseURL string, logger *slog.Logger) Sender {
-	if apiKey == "" {
-		logger.Warn("SENDGRID_API_KEY not set, using console sender (emails will be logged to console)")
-		return &ConsoleSender{
-			deeplinkScheme: deeplinkScheme,
-			baseURL:        baseURL,
+// SenderConfig bundles every credential a transactional Sender might need.
+// Pass it to NewSender so callers don't grow a six-positional-string list.
+type SenderConfig struct {
+	SendGridAPIKey    string
+	SendGridFromEmail string
+	SendGridFromName  string
+
+	MailerSendAPIKey    string
+	MailerSendFromEmail string
+	MailerSendFromName  string
+
+	DeeplinkScheme string
+	BaseURL        string
+}
+
+// NewSender picks a transactional email backend:
+//  1. SendGrid — when SENDGRID_API_KEY + SENDGRID_FROM_EMAIL are set.
+//  2. MailerSend — when MAILERSEND_API_KEY + MAIL_FROM_EMAIL are set
+//     (production default — same vendor as OTP login).
+//  3. ConsoleSender — dev fallback that prints to stdout.
+//
+// Falling back to console on the production host silently dropped every
+// password-reset email — keep SendGrid OR MailerSend reachable in prod.
+func NewSender(cfg SenderConfig, logger *slog.Logger) Sender {
+	if cfg.SendGridAPIKey != "" && cfg.SendGridFromEmail != "" {
+		logger.Info("Using SendGrid for transactional email delivery",
+			"from_email", cfg.SendGridFromEmail,
+			"from_name", cfg.SendGridFromName,
+			"deeplink_scheme", cfg.DeeplinkScheme,
+			"base_url", cfg.BaseURL,
+		)
+		return &SendGridSender{
+			client:         sendgrid.NewSendClient(cfg.SendGridAPIKey),
+			fromEmail:      cfg.SendGridFromEmail,
+			fromName:       cfg.SendGridFromName,
+			deeplinkScheme: cfg.DeeplinkScheme,
+			baseURL:        cfg.BaseURL,
 			logger:         logger,
 		}
 	}
 
-	// Validate configuration when SendGrid is enabled
-	if fromEmail == "" {
-		logger.Error("SENDGRID_FROM_EMAIL is required when SENDGRID_API_KEY is set")
-		logger.Warn("Falling back to console sender due to missing configuration")
-		return &ConsoleSender{
-			deeplinkScheme: deeplinkScheme,
-			baseURL:        baseURL,
+	if cfg.SendGridAPIKey != "" && cfg.SendGridFromEmail == "" {
+		logger.Error("SENDGRID_API_KEY set but SENDGRID_FROM_EMAIL is empty — skipping SendGrid, trying MailerSend next")
+	}
+
+	if cfg.MailerSendAPIKey != "" && cfg.MailerSendFromEmail != "" {
+		logger.Info("Using MailerSend for transactional email delivery",
+			"from_email", cfg.MailerSendFromEmail,
+			"from_name", cfg.MailerSendFromName,
+			"deeplink_scheme", cfg.DeeplinkScheme,
+			"base_url", cfg.BaseURL,
+		)
+		return &MailerSendSender{
+			apiKey:         cfg.MailerSendAPIKey,
+			fromEmail:      cfg.MailerSendFromEmail,
+			fromName:       cfg.MailerSendFromName,
+			deeplinkScheme: cfg.DeeplinkScheme,
+			baseURL:        cfg.BaseURL,
+			client:         &http.Client{},
 			logger:         logger,
 		}
 	}
 
-	logger.Info("Using SendGrid for email delivery",
-		"from_email", fromEmail,
-		"from_name", fromName,
-		"deeplink_scheme", deeplinkScheme,
-		"base_url", baseURL,
-	)
-	return &SendGridSender{
-		client:         sendgrid.NewSendClient(apiKey),
-		fromEmail:      fromEmail,
-		fromName:       fromName,
-		deeplinkScheme: deeplinkScheme,
-		baseURL:        baseURL,
+	logger.Warn("No email provider configured (SENDGRID_API_KEY and MAILERSEND_API_KEY both empty) — falling back to console sender; emails will be logged, not delivered")
+	return &ConsoleSender{
+		deeplinkScheme: cfg.DeeplinkScheme,
+		baseURL:        cfg.BaseURL,
 		logger:         logger,
 	}
 }

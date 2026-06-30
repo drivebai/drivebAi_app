@@ -16,7 +16,13 @@ defineProps<{ title: string }>()
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 24px;
+  flex-wrap: wrap;
 }
 h1 { margin: 0; font-size: 28px; font-weight: 600; }
-.actions { display: flex; gap: 8px; align-items: center; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .page-header { margin-bottom: 16px; gap: 8px; }
+  h1 { font-size: 22px; }
+}
 </style>
