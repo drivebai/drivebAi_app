@@ -298,15 +298,19 @@ struct OwnerTodayView: View {
                     ForEach(viewModel.tasks) { task in
                         // Owner side, lease_request action: collapse the
                         // inline Accept/Decline pair into a single
-                        // "Go to requests" CTA. The Chat → Requests tab
-                        // is the single source of truth for accept/decline;
+                        // "Review request" CTA that redirects to Chat →
+                        // Requests tab. The Chat → Requests tab is the
+                        // single source of truth for accept/decline;
                         // having both surfaces invited race conditions
-                        // (e.g. accept here while the owner decided in chat)
-                        // and made the action card busier than it needed
-                        // to be. Other action types (generic chat requests,
-                        // etc.) keep their original two-option layout.
+                        // (e.g. accept here while the owner decided in
+                        // chat) and made the action card busier than it
+                        // needed to be. Same pattern as the key-handover
+                        // Today card — Today only routes, the actual
+                        // decision lives one tap away. Other action types
+                        // (generic chat requests, etc.) keep their
+                        // original two-option layout.
                         let displayTask = task.requestType == "lease_request"
-                            ? task.withSingleOption("Go to requests")
+                            ? task.withSingleOption("Review request")
                             : task
                         TaskCard(
                             task: displayTask,
