@@ -153,6 +153,9 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			lr.id, lr.chat_id, lr.listing_id, lr.owner_id, lr.driver_id, lr.status,
 			lr.weekly_price, lr.offered_weekly_price, lr.currency, lr.weeks, lr.message, lr.expires_at, lr.created_at, lr.updated_at,
 			lr.price_change_pending, lr.previous_offered_weekly_price, lr.price_change_acted_at,
+			lr.pickup_deadline_at, lr.pickup_confirmed_at,
+			lr.refund_id, lr.refunded_at, lr.refund_status,
+			lr.pickup_extension_total_minutes, lr.pickup_extension_count, lr.pickup_last_extended_at,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.driver_id) AS driver_name,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
 			(SELECT title FROM cars WHERE id = lr.listing_id) AS car_title,
@@ -174,6 +177,17 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 		var expiresAt, createdAt, updatedAt time.Time
 		var message *string
 		var priceChangeActedAt *time.Time
+		// Pickup / refund / extension fields (added by migrations 24/25/28).
+		// All nullable on the DB side — only populated once the lease moves
+		// into the paid + pickup window. Without these in the response the
+		// chat-card "I returned the car" CTA never appears even when the
+		// lease is fully eligible, because iOS gates on pickup_confirmed_at.
+		var pickupDeadlineAt, pickupConfirmedAt *time.Time
+		var refundID *string
+		var refundedAt *time.Time
+		var refundStatus *string
+		var pickupExtTotal, pickupExtCount int
+		var pickupLastExtendedAt *time.Time
 		// Payment fields (nullable from LEFT JOIN)
 		var paymentID *uuid.UUID
 		var paymentIntentID *string
@@ -186,6 +200,9 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			&resp.ID, &resp.ChatID, &resp.ListingID, &resp.OwnerID, &resp.DriverID, &resp.Status,
 			&resp.WeeklyPrice, &resp.OfferedWeeklyPrice, &resp.Currency, &resp.Weeks, &message, &expiresAt, &createdAt, &updatedAt,
 			&resp.PriceChangePending, &resp.PreviousOfferedWeeklyPrice, &priceChangeActedAt,
+			&pickupDeadlineAt, &pickupConfirmedAt,
+			&refundID, &refundedAt, &refundStatus,
+			&pickupExtTotal, &pickupExtCount, &pickupLastExtendedAt,
 			&resp.DriverName, &resp.OwnerName, &resp.CarTitle,
 			&paymentID, &paymentIntentID, &paymentAmount,
 			&platformFee, &paymentCurrency, &paymentStatus,
@@ -197,6 +214,31 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 		if priceChangeActedAt != nil {
 			t := models.RFC3339Time(*priceChangeActedAt)
 			resp.PriceChangeActedAt = &t
+		}
+		if pickupDeadlineAt != nil {
+			t := models.RFC3339Time(*pickupDeadlineAt)
+			resp.PickupDeadlineAt = &t
+		}
+		if pickupConfirmedAt != nil {
+			t := models.RFC3339Time(*pickupConfirmedAt)
+			resp.PickupConfirmedAt = &t
+		}
+		resp.RefundID = refundID
+		if refundedAt != nil {
+			t := models.RFC3339Time(*refundedAt)
+			resp.RefundedAt = &t
+		}
+		resp.RefundStatus = refundStatus
+		resp.PickupExtensionTotalMinutes = pickupExtTotal
+		resp.PickupExtensionCount = pickupExtCount
+		remaining := models.PickupMaxExtensionMinutes - pickupExtTotal
+		if remaining < 0 {
+			remaining = 0
+		}
+		resp.PickupExtensionRemainingMin = remaining
+		if pickupLastExtendedAt != nil {
+			t := models.RFC3339Time(*pickupLastExtendedAt)
+			resp.PickupLastExtendedAt = &t
 		}
 		effectivePrice := resp.WeeklyPrice
 		if resp.OfferedWeeklyPrice != nil {
