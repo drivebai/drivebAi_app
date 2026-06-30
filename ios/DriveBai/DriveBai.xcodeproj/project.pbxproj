@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -15,8 +15,14 @@
 		7485489E8184FFB21A7BECB7 /* ImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F23642CA82731C1438425E6D /* ImagePipeline.swift */; };
 		78B045CEB9F2C8D9A9F3605E /* KeyHandoverCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */; };
 		84294759824B8DC261EF2FAE /* KeyHandoverDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */; };
+		871B607C2FEE764A0056B004 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 871B607B2FEE764A0056B004 /* WidgetKit.framework */; };
+		871B607E2FEE764A0056B004 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 871B607D2FEE764A0056B004 /* SwiftUI.framework */; };
+		871B608D2FEE764B0056B004 /* DriveBaiWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 871B607A2FEE764A0056B004 /* DriveBaiWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		871B609F2FEE77D90056B004 /* PickupActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */; };
 		8787D9FF2F5590E9001618B0 /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = 8787D9FE2F5590E9001618B0 /* StripePaymentSheet */; };
 		880A42098D3B87B5D861CA75 /* ImageAttachmentViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */; };
+		A7C849DD12C04F1E78A85B01 /* PickupActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */; };
+		B8D95AEE23D15F2F89B96C01 /* PickupLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D95AEE23D15F2F89B96C02 /* PickupLiveActivityManager.swift */; };
 		E0000001000000000000001A /* DriveBaiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000A /* DriveBaiApp.swift */; };
 		E0000001000000000000001B /* User.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000B /* User.swift */; };
 		E0000001000000000000001C /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000C /* KeychainService.swift */; };
@@ -113,11 +119,40 @@
 		F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		871B608B2FEE764B0056B004 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E00000010000000000000034 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 871B60792FEE764A0056B004;
+			remoteInfo = DriveBaiWidgetsExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		871B608E2FEE764B0056B004 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				871B608D2FEE764B0056B004 /* DriveBaiWidgetsExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PDFKitRepresentedView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/PDFKitRepresentedView.swift; sourceTree = SOURCE_ROOT; };
+		871B607A2FEE764A0056B004 /* DriveBaiWidgetsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DriveBaiWidgetsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		871B607B2FEE764A0056B004 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		871B607D2FEE764A0056B004 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PhotoLibrarySaver.swift; path = DriveBai/Sources/Services/PhotoLibrarySaver.swift; sourceTree = SOURCE_ROOT; };
 		A636497A8CDE4FC742D3A54D /* KeyHandoverDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailViewModel.swift; path = DriveBai/Sources/ViewModels/KeyHandover/KeyHandoverDetailViewModel.swift; sourceTree = SOURCE_ROOT; };
+		A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PickupActivityAttributes.swift; path = DriveBai/Sources/LiveActivity/PickupActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
 		AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverAPIModels.swift; path = DriveBai/Sources/API/KeyHandoverAPIModels.swift; sourceTree = SOURCE_ROOT; };
+		B8D95AEE23D15F2F89B96C02 /* PickupLiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PickupLiveActivityManager.swift; path = DriveBai/Sources/LiveActivity/PickupLiveActivityManager.swift; sourceTree = SOURCE_ROOT; };
 		CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AttachmentDownloadService.swift; path = DriveBai/Sources/Services/AttachmentDownloadService.swift; sourceTree = SOURCE_ROOT; };
 		CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverCard.swift; path = DriveBai/Sources/Views/Today/Components/KeyHandoverCard.swift; sourceTree = SOURCE_ROOT; };
 		D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImageAttachmentViewerView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/ImageAttachmentViewerView.swift; sourceTree = SOURCE_ROOT; };
@@ -221,7 +256,30 @@
 		F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailView.swift; path = DriveBai/Sources/Views/KeyHandover/KeyHandoverDetailView.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		871B60912FEE764B0056B004 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 871B60792FEE764A0056B004 /* DriveBaiWidgetsExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		871B607F2FEE764A0056B004 /* DriveBaiWidgets */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (871B60912FEE764B0056B004 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = DriveBaiWidgets; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
 /* Begin PBXFrameworksBuildPhase section */
+		871B60772FEE764A0056B004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				871B607E2FEE764A0056B004 /* SwiftUI.framework in Frameworks */,
+				871B607C2FEE764A0056B004 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E00000010000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -236,6 +294,8 @@
 		8787D9FB2F5590C6001618B0 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				871B607B2FEE764A0056B004 /* WidgetKit.framework */,
+				871B607D2FEE764A0056B004 /* SwiftUI.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -244,6 +304,7 @@
 			isa = PBXGroup;
 			children = (
 				E00000010000000000000004 /* DriveBai */,
+				871B607F2FEE764A0056B004 /* DriveBaiWidgets */,
 				8787D9FB2F5590C6001618B0 /* Frameworks */,
 				E00000010000000000000005 /* Products */,
 				F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */,
@@ -258,6 +319,8 @@
 				87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */,
 				D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */,
 				F23642CA82731C1438425E6D /* ImagePipeline.swift */,
+				A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */,
+				B8D95AEE23D15F2F89B96C02 /* PickupLiveActivityManager.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -275,6 +338,7 @@
 			isa = PBXGroup;
 			children = (
 				E00000010000000000000001 /* DriveBai.app */,
+				871B607A2FEE764A0056B004 /* DriveBaiWidgetsExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -587,6 +651,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		871B60792FEE764A0056B004 /* DriveBaiWidgetsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 871B60922FEE764B0056B004 /* Build configuration list for PBXNativeTarget "DriveBaiWidgetsExtension" */;
+			buildPhases = (
+				871B60762FEE764A0056B004 /* Sources */,
+				871B60772FEE764A0056B004 /* Frameworks */,
+				871B60782FEE764A0056B004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				871B607F2FEE764A0056B004 /* DriveBaiWidgets */,
+			);
+			name = DriveBaiWidgetsExtension;
+			packageProductDependencies = (
+			);
+			productName = DriveBaiWidgetsExtension;
+			productReference = 871B607A2FEE764A0056B004 /* DriveBaiWidgetsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		E00000010000000000000030 /* DriveBai */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = E00000010000000000000033 /* Build configuration list for PBXNativeTarget "DriveBai" */;
@@ -594,10 +680,12 @@
 				E00000010000000000000031 /* Sources */,
 				E00000010000000000000002 /* Frameworks */,
 				E00000010000000000000032 /* Resources */,
+				871B608E2FEE764B0056B004 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				871B608C2FEE764B0056B004 /* PBXTargetDependency */,
 			);
 			name = DriveBai;
 			productName = DriveBai;
@@ -611,9 +699,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1500;
+				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
+					871B60792FEE764A0056B004 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
 					E00000010000000000000030 = {
 						CreatedOnToolsVersion = 15.0;
 					};
@@ -636,11 +727,19 @@
 			projectRoot = "";
 			targets = (
 				E00000010000000000000030 /* DriveBai */,
+				871B60792FEE764A0056B004 /* DriveBaiWidgetsExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		871B60782FEE764A0056B004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E00000010000000000000032 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -652,6 +751,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		871B60762FEE764A0056B004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				871B609F2FEE77D90056B004 /* PickupActivityAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E00000010000000000000031 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -758,12 +865,84 @@
 				E7B54F0BB3AB2C0B9F1A7246 /* PhotoLibrarySaver.swift in Sources */,
 				880A42098D3B87B5D861CA75 /* ImageAttachmentViewerView.swift in Sources */,
 				7485489E8184FFB21A7BECB7 /* ImagePipeline.swift in Sources */,
+				A7C849DD12C04F1E78A85B01 /* PickupActivityAttributes.swift in Sources */,
+				B8D95AEE23D15F2F89B96C01 /* PickupLiveActivityManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		871B608C2FEE764B0056B004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 871B60792FEE764A0056B004 /* DriveBaiWidgetsExtension */;
+			targetProxy = 871B608B2FEE764B0056B004 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		871B608F2FEE764B0056B004 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 48YP84XNBV;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = DriveBaiWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.drivebai-ios.app.DriveBaiWidgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		871B60902FEE764B0056B004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 48YP84XNBV;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = DriveBaiWidgets;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.drivebai-ios.app.DriveBaiWidgets";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		E00000010000000000000036 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -902,7 +1081,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -935,7 +1114,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -952,6 +1131,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		871B60922FEE764B0056B004 /* Build configuration list for PBXNativeTarget "DriveBaiWidgetsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				871B608F2FEE764B0056B004 /* Debug */,
+				871B60902FEE764B0056B004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		E00000010000000000000033 /* Build configuration list for PBXNativeTarget "DriveBai" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

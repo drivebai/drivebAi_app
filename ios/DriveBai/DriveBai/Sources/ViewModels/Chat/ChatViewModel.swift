@@ -475,6 +475,17 @@ final class ChatViewModel: ObservableObject {
             if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
                 leaseRequests[idx] = updated
             }
+            // End the Lock Screen / Dynamic Island Live Activity immediately
+            // — the user just confirmed in-app, so the outside-the-app
+            // countdown is now misleading. The Today reconciler would
+            // also catch this on the next websocket-driven refetch, but
+            // explicit end here gives the snappiest UX.
+            if #available(iOS 16.1, *) {
+                PickupLiveActivityManager.shared.end(
+                    leaseRequestId: id,
+                    reason: .pickupConfirmed
+                )
+            }
         } catch {
             self.error = describeError(error)
         }
