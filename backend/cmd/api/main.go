@@ -147,8 +147,15 @@ func main() {
 		logger.Warn("STRIPE_WEBHOOK_SECRET is empty — webhooks will fail signature verification")
 	}
 
-	// Initialize push notification service (nil if APNs not configured)
+	// Initialize push notification service (nil if APNs not configured).
+	// We don't fail startup on missing APNs — push degrades to in-app +
+	// WebSocket only — but log a loud WARN so the silent-disable mode
+	// that originally shipped to TestFlight without anyone noticing is
+	// visible at every cold start until the secrets are wired.
 	pushSvc := push.NewService(cfg.AppleTeamID, cfg.APNSKeyID, cfg.APNSAuthKeyP8, cfg.IOSBundleID, cfg.APNSSandbox, logger)
+	if !cfg.HasPushConfigured() {
+		logger.Warn("APNs not configured — push notifications will NOT be delivered (set APPLE_TEAM_ID, APNS_KEY_ID, APNS_AUTH_KEY_P8, IOS_BUNDLE_ID via fly secrets)")
+	}
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)

@@ -260,25 +260,23 @@ func (c *Config) ValidateForProduction() error {
 		}
 	}
 
-	// APNs push: in production we fail loud when any of the four required
-	// pieces are missing. Previous behavior was a silent disable inside
-	// push.NewService, which let the app ship to TestFlight with zero push
-	// delivery — exactly the failure mode this validation exists to catch.
-	if c.AppleTeamID == "" {
-		problems = append(problems, "APPLE_TEAM_ID is required for push notifications")
-	}
-	if c.APNSKeyID == "" {
-		problems = append(problems, "APNS_KEY_ID is required for push notifications")
-	}
-	if c.APNSAuthKeyP8 == "" {
-		problems = append(problems, "APNS_AUTH_KEY_P8 is required for push notifications (base64-encoded .p8 contents)")
-	}
-	if c.IOSBundleID == "" {
-		problems = append(problems, "IOS_BUNDLE_ID is required for push notifications (e.g. com.drivebai.DriveBai)")
-	}
+	// APNs push: intentionally NOT included in the fail-loud set. Push is a
+	// non-blocking degraded mode — the server still serves in-app + WS
+	// notifications without it, and forcing the .p8 to be set before the
+	// app can boot creates a chicken-and-egg with first-deploy. Missing
+	// APNs is reported as a startup INFO line in push.NewService and a
+	// WARN in main.go; see HasPushConfigured() below.
 
 	if len(problems) == 0 {
 		return nil
 	}
 	return errors.New(strings.Join(problems, "; "))
+}
+
+// HasPushConfigured reports whether all four APNs pieces are present.
+// Used by main.go to log a single WARN at startup when push is silently
+// disabled — the failure mode that originally let us ship to TestFlight
+// with zero push delivery and not notice for weeks.
+func (c *Config) HasPushConfigured() bool {
+	return c.AppleTeamID != "" && c.APNSKeyID != "" && c.APNSAuthKeyP8 != "" && c.IOSBundleID != ""
 }
