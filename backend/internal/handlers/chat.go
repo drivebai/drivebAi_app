@@ -31,7 +31,12 @@ type ChatHandler struct {
 	// urlSigner signs private file URLs (chat attachments + license URLs
 	// in profile responses) so a leaked path is unusable past the TTL.
 	urlSigner *PrivateURLSigner
-	logger    *slog.Logger
+	// notifHandler is optional — when non-nil, SendMessage / UploadAttachment
+	// fire a `chat_message` push to the recipient (suppressed inside Notify
+	// when the recipient is already foregrounded over WS). Nil in tests
+	// that don't care about push wiring.
+	notifHandler *NotificationHandler
+	logger       *slog.Logger
 }
 
 func NewChatHandler(chatRepo *repository.ChatRepository, uploadDir string, wsHub *ws.Hub, jwtSvc *auth.JWTService, urlSigner *PrivateURLSigner, logger *slog.Logger) *ChatHandler {
@@ -43,6 +48,17 @@ func NewChatHandler(chatRepo *repository.ChatRepository, uploadDir string, wsHub
 		urlSigner: urlSigner,
 		logger:    logger,
 	}
+}
+
+// SetNotificationHandler wires the central NotificationHandler so chat
+// messages can produce push notifications. Done as a setter (rather than
+// a constructor arg) so the existing tests that build ChatHandler with
+// the old signature keep working — the existing constructor stays
+// backward-compatible, and main.go calls SetNotificationHandler after
+// both handlers are built (resolving the chicken-and-egg of which one
+// to construct first).
+func (h *ChatHandler) SetNotificationHandler(n *NotificationHandler) {
+	h.notifHandler = n
 }
 
 // requireParticipant verifies the caller is a chat participant. Returns false and writes error if not.
@@ -276,6 +292,20 @@ func (h *ChatHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			Payload:       resp,
 			TargetUserIDs: targets,
 		})
+
+		// Push the recipient with a chat_message notification. Notify itself
+		// suppresses the push when the recipient is already foregrounded
+		// over WS (avoids the duplicate in-app banner + push). We always
+		// create the DB notification + WS event regardless — the bell
+		// counter stays accurate even when push is skipped.
+		if h.notifHandler != nil {
+			for _, target := range targets {
+				preview := formatChatPreview(msg.Body)
+				chatRef := msg.ChatID
+				go h.notifHandler.Notify(target, models.NotificationTypeChatMessage,
+					senderName, preview, &chatRef, nil)
+			}
+		}
 	}
 }
 
@@ -301,6 +331,17 @@ func (h *ChatHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("mark read", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
+	}
+
+	// Drain matching chat_message notification rows so the bell counter +
+	// APNs badge come down with the in-chat unread counter. Without this
+	// cascade the user reads the messages, chat unread flips to 0, but
+	// notifications.is_read stays false forever and the bell / springboard
+	// badge inflate every time. Best-effort: helper logs + swallows error
+	// so MarkRead's user-facing response doesn't fail on a notification
+	// DB hiccup.
+	if h.notifHandler != nil {
+		h.notifHandler.MarkChatMessagesRead(r.Context(), userID, chatID)
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]string{"message": "ok"})
@@ -943,6 +984,25 @@ func (h *ChatHandler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 			Payload:       resp,
 			TargetUserIDs: targets,
 		})
+
+		// Push the recipient(s) — same gating as text messages. Attachment
+		// previews say "Sent an attachment" since the file body itself is
+		// the user-visible content (image/file) and the preview text is
+		// rarely meaningful for non-text messages.
+		if h.notifHandler != nil {
+			preview := "Sent an attachment"
+			if strings.TrimSpace(msg.Body) != "" {
+				preview = formatChatPreview(msg.Body)
+			}
+			chatRef := msg.ChatID
+			for _, target := range targets {
+				if target == userID {
+					continue
+				}
+				go h.notifHandler.Notify(target, models.NotificationTypeChatMessage,
+					senderName, preview, &chatRef, nil)
+			}
+		}
 	}
 }
 

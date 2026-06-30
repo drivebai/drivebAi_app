@@ -13,6 +13,7 @@ require (
 	github.com/sendgrid/sendgrid-go v3.14.0+incompatible
 	github.com/stripe/stripe-go/v81 v81.4.0
 	golang.org/x/crypto v0.21.0
+	golang.org/x/sync v0.6.0
 )
 
 require (
@@ -21,6 +22,5 @@ require (
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/sendgrid/rest v2.6.9+incompatible // indirect
 	github.com/stretchr/testify v1.8.3 // indirect
-	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )

@@ -40,6 +40,22 @@ func (r *DeviceTokenRepository) Delete(ctx context.Context, userID uuid.UUID, to
 	return err
 }
 
+// DeleteByToken removes any device token row matching the given APNs token,
+// regardless of user. Called by the push service when APNs reports the token
+// as Unregistered (410) or BadDeviceToken (400) — those rows are dead and
+// must be pruned so we don't keep sending to a destination that will never
+// deliver. Uses a fresh background context (the call originates from the
+// push fan-out goroutine, which has no inherited request context).
+func (r *DeviceTokenRepository) DeleteByToken(token string) error {
+	if token == "" {
+		return nil
+	}
+	_, err := r.db.Pool.Exec(context.Background(), `
+		DELETE FROM device_tokens WHERE token = $1
+	`, token)
+	return err
+}
+
 // ListByUser returns all device tokens for a given user.
 func (r *DeviceTokenRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]models.DeviceToken, error) {
 	rows, err := r.db.Pool.Query(ctx, `

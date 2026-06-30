@@ -260,6 +260,23 @@ func (c *Config) ValidateForProduction() error {
 		}
 	}
 
+	// APNs push: in production we fail loud when any of the four required
+	// pieces are missing. Previous behavior was a silent disable inside
+	// push.NewService, which let the app ship to TestFlight with zero push
+	// delivery — exactly the failure mode this validation exists to catch.
+	if c.AppleTeamID == "" {
+		problems = append(problems, "APPLE_TEAM_ID is required for push notifications")
+	}
+	if c.APNSKeyID == "" {
+		problems = append(problems, "APNS_KEY_ID is required for push notifications")
+	}
+	if c.APNSAuthKeyP8 == "" {
+		problems = append(problems, "APNS_AUTH_KEY_P8 is required for push notifications (base64-encoded .p8 contents)")
+	}
+	if c.IOSBundleID == "" {
+		problems = append(problems, "IOS_BUNDLE_ID is required for push notifications (e.g. com.drivebai.DriveBai)")
+	}
+
 	if len(problems) == 0 {
 		return nil
 	}

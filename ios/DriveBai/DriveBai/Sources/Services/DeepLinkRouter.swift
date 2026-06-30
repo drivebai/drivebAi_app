@@ -114,4 +114,53 @@ final class DeepLinkRouter: ObservableObject {
     func clearError() {
         deepLinkError = nil
     }
+
+    // MARK: - Push notification routing
+
+    /// Routes a tap on a remote push notification to the same destination
+    /// the in-app bell would reach. The payload shape mirrors the keys the
+    /// backend emits in `handlers/notifications.go::buildPushRequest`:
+    ///
+    /// - `type=lease_request | payment | key_handover` + `lease_request_id`
+    ///   → Today tab, lease detail (driven via `pendingLeasePickupId`
+    ///   which both tab views already observe).
+    /// - `type=chat_message` + `chat_id` → Chat tab → push the chat.
+    /// - Anything else → no-op, the OS already foregrounded the app.
+    ///
+    /// Always safe to call on the main actor; missing keys never crash.
+    func route(notificationUserInfo userInfo: [AnyHashable: Any]) {
+        let type = (userInfo["type"] as? String) ?? ""
+
+        switch type {
+        case "lease_request", "payment", "key_handover":
+            if let raw = userInfo["lease_request_id"] as? String,
+               let leaseId = UUID(uuidString: raw) {
+                // Reuse the same channel the Live Activity pickup tap uses
+                // so both DriverTabView and OwnerTabView (which already
+                // observe `pendingLeasePickupId`) switch to the Today tab.
+                pendingLeasePickupId = nil
+                pendingLeasePickupId = leaseId
+            }
+            pendingChatTap = nil
+        case "chat_message":
+            if let raw = userInfo["chat_id"] as? String,
+               let chatId = UUID(uuidString: raw) {
+                pendingChatTap = nil
+                pendingChatTap = chatId
+            }
+        default:
+            // `system` and unknown types: foregrounding the app is enough.
+            break
+        }
+    }
+
+    /// Set by `route(notificationUserInfo:)` when a `chat_message` push is
+    /// tapped. Tab views observe this and switch to the Chats tab + push
+    /// the corresponding ChatView. Cleared after navigation via
+    /// `clearPendingChatTap()` (mirrors the leasePickup pattern).
+    @Published var pendingChatTap: UUID?
+
+    func clearPendingChatTap() {
+        pendingChatTap = nil
+    }
 }

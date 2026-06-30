@@ -13,7 +13,15 @@ const (
 	NotificationTypeLeaseRequest NotificationType = "lease_request"
 	NotificationTypePayment      NotificationType = "payment"
 	NotificationTypeKeyHandover  NotificationType = "key_handover"
-	NotificationTypeSystem       NotificationType = "system"
+	// NotificationTypeChatMessage is a per-message ping for the recipient.
+	// Sites that emit this must gate on the recipient NOT being subscribed
+	// to the chat over WS, so a foregrounded chat doesn't get an in-app
+	// banner AND a push for the same line.
+	NotificationTypeChatMessage NotificationType = "chat_message"
+	// NotificationTypeSystem is the catch-all for support replies, admin
+	// verification updates, and accident notifications — anything that
+	// doesn't fit the lease/payment/handover/chat buckets above.
+	NotificationTypeSystem NotificationType = "system"
 )
 
 // Notification is the DB-backed record stored per user.

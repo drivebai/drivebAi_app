@@ -28,11 +28,23 @@ type AdminHandler struct {
 	// UpdateProfileFields docstring for the mass-assignment rationale.
 	userRepo *repository.UserRepository
 	wsHub    *ws.Hub
-	logger   *slog.Logger
+	// notifHandler is optional. When wired (via SetNotificationHandler),
+	// admin-initiated state changes (support replies, profile edits) push
+	// the affected user so they don't have to re-open the app to find out.
+	// Nil in tests that don't need push.
+	notifHandler *NotificationHandler
+	logger       *slog.Logger
 }
 
 func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, logger *slog.Logger) *AdminHandler {
 	return &AdminHandler{adminRepo: adminRepo, userRepo: userRepo, wsHub: wsHub, logger: logger}
+}
+
+// SetNotificationHandler wires the central NotificationHandler so admin
+// actions can produce notifications + pushes. Setter rather than ctor arg
+// to avoid breaking existing tests that build AdminHandler directly.
+func (h *AdminHandler) SetNotificationHandler(n *NotificationHandler) {
+	h.notifHandler = n
 }
 
 func parsePage(r *http.Request) (page, limit int) {
@@ -108,6 +120,16 @@ func (h *AdminHandler) BlockUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "blocked": body.Blocked})
+
+	// Notify the user only on UNblock — blocked users have their JWT cut
+	// and can't act on a push anyway; alerting them they're blocked also
+	// invites support spam. Unblock is the case worth notifying.
+	if h.notifHandler != nil && !body.Blocked {
+		go h.notifHandler.Notify(id, models.NotificationTypeSystem,
+			"Account access restored",
+			"Your DriveBai account has been unblocked. You can now sign back in.",
+			nil, nil)
+	}
 }
 
 // updateUserProfileBody is the explicit allow-list for admin profile edits.
@@ -195,6 +217,16 @@ func (h *AdminHandler) UpdateUserProfile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, updated)
+
+	// Notify the user that their profile changed. This catches the case
+	// where admin edits the user's name/phone — the user otherwise has no
+	// signal until they next open the app.
+	if h.notifHandler != nil {
+		go h.notifHandler.Notify(id, models.NotificationTypeSystem,
+			"Profile updated",
+			"An admin updated your profile information. Open the app to review the changes.",
+			nil, nil)
+	}
 }
 
 // ===== CARS =====
@@ -432,6 +464,18 @@ func (h *AdminHandler) SendSupportMessage(w http.ResponseWriter, r *http.Request
 			Payload:       msg,
 			TargetUserIDs: []uuid.UUID{chatUserID},
 		})
+
+		// Push notification so backgrounded users see the support reply
+		// without having to refresh. System type keeps it grouped under
+		// "system" in Notification Center rather than mixed with chats.
+		if h.notifHandler != nil {
+			preview := body.Body
+			if len(preview) > 140 {
+				preview = preview[:140] + "…"
+			}
+			go h.notifHandler.Notify(chatUserID, models.NotificationTypeSystem,
+				"Support replied", preview, nil, nil)
+		}
 	}
 
 	h.logger.Info("admin support message sent", "chat_id", id, "admin_id", adminID, "msg_id", msg.ID)

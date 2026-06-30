@@ -201,6 +201,18 @@ func (h *VehicleReturnHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 
 	h.broadcast("vehicle_return_cancelled", updated)
 	h.postSystemMessage(r.Context(), updated, "driver_cancelled", resp)
+
+	// Notify the owner so a backgrounded "waiting to confirm return" sheet
+	// gets the rug pulled out cleanly. The driver pulled out before the
+	// owner acted — no Stripe state changed, so this is purely informational.
+	chatID := resp.ChatID
+	leaseRef := updated.LeaseRequestID
+	driverName := nameOr(resp.DriverName, "The driver")
+	carTitle := carTitleOr(resp.CarTitle)
+	go h.notifHandler.Notify(updated.OwnerID, models.NotificationTypeLeaseRequest,
+		"Return cancelled",
+		fmt.Sprintf("%s cancelled the return of %s. The rental is still active.", driverName, carTitle),
+		chatID, &leaseRef)
 }
 
 // ─── Owner endpoints ────────────────────────────────────────────────────────
@@ -524,6 +536,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		h.logger.Error("vehicle return: missing payment intent",
 			"error", err, "id", v.ID, "lease_request_id", v.LeaseRequestID)
 		_ = h.repo.MarkRefundFailed(ctx, v.ID, "payment intent unavailable")
+		h.notifyRefundDelay(ctx, v)
 		return nil
 	}
 
@@ -533,6 +546,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		h.logger.Error("vehicle return: stripe refund failed",
 			"error", err, "id", v.ID, "intent_id", *payment.PaymentIntentID, "amount_cents", v.RefundAmountCents)
 		_ = h.repo.MarkRefundFailed(ctx, v.ID, err.Error())
+		h.notifyRefundDelay(ctx, v)
 		return nil
 	}
 
@@ -545,6 +559,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		h.logger.Error("vehicle return: stripe refund unhealthy status",
 			"id", v.ID, "stripe_status", refund.Status)
 		_ = h.repo.MarkRefundFailed(ctx, v.ID, reason)
+		h.notifyRefundDelay(ctx, v)
 		return nil
 	}
 
@@ -570,6 +585,40 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		chatID, &leaseRef)
 
 	return completed
+}
+
+// notifyRefundDelay tells the driver their refund is being processed
+// manually. Called from every MarkRefundFailed site so the user isn't
+// left in the dark when Stripe rejects the call — the stuck-refund
+// scanner will retry, but the driver shouldn't have to refresh the app
+// to find out. Idempotent at the user level: a follow-up retry will not
+// produce duplicate banners because each call writes its own row but
+// iOS collapses them via apns-collapse-id=payment:{leaseID}.
+func (h *VehicleReturnHandler) notifyRefundDelay(ctx context.Context, v *models.VehicleReturn) {
+	if v == nil || h.notifHandler == nil {
+		return
+	}
+	carTitle := "your rental"
+	if h.carRepo != nil {
+		if car, err := h.carRepo.GetByID(ctx, v.CarID); err == nil {
+			carTitle = car.Title
+		}
+	}
+	// Best-effort lookup of the chat so iOS can deep-link to it on tap.
+	// We pull the lease row (cheap, indexed) and use its denormalized
+	// chat_id rather than re-querying chats.
+	var chatID *uuid.UUID
+	if h.leaseRepo != nil {
+		if lr, err := h.leaseRepo.GetByID(ctx, v.LeaseRequestID); err == nil && lr != nil {
+			c := lr.ChatID
+			chatID = &c
+		}
+	}
+	leaseRef := v.LeaseRequestID
+	go h.notifHandler.Notify(v.DriverID, models.NotificationTypePayment,
+		"Refund delayed",
+		fmt.Sprintf("Your refund for %s is being processed manually — we'll update you within 24h.", carTitle),
+		chatID, &leaseRef)
 }
 
 // ─── Stuck-refund scanner ───────────────────────────────────────────────────

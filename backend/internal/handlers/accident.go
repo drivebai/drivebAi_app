@@ -24,9 +24,11 @@ import (
 type AccidentHandler struct {
 	accidentRepo *repository.AccidentRepository
 	adminRepo    *repository.AdminRepository
+	chatRepo     *repository.ChatRepository
 	wsHub        *ws.Hub
 	uploadDir    string
 	urlSigner    *PrivateURLSigner
+	notifHandler *NotificationHandler
 	logger       *slog.Logger
 }
 
@@ -47,6 +49,12 @@ func NewAccidentHandler(
 		logger:       logger,
 	}
 }
+
+// SetNotificationHandler / SetChatRepository wire the optional dependencies
+// for cross-party push notifications on accident submit. Setters rather than
+// ctor args so the existing call sites don't need to change.
+func (h *AccidentHandler) SetNotificationHandler(n *NotificationHandler) { h.notifHandler = n }
+func (h *AccidentHandler) SetChatRepository(c *repository.ChatRepository) { h.chatRepo = c }
 
 // Create — POST /accidents
 // Idempotent: returns the existing draft (200) if one already exists for the same user/chat/car,
@@ -507,6 +515,25 @@ func (h *AccidentHandler) Submit(w http.ResponseWriter, r *http.Request) {
 			TargetUserIDs: adminIDs,
 			Payload:       map[string]any{"accident_id": accident.ID, "reporter_id": userID},
 		})
+	}
+
+	// Notify the other party (owner if reporter is driver, and vice-versa)
+	// when the accident is linked to a chat — without this, the counterparty
+	// can find out about the incident only by re-opening chat. The reporter
+	// themself is skipped because they're the actor.
+	if h.notifHandler != nil && h.chatRepo != nil && accident.RelatedChatID != nil {
+		if chat, cerr := h.chatRepo.GetChatByID(r.Context(), *accident.RelatedChatID); cerr == nil && chat != nil {
+			otherUserID := chat.OwnerID
+			if userID == chat.OwnerID {
+				otherUserID = chat.DriverID
+			}
+			if otherUserID != uuid.Nil && otherUserID != userID {
+				go h.notifHandler.Notify(otherUserID, models.NotificationTypeSystem,
+					"Accident reported",
+					"The other party reported an accident for your rental. Our support team will be in touch shortly.",
+					accident.RelatedChatID, nil)
+			}
+		}
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, accident)
