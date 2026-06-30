@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 /// Notifications screen opened from the bell icon.
 struct NotificationsView: View {
@@ -9,9 +10,21 @@ struct NotificationsView: View {
     var onMarkRead: ((UUID) -> Void)?
     var onMarkAllRead: (() -> Void)?
 
+    @ObservedObject private var pushCoordinator = PushNotificationCoordinator.shared
+
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
+                // When the user declined the OS push prompt (or revoked
+                // permission later in Settings), surface a yellow banner
+                // with a one-tap deep-link to the app's Settings screen.
+                // Without this affordance the only path back was for the
+                // user to remember the OS settings flow themselves —
+                // realistically nobody ever did.
+                if pushCoordinator.authorizationStatus == .denied {
+                    pushDisabledBanner
+                }
+
                 if notifications.isEmpty {
                     emptyState
                 } else {
@@ -32,6 +45,12 @@ struct NotificationsView: View {
         .background(Color(.systemGray6))
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.large)
+        .task {
+            // Re-poll the OS in case the user toggled permission from
+            // Settings between opens — published value updates, banner
+            // appears/disappears immediately.
+            await pushCoordinator.refreshAuthorizationStatus()
+        }
         .toolbar {
             if notifications.contains(where: { !$0.isRead }) {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -42,6 +61,38 @@ struct NotificationsView: View {
                 }
             }
         }
+    }
+
+    /// Yellow banner shown when push permission is denied — recovery path
+    /// for users who tapped "Don't Allow" at first run.
+    private var pushDisabledBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "bell.slash.fill")
+                .font(.system(size: 18))
+                .foregroundColor(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Push notifications are off")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text("You won't get alerts when you're outside the app.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Enable") {
+                openAppSettings()
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.orange)
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .background(Color.orange.opacity(0.12))
+    }
+
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private var emptyState: some View {

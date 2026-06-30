@@ -2,14 +2,32 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-// MARK: - AppDelegate (captures APNs token callbacks)
+// MARK: - AppDelegate (captures APNs token callbacks + push delegate setup)
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// Install the push coordinator as the UNUserNotificationCenter delegate
+    /// before SwiftUI takes over — required for cold-start taps to be
+    /// routed (iOS only forwards the response if a delegate exists when the
+    /// app finishes launching).
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        PushNotificationCoordinator.shared.install(launchOptions: launchOptions)
+        return true
+    }
+
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        // Persist + send to backend with bounded retry. The coordinator owns
+        // the retry loop so the SwiftUI lifecycle doesn't need to know about
+        // backoff timings.
+        PushNotificationCoordinator.shared.registerTokenWithBackend(token)
+        // Also fire the legacy notification so existing observers
+        // (DriveBaiApp.body) continue to work.
         NotificationCenter.default.post(name: .didRegisterDeviceToken, object: token)
     }
 
@@ -20,6 +38,27 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         #if DEBUG
         print("[Push] Failed to register for remote notifications: \(error)")
         #endif
+    }
+
+    /// Silent push handler. The backend may send `content-available=1`
+    /// pushes (no alert, priority 5) to refresh unread badges while the app
+    /// is backgrounded — required because the WebSocket is suspended in
+    /// background. Currently a no-op beyond completing the handler so iOS
+    /// keeps delivering, but `UIBackgroundModes` must include
+    /// `remote-notification` regardless for future use.
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        let aps = userInfo["aps"] as? [String: Any]
+        let contentAvailable = (aps?["content-available"] as? Int) ?? 0
+        guard contentAvailable == 1 else {
+            completionHandler(.noData)
+            return
+        }
+        // Future: refresh notification stores here. For now, just complete.
+        completionHandler(.newData)
     }
 }
 
@@ -73,10 +112,10 @@ struct DriveBaiApp: App {
                     WebSocketManager.shared.reconnectIfNeeded()
                     Task { await supportInboxStore.refresh() }
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .didRegisterDeviceToken)) { note in
-                    guard let token = note.object as? String else { return }
-                    Task { _ = try? await APIClient.shared.registerDeviceToken(token: token, sandbox: AppConfig.apnsSandbox) }
-                }
+                // Backend registration is owned by PushNotificationCoordinator
+                // (with retry/backoff). Keep this listener as a no-op hook
+                // so other parts of the app can still observe token rotation.
+                .onReceive(NotificationCenter.default.publisher(for: .didRegisterDeviceToken)) { _ in }
                 .onOpenURL { url in
                     deepLinkRouter.handle(url: url)
                 }
@@ -108,29 +147,11 @@ extension NSNotification.Name {
     static let didRegisterDeviceToken = NSNotification.Name("didRegisterDeviceToken")
 }
 
-/// Requests APNs permission on first run only (when status is .notDetermined).
-/// On subsequent launches the OS re-registers silently via UIApplication.
+/// Thin wrapper for backwards-compat call sites in `body` — delegates to the
+/// coordinator which owns the actual permission + registration logic.
 @MainActor
 private func requestPushPermissionIfNeeded() async {
-    let center = UNUserNotificationCenter.current()
-    let settings = await center.notificationSettings()
-    guard settings.authorizationStatus == .notDetermined else {
-        // Already authorized or denied — re-register silently so the token is current
-        if settings.authorizationStatus == .authorized {
-            UIApplication.shared.registerForRemoteNotifications()
-        }
-        return
-    }
-    do {
-        let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
-        if granted {
-            UIApplication.shared.registerForRemoteNotifications()
-        }
-    } catch {
-        #if DEBUG
-        print("[Push] requestAuthorization error: \(error)")
-        #endif
-    }
+    await PushNotificationCoordinator.shared.requestAuthorizationIfNeeded()
 }
 
 struct ContentView: View {

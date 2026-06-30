@@ -45,6 +45,14 @@ struct OwnerTabView: View {
             guard newId != nil else { return }
             selectedTab = 0
         }
+        // Push tap on a chat_message → switch to Chats tab. The chat row
+        // tap routes the rest of the way; deeper push-into-chat navigation
+        // is a follow-up since ChatsListView owns its own NavigationStack.
+        .onChange(of: deepLinkRouter.pendingChatTap) { _, newId in
+            guard newId != nil else { return }
+            selectedTab = 2
+            deepLinkRouter.clearPendingChatTap()
+        }
     }
 }
 

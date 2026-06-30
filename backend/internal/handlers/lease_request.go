@@ -353,6 +353,46 @@ func (h *LeaseRequestHandler) handleLeaseAction(w http.ResponseWriter, r *http.R
 		Payload:       resp,
 		TargetUserIDs: []uuid.UUID{otherUserID},
 	})
+
+	// In-app notification + push for the counterparty.
+	// Previously this handler only WS-broadcasted, which meant accept/decline
+	// of a lease request never reached a backgrounded recipient. The
+	// notification surface is the same one used elsewhere in this file —
+	// chat-id + lease-id give iOS the deep link. (leaseID is already in
+	// scope from the URL parse at the top of the handler; rebind via &.)
+	chatID := updated.ChatID
+	notifyLeaseID := updated.ID
+	carTitle := resp.CarTitle
+	if carTitle == "" {
+		carTitle = "your listing"
+	}
+	ownerName := resp.OwnerName
+	if ownerName == "" {
+		ownerName = "The owner"
+	}
+
+	switch action {
+	case "accept":
+		// Owner→Driver: request accepted, please pay.
+		go h.notifHandler.Notify(updated.DriverID, models.NotificationTypeLeaseRequest,
+			"Request accepted",
+			fmt.Sprintf("%s accepted your request for %s — complete payment to confirm.", ownerName, carTitle),
+			&chatID, &notifyLeaseID)
+	case "decline":
+		// Owner→Driver: request declined.
+		go h.notifHandler.Notify(updated.DriverID, models.NotificationTypeLeaseRequest,
+			"Request declined",
+			fmt.Sprintf("%s declined your request for %s.", ownerName, carTitle),
+			&chatID, &notifyLeaseID)
+	case "cancel":
+		// Cancel can be initiated by either side pre-accept. Notify the
+		// OTHER party. otherUserID was already computed above as the
+		// non-actor — reuse it so we don't ping the actor's own device.
+		go h.notifHandler.Notify(otherUserID, models.NotificationTypeLeaseRequest,
+			"Request cancelled",
+			fmt.Sprintf("The lease request for %s was cancelled.", carTitle),
+			&chatID, &notifyLeaseID)
+	}
 }
 
 // --- Payment endpoints ---
@@ -841,6 +881,22 @@ func (h *LeaseRequestHandler) handlePaymentFailed(r *http.Request, intentID stri
 	}
 
 	h.logger.Info("payment failed", "lease_request_id", payment.LeaseRequestID, "payment_id", payment.ID, "intent_id", intentID)
+
+	// Notify the driver so they can retry. We deliberately do NOT notify
+	// the owner — failed payments are a driver-side recoverable state, and
+	// owners only need to know about successful or canceled payments.
+	if lr, lerr := h.leaseRepo.GetByID(r.Context(), payment.LeaseRequestID); lerr == nil && lr != nil {
+		chatID := lr.ChatID
+		leaseID := lr.ID
+		carTitle := "your rental"
+		if car, cerr := h.carRepo.GetByID(r.Context(), lr.ListingID); cerr == nil {
+			carTitle = car.Title
+		}
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+			"Payment failed",
+			fmt.Sprintf("Your payment for %s didn't go through. Tap to try again.", carTitle),
+			&chatID, &leaseID)
+	}
 }
 
 func (h *LeaseRequestHandler) handlePaymentCanceled(r *http.Request, intentID string) {
@@ -865,6 +921,22 @@ func (h *LeaseRequestHandler) handlePaymentCanceled(r *http.Request, intentID st
 	}
 
 	h.logger.Info("payment canceled", "lease_request_id", payment.LeaseRequestID, "payment_id", payment.ID, "intent_id", intentID)
+
+	// Push the driver so a backgrounded PaymentSheet flow doesn't strand
+	// them — they get a banner explaining the intent was cancelled and can
+	// reopen the chat to choose a new course (re-pay, message the owner).
+	if lr, lerr := h.leaseRepo.GetByID(r.Context(), payment.LeaseRequestID); lerr == nil && lr != nil {
+		chatID := lr.ChatID
+		leaseID := lr.ID
+		carTitle := "your rental"
+		if car, cerr := h.carRepo.GetByID(r.Context(), lr.ListingID); cerr == nil {
+			carTitle = car.Title
+		}
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+			"Payment cancelled",
+			fmt.Sprintf("The payment for %s was cancelled. Open the chat to start again if you still want to rent.", carTitle),
+			&chatID, &leaseID)
+	}
 }
 
 // --- Pickup expiry scanner ---

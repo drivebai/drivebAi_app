@@ -190,6 +190,11 @@ final class AuthStore: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        // Best-effort: unregister the device token *before* clearing the JWT
+        // so the DELETE endpoint can authenticate. Failures here are silent;
+        // the server also prunes stale tokens via APNs 410 responses.
+        await PushNotificationCoordinator.unregisterLastDeviceTokenIfPossible()
+
         if let refreshToken = keychain.getRefreshToken() {
             let request = RefreshTokenRequest(refreshToken: refreshToken)
             _ = try? await apiClient.logout(request: request)

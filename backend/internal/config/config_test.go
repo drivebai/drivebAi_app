@@ -114,6 +114,48 @@ func goodProdConfig() *Config {
 		AutoApproveCars:                false,
 		RequirePrivateUploadSignatures: true,
 		CORSAllowedOrigins:             []string{"https://drivebai-admin-team.fly.dev"},
+		// APNs: production must have all four set. Tests for the
+		// per-field-missing case toggle these off below.
+		AppleTeamID:   "ABCDE12345",
+		APNSKeyID:     "FGHIJ67890",
+		APNSAuthKeyP8: "base64=",
+		IOSBundleID:   "com.drivebai.DriveBai",
+	}
+}
+
+func TestValidateForProduction_RejectsMissingAPNsTeamID(t *testing.T) {
+	c := goodProdConfig()
+	c.AppleTeamID = ""
+	err := c.ValidateForProduction()
+	if err == nil || !strings.Contains(err.Error(), "APPLE_TEAM_ID") {
+		t.Errorf("expected APPLE_TEAM_ID complaint, got %v", err)
+	}
+}
+
+func TestValidateForProduction_RejectsMissingAPNsKeyID(t *testing.T) {
+	c := goodProdConfig()
+	c.APNSKeyID = ""
+	err := c.ValidateForProduction()
+	if err == nil || !strings.Contains(err.Error(), "APNS_KEY_ID") {
+		t.Errorf("expected APNS_KEY_ID complaint, got %v", err)
+	}
+}
+
+func TestValidateForProduction_RejectsMissingAPNsAuthKey(t *testing.T) {
+	c := goodProdConfig()
+	c.APNSAuthKeyP8 = ""
+	err := c.ValidateForProduction()
+	if err == nil || !strings.Contains(err.Error(), "APNS_AUTH_KEY_P8") {
+		t.Errorf("expected APNS_AUTH_KEY_P8 complaint, got %v", err)
+	}
+}
+
+func TestValidateForProduction_RejectsMissingIOSBundleID(t *testing.T) {
+	c := goodProdConfig()
+	c.IOSBundleID = ""
+	err := c.ValidateForProduction()
+	if err == nil || !strings.Contains(err.Error(), "IOS_BUNDLE_ID") {
+		t.Errorf("expected IOS_BUNDLE_ID complaint, got %v", err)
 	}
 }
 

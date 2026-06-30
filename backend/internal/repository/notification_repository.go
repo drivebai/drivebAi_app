@@ -105,3 +105,21 @@ func (r *NotificationRepository) MarkAllRead(ctx context.Context, userID uuid.UU
 	`, userID)
 	return err
 }
+
+// MarkChatMessagesRead clears chat_message notifications for a single chat
+// from the bell counter + APNs badge. Called by ChatHandler.MarkRead so that
+// opening a chat (which already nukes unread_count on chat_participants)
+// also drains the corresponding notification rows — otherwise the bell /
+// springboard badge inflates every time the user reads a backgrounded
+// chat and the two counters drift forever.
+func (r *NotificationRepository) MarkChatMessagesRead(ctx context.Context, userID, chatID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE notifications
+		   SET is_read = TRUE
+		 WHERE user_id = $1
+		   AND related_chat_id = $2
+		   AND type = 'chat_message'
+		   AND is_read = FALSE
+	`, userID, chatID)
+	return err
+}

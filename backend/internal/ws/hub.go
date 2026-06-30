@@ -118,3 +118,24 @@ func (h *Hub) IsUserOnline(userID uuid.UUID) bool {
 	conns, ok := h.connections[userID]
 	return ok && len(conns) > 0
 }
+
+// IsSubscribedToChat reports whether the user is currently considered
+// "actively present" for a chat — used by the push dispatcher to suppress
+// a chat_message push when the recipient is already foregrounded on a WS
+// connection and would otherwise get both an in-app banner AND a push.
+//
+// We don't (yet) track per-chat subscriptions explicitly — the iOS client
+// receives all `new_message` events for chats it participates in via the
+// user-scoped WS pipe. So treating "any active WS connection for the user"
+// as "subscribed to all of their chats" is the right approximation for v1:
+//   - False positives (suppressing a push the user wanted because they
+//     have the app open on a different screen) are tolerable: the in-app
+//     bell + WS still fire, and the recipient does see the message.
+//   - False negatives (sending a push despite an open WS) would mean the
+//     user gets a banner AND a push for the same message — annoying.
+//
+// chatID is accepted for the future when we plumb per-chat subscription
+// tracking through the conn layer.
+func (h *Hub) IsSubscribedToChat(userID uuid.UUID, _ uuid.UUID) bool {
+	return h.IsUserOnline(userID)
+}

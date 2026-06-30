@@ -159,6 +159,12 @@ func main() {
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, privateURLSigner, logger)
 	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
+	// Wire the central NotificationHandler into surfaces that emit pushes
+	// on state changes the user should know about while backgrounded:
+	// chat messages (gated by WS presence), support replies, admin profile
+	// edits, accident submissions. Each handler keeps the notif handler
+	// optional (setter wiring) so test constructors don't need to change.
+	chatHandler.SetNotificationHandler(notifHandler)
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
 	pickupDeadline := time.Duration(cfg.PickupDeadlineMinutes) * time.Minute
@@ -166,8 +172,11 @@ func main() {
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, logger)
+	adminHandler.SetNotificationHandler(notifHandler)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
+	accidentHandler.SetNotificationHandler(notifHandler)
+	accidentHandler.SetChatRepository(chatRepo)
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
 	vehicleReturnRepo := repository.NewVehicleReturnRepository(db)
 	vehicleReturnHandler := handlers.NewVehicleReturnHandler(vehicleReturnRepo, leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, notifHandler, logger)
