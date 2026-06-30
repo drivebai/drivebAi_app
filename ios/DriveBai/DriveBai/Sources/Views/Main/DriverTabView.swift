@@ -3,6 +3,7 @@ import SwiftUI
 struct DriverTabView: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var chatsVM = ChatsListViewModel.shared
 
     @State private var selectedTab = 0
@@ -40,6 +41,14 @@ struct DriverTabView: View {
                 .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
+        // Live Activity tap routes here via DeepLinkRouter. Switch to the
+        // Today tab so DriverTodayView (which owns the keyHandover list and
+        // the existing ChatView navigation machinery) can finish the
+        // routing in one place.
+        .onChange(of: deepLinkRouter.pendingLeasePickupId) { _, newId in
+            guard newId != nil else { return }
+            selectedTab = 0
+        }
     }
 }
 

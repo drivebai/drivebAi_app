@@ -6,6 +6,7 @@ struct OwnerTodayView: View {
     @StateObject private var viewModel = OwnerTodayViewModel()
     @StateObject private var carsStore = OwnerCarsStore.shared
     @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @State private var showNotifications = false
     @State private var showCreateListing = false
     @State private var selectedCarId: UUID?
@@ -14,6 +15,9 @@ struct OwnerTodayView: View {
     @State private var notificationChatId: UUID?
     @State private var showNotificationChat = false
     @State private var selectedHandover: KeyHandover?
+    /// Lease-pickup deep-link target (owner side mirror of the driver-side
+    /// machinery in DriverTodayView). Driven by DeepLinkRouter.pendingLeasePickupId.
+    @State private var deepLinkPickupChat: DeepLinkPickupTarget?
 
     /// Get listings from OwnerCarsStore (single source of truth)
     private var listings: [ListingSummary] {
@@ -105,6 +109,25 @@ struct OwnerTodayView: View {
             }
             .navigationDestination(item: $selectedHandover) { handover in
                 KeyHandoverDetailView(handover: handover)
+            }
+            .navigationDestination(item: $deepLinkPickupChat) { target in
+                if let userId = authStore.state.user?.id {
+                    ChatView(
+                        chatId: target.chatId,
+                        currentUserId: userId,
+                        counterpartyId: target.counterpartyId,
+                        counterpartyName: target.counterpartyName,
+                        initialTab: .requests
+                    )
+                }
+            }
+            .onChange(of: deepLinkRouter.pendingLeasePickupId) { _, newId in
+                handleLeasePickupDeepLink(newId)
+            }
+            .onChange(of: viewModel.keyHandovers) { _, _ in
+                if let leaseId = deepLinkRouter.pendingLeasePickupId {
+                    handleLeasePickupDeepLink(leaseId)
+                }
             }
             .task {
                 await carsStore.fetchCars()
@@ -303,6 +326,24 @@ private struct AddListingButton: View {
 
 #Preview("With Listings") {
     OwnerTodayView()
+}
+
+extension OwnerTodayView {
+    /// Owner-side mirror of DriverTodayView.handleLeasePickupDeepLink:
+    /// look up the matching handover from the live key-handover list and
+    /// route to Chat → Requests if we find one. The driver is the
+    /// counterparty on this side.
+    fileprivate func handleLeasePickupDeepLink(_ leaseId: UUID?) {
+        guard let leaseId else { return }
+        guard let handover = viewModel.keyHandovers.first(where: { $0.leaseRequestId == leaseId }),
+              let chatId = handover.chatId else { return }
+        deepLinkPickupChat = DeepLinkPickupTarget(
+            chatId: chatId,
+            counterpartyId: handover.driverId,
+            counterpartyName: handover.driverName
+        )
+        deepLinkRouter.clearPendingLeasePickup()
+    }
 }
 
 #Preview("Empty State") {

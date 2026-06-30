@@ -48,6 +48,12 @@ struct DriveBaiApp: App {
                         await requestPushPermissionIfNeeded()
                         await supportInboxStore.refresh()
                     }
+                    // Recover any Live Activities that survived a process
+                    // restart so the manager can update/end them in
+                    // response to user actions instead of leaking them.
+                    if #available(iOS 16.1, *) {
+                        PickupLiveActivityManager.shared.restoreActivities()
+                    }
                 }
                 .onChange(of: authStore.state) { _, newState in
                     if newState.isAuthenticated {

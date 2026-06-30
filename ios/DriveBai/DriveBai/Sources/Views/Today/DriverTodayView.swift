@@ -5,12 +5,19 @@ import SwiftUI
 struct DriverTodayView: View {
     @StateObject private var viewModel = DriverTodayViewModel()
     @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @State private var showNotifications = false
     @State private var navigateToChatTask: OnboardingTask?
     @State private var showChat = false
     @State private var notificationChatId: UUID?
     @State private var showNotificationChat = false
     @State private var selectedHandover: KeyHandover?
+    /// Lease-pickup deep-link target. Filled when the user taps the
+    /// pickup Live Activity (DeepLinkRouter.pendingLeasePickupId fires)
+    /// AND we find a matching handover with a chatId. Drives a dedicated
+    /// navigationDestination — separate from the Today-card path so the
+    /// two never race.
+    @State private var deepLinkPickupChat: DeepLinkPickupTarget?
 
     var body: some View {
         NavigationStack {
@@ -82,6 +89,28 @@ struct DriverTodayView: View {
             }
             .navigationDestination(item: $selectedHandover) { handover in
                 KeyHandoverDetailView(handover: handover)
+            }
+            .navigationDestination(item: $deepLinkPickupChat) { target in
+                if let userId = authStore.state.user?.id {
+                    ChatView(
+                        chatId: target.chatId,
+                        currentUserId: userId,
+                        counterpartyId: target.counterpartyId,
+                        counterpartyName: target.counterpartyName,
+                        initialTab: .requests
+                    )
+                }
+            }
+            .onChange(of: deepLinkRouter.pendingLeasePickupId) { _, newId in
+                handleLeasePickupDeepLink(newId)
+            }
+            .onChange(of: viewModel.keyHandovers) { _, _ in
+                // Handle the case where the deep link arrives before
+                // fetchKeyHandovers has populated the list (cold launch).
+                // Re-attempt the lookup once handovers land.
+                if let leaseId = deepLinkRouter.pendingLeasePickupId {
+                    handleLeasePickupDeepLink(leaseId)
+                }
             }
             .task {
                 async let actionsTask: () = viewModel.fetchActions()
@@ -223,6 +252,37 @@ struct DriverTodayView: View {
                 .padding(.horizontal, TodayLayout.horizontalPadding)
             }
         }
+    }
+}
+
+// MARK: - Live Activity deep-link helpers
+
+/// Synthetic target for the `drivebai://lease/{id}/pickup` deep link route.
+/// Kept separate from `OnboardingTask` to avoid confusing the two paths —
+/// they each have their own `navigationDestination`.
+struct DeepLinkPickupTarget: Hashable, Identifiable {
+    let chatId: UUID
+    let counterpartyId: UUID
+    let counterpartyName: String
+    var id: UUID { chatId }
+}
+
+extension DriverTodayView {
+    /// Resolve a pending lease-pickup deep link to a chat navigation. Safe
+    /// to call repeatedly — if the matching handover hasn't loaded yet,
+    /// the next `viewModel.keyHandovers` change will retry via the
+    /// `onChange` hook in `body`.
+    fileprivate func handleLeasePickupDeepLink(_ leaseId: UUID?) {
+        guard let leaseId else { return }
+        guard let handover = viewModel.keyHandovers.first(where: { $0.leaseRequestId == leaseId }),
+              let chatId = handover.chatId else { return }
+        // Driver-side: counterparty is the owner.
+        deepLinkPickupChat = DeepLinkPickupTarget(
+            chatId: chatId,
+            counterpartyId: handover.ownerId,
+            counterpartyName: handover.ownerName
+        )
+        deepLinkRouter.clearPendingLeasePickup()
     }
 }
 

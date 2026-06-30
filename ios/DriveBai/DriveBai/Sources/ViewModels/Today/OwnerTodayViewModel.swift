@@ -150,11 +150,26 @@ final class OwnerTodayViewModel: ObservableObject {
         do {
             let response = try await apiClient.fetchKeyHandoversToday()
             keyHandovers = response.keyHandovers.map { $0.toDomain() }
+            // Mirror the driver-side Live Activity reconciler so owners
+            // also get a Lock Screen / Dynamic Island countdown for
+            // "Driver picking up your car". Same single-choke-point pattern.
+            syncLiveActivities()
         } catch {
             #if DEBUG
             print("[OwnerTodayVM] fetchKeyHandovers error: \(error)")
             #endif
         }
+    }
+
+    /// Updates the iOS Live Activity tracker to match `keyHandovers`. Idempotent.
+    private func syncLiveActivities() {
+        guard #available(iOS 16.1, *) else { return }
+        let active = keyHandovers.filter { $0.isAwaitingPickupConfirmation }
+        for handover in active {
+            PickupLiveActivityManager.shared.startOrUpdate(for: handover)
+        }
+        let activeLeaseIds = Set(active.map { $0.leaseRequestId })
+        PickupLiveActivityManager.shared.reconcile(activeLeaseIds: activeLeaseIds)
     }
 
     /// Confirm the handover for the current viewer (owner → handed over, driver → received).

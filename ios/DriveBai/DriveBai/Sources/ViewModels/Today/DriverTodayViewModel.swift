@@ -151,11 +151,30 @@ final class DriverTodayViewModel: ObservableObject {
         do {
             let response = try await apiClient.fetchKeyHandoversToday()
             keyHandovers = response.keyHandovers.map { $0.toDomain() }
+            // Reconcile Live Activities against the freshly-fetched state.
+            // This is the single choke-point that covers cold-launch (start
+            // an activity for an already-paid lease), websocket-driven
+            // extensions (update the existing activity), and every terminal
+            // path (pickup confirmed, expired_refunded, cancelled —
+            // anything that drops a handover out of isAwaitingPickupConfirmation
+            // ends the activity automatically).
+            syncLiveActivities()
         } catch {
             #if DEBUG
             print("[DriverTodayVM] fetchKeyHandovers error: \(error)")
             #endif
         }
+    }
+
+    /// Updates the iOS Live Activity tracker to match `keyHandovers`. Idempotent.
+    private func syncLiveActivities() {
+        guard #available(iOS 16.1, *) else { return }
+        let active = keyHandovers.filter { $0.isAwaitingPickupConfirmation }
+        for handover in active {
+            PickupLiveActivityManager.shared.startOrUpdate(for: handover)
+        }
+        let activeLeaseIds = Set(active.map { $0.leaseRequestId })
+        PickupLiveActivityManager.shared.reconcile(activeLeaseIds: activeLeaseIds)
     }
 
     /// Confirm the handover for the current viewer (owner → handed over, driver → received).

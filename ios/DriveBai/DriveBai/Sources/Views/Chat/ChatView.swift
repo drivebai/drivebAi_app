@@ -418,9 +418,27 @@ struct ChatView: View {
 
         switch result {
         case .completed:
-            // Sync with Stripe (bypasses webhook) + poll for status update
+            // Sync with Stripe (bypasses webhook) + poll for status update.
+            // Capture the device-clock moment of success so the Live Activity
+            // progress bar has a precise start anchor; pass it into the
+            // manager as soon as `handlePaymentCompleted` has refreshed the
+            // lease and `pickupDeadlineAt` is populated.
             if let leaseId = leaseId {
-                Task { await viewModel.handlePaymentCompleted(leaseRequestId: leaseId) }
+                let paidAt = Date()
+                Task {
+                    await viewModel.handlePaymentCompleted(leaseRequestId: leaseId)
+                    if #available(iOS 16.1, *),
+                       let lr = viewModel.leaseRequests.first(where: { $0.id == leaseId }),
+                       lr.isAwaitingPickupConfirmation {
+                        let role: PickupActivityAttributes.ViewerRole =
+                            (currentUserId == lr.ownerId) ? .owner : .driver
+                        PickupLiveActivityManager.shared.startOrUpdate(
+                            for: lr,
+                            viewerRole: role,
+                            startedAtIfNew: paidAt
+                        )
+                    }
+                }
             }
         case .canceled:
             // Refresh to show current state (payment may have been partially created)

@@ -3,6 +3,7 @@ import SwiftUI
 struct OwnerTabView: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var chatsVM = ChatsListViewModel.shared
 
     @State private var selectedTab = 0
@@ -40,6 +41,10 @@ struct OwnerTabView: View {
                 .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
+        .onChange(of: deepLinkRouter.pendingLeasePickupId) { _, newId in
+            guard newId != nil else { return }
+            selectedTab = 0
+        }
     }
 }
 
