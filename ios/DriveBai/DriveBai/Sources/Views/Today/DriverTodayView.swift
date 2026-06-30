@@ -81,12 +81,15 @@ struct DriverTodayView: View {
                         currentUserId: userId,
                         counterpartyId: task.counterpartyId ?? UUID(),
                         counterpartyName: task.counterpartyName ?? task.requestedBy,
-                        // Lease-payment AND lease-price-review cards both
-                        // point at the lease card in Chat → Requests, so
-                        // land directly on that tab. Any other Today
-                        // action (generic chat request, etc.) keeps the
-                        // default Messages-first behaviour.
-                        initialTab: (task.requestType == "lease_payment" || task.requestType == "lease_price_review") ? .requests : nil
+                        // Every lease-card action (payment, price review,
+                        // owner-side lease_request that's leaked into the
+                        // driver feed) points at the LeaseRequestCardView
+                        // in Chat → Requests, so land directly on that tab.
+                        // Any other Today action (generic chat request,
+                        // etc.) keeps the default Messages-first behaviour.
+                        initialTab: (task.requestType == "lease_payment"
+                                     || task.requestType == "lease_price_review"
+                                     || task.requestType == "lease_request") ? .requests : nil
                     )
                 }
             }
@@ -247,15 +250,25 @@ struct DriverTodayView: View {
             } else {
                 VStack(spacing: TodayLayout.cardSpacing) {
                     ForEach(viewModel.tasks) { task in
-                        // Driver-side cards that need to bounce into the
-                        // chat's Requests tab (lease_payment OR the new
-                        // lease_price_review) collapse to a single
-                        // "Go to requests" CTA — the actual accept/decline
-                        // happens inside the LeaseRequestCardView there,
-                        // not duplicated on Today.
-                        let isChatHandoff = task.requestType == "lease_payment" || task.requestType == "lease_price_review"
+                        // Cards that need to bounce into the chat's
+                        // Requests tab collapse to a single "Review request"
+                        // CTA — the actual accept/decline/pay happens
+                        // inside the LeaseRequestCardView there, not
+                        // duplicated on Today.
+                        //
+                        // `lease_request` is owner-side, but the backend's
+                        // today/actions feed surfaces every action for the
+                        // current user regardless of which Today tab is on
+                        // screen; without this collapse a user who is in
+                        // driver mode but is the owner on some lease sees
+                        // an inline Approve/Decline pair here instead of
+                        // being routed to the single source of truth in
+                        // Chats → Requests.
+                        let isChatHandoff = task.requestType == "lease_payment"
+                            || task.requestType == "lease_price_review"
+                            || task.requestType == "lease_request"
                         let displayTask = isChatHandoff
-                            ? task.withSingleOption("Go to requests")
+                            ? task.withSingleOption("Review request")
                             : task
                         TaskCard(
                             task: displayTask,
