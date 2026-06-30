@@ -96,7 +96,16 @@ final class OwnerCarsStore: ObservableObject {
             isLoading = false
             return createdCar
         } catch let apiError as APIError {
-            error = apiError.errorDescription
+            // Surface a clean, fixable message when the backend rejects the
+            // VIN as a duplicate (HTTP 409, body
+            // `{"error":"vin_already_in_use", ...}`). Override the generic
+            // server message so the wizard can show it inline on the VIN
+            // row without string-matching deeper.
+            if case .serverError(let code, _) = apiError, code == "vin_already_in_use" {
+                error = "VIN already in use"
+            } else {
+                error = apiError.errorDescription
+            }
             print("[OwnerCarsStore] Failed to create car - APIError: \(apiError)")
             print("[OwnerCarsStore] Error description: \(apiError.errorDescription ?? "nil")")
         } catch {

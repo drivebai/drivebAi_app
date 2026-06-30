@@ -46,6 +46,7 @@ struct AuthenticatedProfileView: View {
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @State private var isSwitchingMode = false
     @State private var showDriverDocsSheet = false
+    @State private var shouldRetrySwitchAfterDocs = false
     @State private var switchError: String?
     @State private var showSupportChat = false
     @State private var showEditProfile = false
@@ -197,14 +198,25 @@ struct AuthenticatedProfileView: View {
             EditProfileView(user: user)
                 .environmentObject(authStore)
         }
-        .sheet(isPresented: $showDriverDocsSheet) {
+        .sheet(isPresented: $showDriverDocsSheet, onDismiss: {
+            // Run the retry AFTER the sheet has fully dismissed and SwiftUI's
+            // presentation transaction has settled. Doing this in the Continue
+            // button's closure races with the dismiss transaction and can cause
+            // the @Published state swap to .driver to be dropped, leaving the
+            // user on OwnerTabView even though the network call succeeded.
+            if shouldRetrySwitchAfterDocs {
+                shouldRetrySwitchAfterDocs = false
+                performSwitch(isRetryAfterDocs: true)
+            }
+        }) {
             DriverDocsRequiredSheet(
                 onCompleted: {
+                    // Mark intent and dismiss; the retry fires in onDismiss.
+                    shouldRetrySwitchAfterDocs = true
                     showDriverDocsSheet = false
-                    // Docs are uploaded — retry the switch.
-                    performSwitch()
                 },
                 onCancel: {
+                    shouldRetrySwitchAfterDocs = false
                     showDriverDocsSheet = false
                 }
             )
@@ -220,26 +232,41 @@ struct AuthenticatedProfileView: View {
         }
     }
 
-    private func performSwitch() {
+    private func performSwitch(isRetryAfterDocs: Bool = false) {
         guard let target = switchTargetRole, !isSwitchingMode else { return }
         isSwitchingMode = true
-        Task {
-            defer { Task { @MainActor in isSwitchingMode = false } }
+        Task { @MainActor in
             do {
                 let result = try await authStore.switchProfile(to: target)
                 switch result {
                 case .switched:
                     // ContentView will re-route to the new tab group automatically
                     // because it keys off `user.role` which /me now mirrors.
-                    break
+                    isSwitchingMode = false
                 case .needsDriverDocs:
                     await authStore.fetchDocuments()
-                    showDriverDocsSheet = true
+                    isSwitchingMode = false
+                    if isRetryAfterDocs {
+                        // The user just dismissed the docs sheet after a Continue
+                        // tap, and the server still reports missing docs. Don't
+                        // silently re-present (that strands them); surface a
+                        // clear error so they understand the upload didn't take.
+                        switchError = "We couldn't verify your driver documents. Please try again."
+                    } else {
+                        // Defer the present by one runloop tick — re-presenting
+                        // the same binding inside the dismiss transaction can
+                        // be dropped by SwiftUI.
+                        Task { @MainActor in
+                            showDriverDocsSheet = true
+                        }
+                    }
                 }
             } catch let apiError as APIError {
                 switchError = apiError.errorDescription ?? "Something went wrong."
+                isSwitchingMode = false
             } catch {
                 switchError = "Something went wrong. Please try again."
+                isSwitchingMode = false
             }
         }
     }
@@ -386,19 +413,19 @@ private struct DriverDocsRequiredSheet: View {
     let onCancel: () -> Void
 
     @State private var isUploadingLicense = false
-    @State private var isUploadingRegistration = false
+    @State private var isUploadingCommercial = false
     @State private var errorMessage: String?
 
     private var licenseDocument: Document? {
         authStore.documents.first { $0.type == .driversLicense }
     }
 
-    private var registrationDocument: Document? {
-        authStore.documents.first { $0.type == .registration }
+    private var commercialLicenseDocument: Document? {
+        authStore.documents.first { $0.type == .commercialLicense }
     }
 
     private var canContinue: Bool {
-        licenseDocument != nil && registrationDocument != nil
+        licenseDocument != nil
     }
 
     var body: some View {
@@ -409,7 +436,7 @@ private struct DriverDocsRequiredSheet: View {
                         Text("Driver documents required")
                             .font(.title2)
                             .fontWeight(.bold)
-                        Text("To switch into Driver mode, we need to verify your identity. Please upload the documents below.")
+                        Text("Driver's License is required to continue. Commercial License and other documents are optional and help with faster approval.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -428,13 +455,13 @@ private struct DriverDocsRequiredSheet: View {
                         )
 
                         DocumentUploadCard(
-                            type: .registration,
-                            document: registrationDocument,
-                            isUploading: isUploadingRegistration,
+                            type: .commercialLicense,
+                            document: commercialLicenseDocument,
+                            isUploading: isUploadingCommercial,
                             onFileSelected: { data, filename, mimeType in
-                                Task { await upload(type: .registration, data: data, filename: filename, mimeType: mimeType) }
+                                Task { await upload(type: .commercialLicense, data: data, filename: filename, mimeType: mimeType) }
                             },
-                            onDelete: { delete(registrationDocument) }
+                            onDelete: { delete(commercialLicenseDocument) }
                         )
                     }
                     .padding(.horizontal)
@@ -486,13 +513,13 @@ private struct DriverDocsRequiredSheet: View {
         if type == .driversLicense {
             isUploadingLicense = true
         } else {
-            isUploadingRegistration = true
+            isUploadingCommercial = true
         }
         defer {
             if type == .driversLicense {
                 isUploadingLicense = false
             } else {
-                isUploadingRegistration = false
+                isUploadingCommercial = false
             }
         }
 

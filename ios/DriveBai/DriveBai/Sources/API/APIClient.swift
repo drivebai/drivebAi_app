@@ -1080,6 +1080,17 @@ final class APIClient: APIClientProtocol {
                         message: errorResponse.error.message
                     )
                 }
+                // Fallback shape: a few handlers (notably the VIN-conflict
+                // 409 on POST /cars) return a flat `{"error":"<code>","message":"..."}`
+                // body instead of the nested APIError envelope. Decode that
+                // form so we can surface a real error code (e.g.
+                // "vin_already_in_use") to callers that branch on it.
+                if let flat = try? decoder.decode(FlatAPIErrorResponse.self, from: data) {
+                    throw APIError.serverError(
+                        code: flat.error,
+                        message: flat.message ?? "Request failed with status \(httpResponse.statusCode)"
+                    )
+                }
                 throw APIError.serverError(code: "UNKNOWN", message: "Request failed with status \(httpResponse.statusCode)")
             }
 

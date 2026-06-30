@@ -103,3 +103,20 @@ tbody tr { border-bottom: 1px solid var(--border); }
 tbody tr:nth-child(even) { background: var(--row-alt); }
 tbody tr:hover { background: var(--accent-soft); }
 tbody tr:hover td { background: transparent; }
+
+/* ==========================================================================
+   Mobile responsiveness
+   - Touch targets: 44pt min on phones for any tappable button
+   - Tables: denser padding so more columns fit before horizontal scroll
+   - Inputs: 16px font keeps iOS Safari from zooming on focus
+   ========================================================================== */
+@media (max-width: 768px) {
+  th, td { padding: 12px 10px; }
+  input, select, textarea { font-size: 16px; padding: 10px 12px; }
+  button { min-height: 40px; padding: 8px 12px; }
+  button.ghost { min-height: 36px; padding: 6px 10px; }
+}
+
+@media (max-width: 640px) {
+  button:not(.ghost) { min-height: 44px; }
+}

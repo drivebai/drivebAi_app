@@ -837,7 +837,7 @@ func (h *UserHandler) SetActiveProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UserHandler) missingDriverDocs(ctx context.Context, userID uuid.UUID) ([]models.DocumentType, error) {
-	required := []models.DocumentType{models.DocumentDriversLicense, models.DocumentRegistration}
+	required := []models.DocumentType{models.DocumentDriversLicense}
 	var missing []models.DocumentType
 	for _, t := range required {
 		doc, err := h.docRepo.GetByUserIDAndType(ctx, userID, t)

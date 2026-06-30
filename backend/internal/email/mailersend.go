@@ -32,6 +32,20 @@ type MailerSendOTPSender struct {
 	logger    *slog.Logger
 }
 
+// MailerSendSender implements the transactional Sender interface
+// (verification + password reset) using the MailerSend REST API. Used in
+// production when SENDGRID_API_KEY is unset but MAILERSEND_API_KEY is
+// configured — lets one vendor handle every outbound email.
+type MailerSendSender struct {
+	apiKey         string
+	fromEmail      string
+	fromName       string
+	deeplinkScheme string
+	baseURL        string
+	client         *http.Client
+	logger         *slog.Logger
+}
+
 // ConsoleOTPSender prints OTP to stdout (used when MAILERSEND_API_KEY is unset).
 type ConsoleOTPSender struct {
 	logger *slog.Logger
@@ -141,6 +155,174 @@ func (s *MailerSendOTPSender) SendLoginOTP(toEmail, code string) (*OTPSendResult
 		"message_id", messageID,
 	)
 	return &OTPSendResult{MessageID: messageID}, nil
+}
+
+// sendMailerSend posts a transactional email through MailerSend and returns
+// the X-Message-Id. Used by both the OTP path and the transactional Sender
+// path so they share one HTTP body / error-handling shape.
+func sendMailerSend(client *http.Client, apiKey string, payload mailerSendPayload, logger *slog.Logger, toEmail, kind string) (string, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("mailersend: marshal %s payload: %w", kind, err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, mailerSendAPIURL, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("mailersend: build %s request: %w", kind, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error("mailersend: request failed", "error", err, "to", toEmail, "kind", kind)
+		return "", fmt.Errorf("mailersend: send %s request: %w", kind, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode >= 400 {
+		logger.Error("mailersend: API rejected email",
+			"status", resp.StatusCode,
+			"to", toEmail,
+			"kind", kind,
+			"response", string(respBody),
+		)
+		return "", fmt.Errorf("mailersend: API returned status %d for %s: %s", resp.StatusCode, kind, string(respBody))
+	}
+
+	return resp.Header.Get("X-Message-Id"), nil
+}
+
+// SendVerificationEmail sends a 6-digit verification code via MailerSend.
+// Re-uses the same copy as the SendGrid path so users see identical email
+// content regardless of which provider is wired.
+func (s *MailerSendSender) SendVerificationEmail(toEmail, toName, code string) error {
+	plainText := fmt.Sprintf(`Hello %s,
+
+Your verification code is: %s
+
+This code will expire in 10 minutes.
+
+If you didn't create a DriveBai account, you can safely ignore this email.
+
+Best,
+The DriveBai Team`, toName, code)
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#333}
+  .container{max-width:600px;margin:0 auto;padding:20px}
+  .code{font-size:32px;font-weight:bold;letter-spacing:8px;color:#4ECDC4;text-align:center;padding:20px;background:#f5f5f5;border-radius:8px;margin:20px 0}
+  .footer{margin-top:30px;font-size:12px;color:#666}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Verify your email</h2>
+  <p>Hello %s,</p>
+  <p>Your verification code is:</p>
+  <div class="code">%s</div>
+  <p>This code will expire in 10 minutes.</p>
+  <p>If you didn't create a DriveBai account, you can safely ignore this email.</p>
+  <div class="footer"><p>Best,<br>The DriveBai Team</p></div>
+</div>
+</body>
+</html>`, toName, code)
+
+	payload := mailerSendPayload{
+		From:    mailerSendAddress{Email: s.fromEmail, Name: s.fromName},
+		To:      []mailerSendAddress{{Email: toEmail, Name: toName}},
+		Subject: "Verify your DriveBai account",
+		Text:    plainText,
+		HTML:    htmlBody,
+	}
+
+	messageID, err := sendMailerSend(s.client, s.apiKey, payload, s.logger, toEmail, "verification")
+	if err != nil {
+		return err
+	}
+	s.logger.Info("verification email accepted by MailerSend",
+		"to", toEmail,
+		"message_id", messageID,
+	)
+	return nil
+}
+
+// SendPasswordResetEmail sends a password-reset email with both an in-app
+// deep link (drivebai://reset-password?token=...) and a web fallback link.
+func (s *MailerSendSender) SendPasswordResetEmail(toEmail, toName, token string) error {
+	resetLink := fmt.Sprintf("%s://reset-password?token=%s", s.deeplinkScheme, token)
+	webLink := fmt.Sprintf("%s/reset-password?token=%s", s.baseURL, token)
+
+	plainText := fmt.Sprintf(`Hello %s,
+
+You requested to reset your password.
+
+Open in DriveBai app:
+%s
+
+Or use this web link:
+%s
+
+This link will expire in 1 hour.
+
+If you didn't request a password reset, you can safely ignore this email.
+
+Best,
+The DriveBai Team`, toName, resetLink, webLink)
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#333}
+  .container{max-width:600px;margin:0 auto;padding:20px}
+  .button{display:inline-block;background-color:#4ECDC4;color:white;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:bold;margin:20px 0}
+  .button-secondary{background-color:#6c757d}
+  .link{word-break:break-all;color:#4ECDC4;font-size:12px}
+  .footer{margin-top:30px;font-size:12px;color:#666}
+  .divider{margin:20px 0;text-align:center;color:#999}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Reset your password</h2>
+  <p>Hello %s,</p>
+  <p>You requested to reset your password. Tap the button to open DriveBai:</p>
+  <p style="text-align:center;"><a href="%s" class="button">Reset Password in App</a></p>
+  <p class="divider">— or —</p>
+  <p>If the button doesn't work, use this web link:</p>
+  <p style="text-align:center;"><a href="%s" class="button button-secondary">Reset via Web</a></p>
+  <p class="link">%s</p>
+  <p>This link expires in 1 hour.</p>
+  <p>If you didn't request a password reset, you can safely ignore this email.</p>
+  <div class="footer"><p>Best,<br>The DriveBai Team</p></div>
+</div>
+</body>
+</html>`, toName, resetLink, webLink, webLink)
+
+	payload := mailerSendPayload{
+		From:    mailerSendAddress{Email: s.fromEmail, Name: s.fromName},
+		To:      []mailerSendAddress{{Email: toEmail, Name: toName}},
+		Subject: "Reset your DriveBai password",
+		Text:    plainText,
+		HTML:    htmlBody,
+	}
+
+	messageID, err := sendMailerSend(s.client, s.apiKey, payload, s.logger, toEmail, "password-reset")
+	if err != nil {
+		return err
+	}
+	s.logger.Info("password reset email accepted by MailerSend",
+		"to", toEmail,
+		"message_id", messageID,
+		"token_prefix", redactToken(token),
+	)
+	return nil
 }
 
 func (s *ConsoleOTPSender) SendLoginOTP(toEmail, code string) (*OTPSendResult, error) {

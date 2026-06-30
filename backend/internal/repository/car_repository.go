@@ -56,6 +56,39 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 	return err
 }
 
+// ExistsByVIN reports whether any car already has the given VIN
+// (case-insensitive). Empty VINs always return false — the partial unique
+// index `cars_vin_unique_lower_idx` excludes NULL/'' as well, so the two
+// agree. Callers should normalize the VIN (trim + uppercase) before invoking
+// to stay aligned with what's written on insert.
+func (r *CarRepository) ExistsByVIN(ctx context.Context, vin string) (bool, error) {
+	if strings.TrimSpace(vin) == "" {
+		return false, nil
+	}
+	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '')`
+	var exists bool
+	if err := r.db.Pool.QueryRow(ctx, query, vin).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// ExistsByVINExcludingID is the UpdateCar-side companion to ExistsByVIN: it
+// checks for any OTHER car (id != excludeID) holding this VIN. Lets an owner
+// PATCH unrelated fields on their own listing without false-positive 409s when
+// the VIN field is round-tripped unchanged.
+func (r *CarRepository) ExistsByVINExcludingID(ctx context.Context, vin string, excludeID uuid.UUID) (bool, error) {
+	if strings.TrimSpace(vin) == "" {
+		return false, nil
+	}
+	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND id <> $2)`
+	var exists bool
+	if err := r.db.Pool.QueryRow(ctx, query, vin, excludeID).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 // SetApproved sets is_approved on a car. Used by the auto-approve path when AUTO_APPROVE_CARS=true.
 func (r *CarRepository) SetApproved(ctx context.Context, id uuid.UUID, approved bool) error {
 	_, err := r.db.Pool.Exec(ctx,

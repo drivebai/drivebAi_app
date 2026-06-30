@@ -325,6 +325,16 @@ struct APIErrorResponse: Codable {
     let error: APIErrorDetail
 }
 
+/// Fallback shape used by handlers that return a flat
+/// `{"error":"<machine_code>","message":"<human text>"}` body instead of
+/// the nested `APIErrorResponse` envelope. The VIN-conflict 409 on
+/// POST /cars uses this shape — see backend/internal/handlers/car.go
+/// writeVINConflict. Callers branch on `.error` (e.g. "vin_already_in_use").
+struct FlatAPIErrorResponse: Codable {
+    let error: String
+    let message: String?
+}
+
 struct APIErrorDetail: Codable {
     let code: String
     let message: String
