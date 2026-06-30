@@ -317,6 +317,19 @@ struct ChatView: View {
                     }
                     .padding()
                 }
+                .refreshable {
+                    // Pull-to-refresh the Requests tab. WS updates already
+                    // re-fetch automatically, but manual refresh is the
+                    // escape hatch when an out-of-band change (admin edit,
+                    // backfill, missed WS event) leaves the cached
+                    // pickup_confirmed_at / vehicle_return state stale
+                    // and the user is staring at the wrong CTA.
+                    async let leases: () = viewModel.loadLeaseRequests()
+                    async let reqs:   () = viewModel.loadRequests()
+                    async let docs:   () = viewModel.loadSharedDocuments()
+                    async let vrets:  () = viewModel.loadVehicleReturnsForChatLeases()
+                    _ = await (leases, reqs, docs, vrets)
+                }
             }
         }
     }
