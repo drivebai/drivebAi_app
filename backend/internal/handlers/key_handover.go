@@ -221,6 +221,34 @@ func (h *KeyHandoverHandler) DriverConfirm(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Cascade the key-handover completion onto the lease itself.
+	// `lease_requests.pickup_confirmed_at` is the field every downstream
+	// surface keys off (the chat-card "I returned the car" CTA, the
+	// vehicle-return Initiate gate, Today aggregation, refund clock start).
+	// Without this cascade the key_handover row says "completed" while the
+	// lease row still shows pickup_confirmed_at = NULL, and the return
+	// flow never becomes available to the driver.
+	//
+	// Non-fatal on failure: the key_handover IS already committed, so we
+	// still want to respond 200 and broadcast key_handover_completed. The
+	// reconciler / next driver confirm-pickup retry can backfill, and
+	// admin tooling can fix manually. Log loudly so we notice.
+	if _, leaseErr := h.leaseRepo.ConfirmPickup(r.Context(), updated.LeaseRequestID, userID); leaseErr != nil {
+		h.logger.Error("cascade pickup_confirmed_at failed",
+			"lease_id", updated.LeaseRequestID,
+			"key_handover_id", updated.ID,
+			"error", leaseErr)
+	} else {
+		// Lease changed → tell open clients so the chat card flips from
+		// "Pickup Confirmed" gating to "I returned the car" without a
+		// manual refresh.
+		h.wsHub.Broadcast(&ws.Event{
+			Type:          "lease_request_updated",
+			Payload:       map[string]any{"lease_request_id": updated.LeaseRequestID},
+			TargetUserIDs: []uuid.UUID{updated.OwnerID, updated.DriverID},
+		})
+	}
+
 	resp := h.buildResponse(r.Context(), updated, userID)
 	h.broadcast("key_handover_completed", updated)
 
