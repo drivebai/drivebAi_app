@@ -22,6 +22,17 @@ final class ChatViewModel: ObservableObject {
     @Published var leaseRequests: [LeaseRequest] = []
     @Published var isLoadingLeaseRequests = false
 
+    /// Active vehicle-return rows keyed by lease-request id. Powers the
+    /// in-chat lease card so the same surface that drove pickup-confirmation
+    /// now also drives "Start return" / "Confirm return" / status copy.
+    /// We keep it map-shaped so the card render can look up its row in O(1)
+    /// regardless of whether the row is in driver_initiated, owner_confirmed,
+    /// disputed, or completed state.
+    @Published var vehicleReturnsByLease: [UUID: VehicleReturn] = [:]
+    @Published var isLoadingVehicleReturns = false
+    /// Per-lease busy state for the chat-card CTAs.
+    @Published var submittingVehicleReturnLeaseId: UUID?
+
     /// Driver onboarding documents (license) shared into this chat through
     /// one or more lease requests. Surfaced to the OWNER side of the chat
     /// only — `vehicleDocuments` is the matching driver-side payload.
@@ -98,6 +109,18 @@ final class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Vehicle-return events on this chat's leases bump the local map so
+        // the inline lease card flips between "Start return" → "Awaiting
+        // owner" → "Returned" with no manual refresh. We don't filter by
+        // chatId here because the WS payload is minimal; instead we refetch
+        // for every lease this chat already knows about — cheap and correct.
+        WebSocketManager.shared.vehicleReturnUpdatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { [weak self] in await self?.loadVehicleReturnsForChatLeases() }
+            }
+            .store(in: &cancellables)
+
         // On any lease status flip we also refresh shared documents. This
         // matters for the driver side: vehicle documents (registration /
         // insurance / …) are gated by `HasAcceptedLeaseForChat` on the
@@ -111,6 +134,7 @@ final class ChatViewModel: ObservableObject {
                 Task { [weak self] in
                     await self?.loadLeaseRequests()
                     await self?.loadSharedDocuments()
+                    await self?.loadVehicleReturnsForChatLeases()
                 }
             }
             .store(in: &cancellables)
@@ -360,6 +384,10 @@ final class ChatViewModel: ObservableObject {
             self.error = error.localizedDescription
         }
         isLoadingLeaseRequests = false
+        // The vehicle-return cache is keyed by lease id, so reload it any
+        // time the lease list changes shape. Cheap; bounded to one HTTP
+        // call per lease, and most chats have exactly one lease row.
+        await loadVehicleReturnsForChatLeases()
     }
 
     // MARK: - Shared Driver Documents
@@ -625,6 +653,115 @@ final class ChatViewModel: ObservableObject {
             }
             try? await Task.sleep(for: .seconds(delay))
             await loadLeaseRequests()
+        }
+    }
+
+    // MARK: - Vehicle Returns
+
+    /// Refresh the vehicle-return cache for every lease this chat currently
+    /// knows about. Cheap-but-not-free; called on every WS event, on view
+    /// appear, and after every return mutation.
+    func loadVehicleReturnsForChatLeases() async {
+        // Snapshot the lease ids up front so we're not racing the
+        // `loadLeaseRequests` task that's about to mutate the list.
+        let leaseIds = leaseRequests.map(\.id)
+        guard !leaseIds.isEmpty else {
+            vehicleReturnsByLease = [:]
+            return
+        }
+        isLoadingVehicleReturns = true
+        defer { isLoadingVehicleReturns = false }
+
+        var updated: [UUID: VehicleReturn] = [:]
+        for id in leaseIds {
+            do {
+                if let api = try await apiClient.fetchVehicleReturnForLease(leaseRequestId: id) {
+                    updated[id] = api.toDomain()
+                }
+            } catch {
+                #if DEBUG
+                print("[ChatViewModel] fetchVehicleReturnForLease(\(id)) error: \(error)")
+                #endif
+            }
+        }
+        vehicleReturnsByLease = updated
+    }
+
+    /// Driver-side initiator from the chat lease card. Optimistic UX is
+    /// handled by an immediate refetch — the backend is the source of truth
+    /// and the WS broadcast also nudges OwnerTodayViewModel.
+    func submitVehicleReturn(leaseRequestId: UUID) async {
+        guard submittingVehicleReturnLeaseId == nil else { return }
+        submittingVehicleReturnLeaseId = leaseRequestId
+        defer { submittingVehicleReturnLeaseId = nil }
+        do {
+            let resp = try await apiClient.initiateVehicleReturn(leaseRequestId: leaseRequestId)
+            vehicleReturnsByLease[leaseRequestId] = resp.toDomain()
+        } catch {
+            self.error = describeError(error)
+        }
+        // Lease row gets `vehicle_returned_at` once the flow finishes, so
+        // refresh the lease list too — the LeaseRequestCardView reads from
+        // it for some of its gating.
+        await loadLeaseRequests()
+    }
+
+    /// Driver-side undo. Only valid within the 5-minute window; backend
+    /// rejects with 409 once it lapses (we just refetch on error).
+    func cancelVehicleReturn(leaseRequestId: UUID) async {
+        guard let vReturn = vehicleReturnsByLease[leaseRequestId] else { return }
+        guard submittingVehicleReturnLeaseId == nil else { return }
+        submittingVehicleReturnLeaseId = leaseRequestId
+        defer { submittingVehicleReturnLeaseId = nil }
+        do {
+            let resp = try await apiClient.cancelVehicleReturn(returnId: vReturn.id)
+            vehicleReturnsByLease[leaseRequestId] = resp.toDomain()
+        } catch {
+            self.error = describeError(error)
+            await loadVehicleReturnsForChatLeases()
+        }
+    }
+
+    /// Owner-side confirm from inside the chat. Backend triggers the
+    /// refund pipeline; the WS event will sync the Today tab on the other
+    /// device.
+    func confirmVehicleReturn(leaseRequestId: UUID) async {
+        guard let vReturn = vehicleReturnsByLease[leaseRequestId] else { return }
+        guard submittingVehicleReturnLeaseId == nil else { return }
+        submittingVehicleReturnLeaseId = leaseRequestId
+        defer { submittingVehicleReturnLeaseId = nil }
+        do {
+            let resp = try await apiClient.confirmVehicleReturn(returnId: vReturn.id)
+            vehicleReturnsByLease[leaseRequestId] = resp.toDomain()
+        } catch {
+            self.error = describeError(error)
+        }
+        await loadLeaseRequests()
+    }
+
+    /// Owner-side dispute (called from the chat sheet, mirroring the Today
+    /// dispute flow). The caller is expected to pass a trimmed 5-500 char
+    /// `reason` — the backend re-validates.
+    /// Returns the failure message on error so the dispute sheet can keep
+    /// itself up with a spinner during the round-trip and only auto-dismiss
+    /// after the server has actually accepted the dispute. Returns nil on
+    /// success. Also still writes failures to `self.error` for callers that
+    /// rely on the existing banner.
+    func disputeVehicleReturn(leaseRequestId: UUID, reason: String) async -> String? {
+        guard let vReturn = vehicleReturnsByLease[leaseRequestId] else {
+            return "We couldn't find an active return for this lease."
+        }
+        guard submittingVehicleReturnLeaseId == nil else { return nil }
+        submittingVehicleReturnLeaseId = leaseRequestId
+        defer { submittingVehicleReturnLeaseId = nil }
+        do {
+            let resp = try await apiClient.disputeVehicleReturn(returnId: vReturn.id, reason: reason)
+            vehicleReturnsByLease[leaseRequestId] = resp.toDomain()
+            return nil
+        } catch {
+            let msg = describeError(error)
+            self.error = msg
+            return msg
         }
     }
 

@@ -45,6 +45,17 @@ final class OwnerTodayViewModel: ObservableObject {
     /// ID of the handover currently being confirmed (drives the card's busy state)
     @Published var submittingHandoverId: UUID?
 
+    /// Active vehicle-return rows for this owner (driver-initiated waiting
+    /// confirm / disputed / freshly-completed).
+    @Published var vehicleReturns: [VehicleReturn] = []
+
+    /// ID of the return currently being acted on (drives the card's busy state).
+    @Published var submittingReturnId: UUID?
+
+    /// Locally-dismissed return ids; same client-only pattern as the
+    /// driver-side VM.
+    private var dismissedReturnIds: Set<UUID> = []
+
     // MARK: - Private Properties
 
     private var timerCancellable: AnyCancellable?
@@ -62,6 +73,7 @@ final class OwnerTodayViewModel: ObservableObject {
             await fetchActions()
             await fetchNotifications()
             await fetchKeyHandovers()
+            await fetchVehicleReturns()
         }
     }
 
@@ -142,6 +154,7 @@ final class OwnerTodayViewModel: ObservableObject {
         await fetchActions()
         await fetchNotifications()
         await fetchKeyHandovers()
+        await fetchVehicleReturns()
     }
 
     // MARK: - Key Handovers
@@ -233,6 +246,99 @@ final class OwnerTodayViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Vehicle Returns
+
+    /// Pull active vehicle-return rows for the owner. Failure-silent — the
+    /// list is purely additive on top of the Today tab and shouldn't paint
+    /// errors over the rest of the screen.
+    func fetchVehicleReturns() async {
+        do {
+            let response = try await apiClient.fetchVehicleReturnsToday()
+            let incoming = response.vehicleReturns.map { $0.toDomain() }
+            vehicleReturns = incoming.filter { !dismissedReturnIds.contains($0.id) }
+        } catch {
+            #if DEBUG
+            print("[OwnerTodayVM] fetchVehicleReturns error: \(error)")
+            #endif
+        }
+    }
+
+    /// Single entry-point the card's "primary" CTA hits — dispatches by
+    /// viewerRole so a user who is the owner on one lease AND the driver
+    /// on another can't accidentally invoke the wrong API (e.g. tapping
+    /// "Undo return" on a driver-perspective card from the Owner tab).
+    func actOnVehicleReturn(_ vReturn: VehicleReturn) {
+        switch vReturn.viewerRole {
+        case .driver: cancelVehicleReturn(vReturn)
+        case .owner:  confirmVehicleReturn(vReturn)
+        }
+    }
+
+    /// Driver-perspective undo — kept on the Owner VM too because the
+    /// underlying `vehicleReturns` array is the union of both roles for
+    /// this user. See `actOnVehicleReturn` for dispatch.
+    func cancelVehicleReturn(_ vReturn: VehicleReturn) {
+        guard submittingReturnId == nil else { return }
+        submittingReturnId = vReturn.id
+        Task {
+            defer { submittingReturnId = nil }
+            do {
+                _ = try await apiClient.cancelVehicleReturn(returnId: vReturn.id)
+            } catch {
+                #if DEBUG
+                print("[OwnerTodayVM] cancelVehicleReturn error: \(error)")
+                #endif
+            }
+            await fetchVehicleReturns()
+        }
+    }
+
+    /// Owner confirms receipt; backend immediately moves to the refund
+    /// pipeline. We just refetch to pick up the new state.
+    func confirmVehicleReturn(_ vReturn: VehicleReturn) {
+        guard submittingReturnId == nil else { return }
+        submittingReturnId = vReturn.id
+        Task {
+            defer { submittingReturnId = nil }
+            do {
+                _ = try await apiClient.confirmVehicleReturn(returnId: vReturn.id)
+            } catch {
+                #if DEBUG
+                print("[OwnerTodayVM] confirmVehicleReturn error: \(error)")
+                #endif
+            }
+            await fetchVehicleReturns()
+        }
+    }
+
+    /// Owner files a dispute. `reason` is the 5-500 char string the
+    /// support team will read. Returns the failure message on error so
+    /// the dispute sheet can keep itself up with a spinner during the
+    /// round-trip and only auto-dismiss after the server accepts.
+    /// Returns nil on success.
+    func disputeVehicleReturn(_ vReturn: VehicleReturn, reason: String) async -> String? {
+        guard submittingReturnId == nil else { return nil }
+        submittingReturnId = vReturn.id
+        defer { submittingReturnId = nil }
+        do {
+            _ = try await apiClient.disputeVehicleReturn(returnId: vReturn.id, reason: reason)
+            await fetchVehicleReturns()
+            return nil
+        } catch {
+            #if DEBUG
+            print("[OwnerTodayVM] disputeVehicleReturn error: \(error)")
+            #endif
+            await fetchVehicleReturns()
+            return (error as? APIError)?.errorDescription ?? "Couldn't submit dispute. Please try again."
+        }
+    }
+
+    /// Local-only dismiss on a terminal return card.
+    func dismissVehicleReturn(_ vReturn: VehicleReturn) {
+        dismissedReturnIds.insert(vReturn.id)
+        vehicleReturns.removeAll { $0.id == vReturn.id }
+    }
+
     // MARK: - Countdown Timer
 
     private func startCountdownTimer() {
@@ -276,6 +382,15 @@ final class OwnerTodayViewModel: ObservableObject {
             .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchKeyHandovers() }
+            }
+            .store(in: &wsCancellables)
+
+        // Vehicle-return updates need to refresh both the return list and the
+        // lease list (the lease's `vehicle_returned_at` flips on completion).
+        ws.vehicleReturnUpdatedPublisher
+            .merge(with: ws.leaseRequestUpdatedPublisher)
+            .sink { [weak self] in
+                Task { await self?.fetchVehicleReturns() }
             }
             .store(in: &wsCancellables)
     }

@@ -18,6 +18,9 @@ struct OwnerTodayView: View {
     /// Lease-pickup deep-link target (owner side mirror of the driver-side
     /// machinery in DriverTodayView). Driven by DeepLinkRouter.pendingLeasePickupId.
     @State private var deepLinkPickupChat: DeepLinkPickupTarget?
+    /// Vehicle return the owner currently wants to dispute. Bound to a
+    /// modal sheet so the textfield input is captured before the API call.
+    @State private var disputeTarget: VehicleReturn?
 
     /// Get listings from OwnerCarsStore (single source of truth)
     private var listings: [ListingSummary] {
@@ -40,6 +43,9 @@ struct OwnerTodayView: View {
 
                     // Section: Key Handover (shown only when active)
                     keyHandoverSection
+
+                    // Section: Vehicle Return (shown only when active)
+                    vehicleReturnSection
 
                     // Section 2: Actions to Take
                     actionsSection
@@ -109,6 +115,11 @@ struct OwnerTodayView: View {
             }
             .navigationDestination(item: $selectedHandover) { handover in
                 KeyHandoverDetailView(handover: handover)
+            }
+            .sheet(item: $disputeTarget) { target in
+                VehicleReturnDisputeSheet(vehicleReturn: target) { reason in
+                    await viewModel.disputeVehicleReturn(target, reason: reason)
+                }
             }
             .navigationDestination(item: $deepLinkPickupChat) { target in
                 if let userId = authStore.state.user?.id {
@@ -221,6 +232,39 @@ struct OwnerTodayView: View {
                                 viewModel.extendPickup(handover: handover, minutes: minutes)
                             },
                             onDismiss: { viewModel.dismissHandover(handover) }
+                        )
+                    }
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+            }
+        }
+    }
+
+    // MARK: - Vehicle Return Section
+
+    @ViewBuilder
+    private var vehicleReturnSection: some View {
+        if !viewModel.vehicleReturns.isEmpty {
+            VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
+                Text("Vehicle return")
+                    .font(TodayLayout.sectionTitleFont)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    ForEach(viewModel.vehicleReturns) { vReturn in
+                        VehicleReturnCard(
+                            vehicleReturn: vReturn,
+                            currentTime: viewModel.currentTime,
+                            isSubmitting: viewModel.submittingReturnId == vReturn.id,
+                            onAct: { viewModel.actOnVehicleReturn(vReturn) },
+                            // Dispute is owner-only; the card already hides the
+                            // dispute control for driver-perspective rows, but
+                            // we still no-op here for driver rows in case the
+                            // card's gating ever changes.
+                            onDispute: vReturn.viewerRole == .owner ? { disputeTarget = vReturn } : nil,
+                            onOpen: {},
+                            onDismiss: { viewModel.dismissVehicleReturn(vReturn) }
                         )
                     }
                 }
@@ -348,4 +392,97 @@ extension OwnerTodayView {
 
 #Preview("Empty State") {
     OwnerTodayView()
+}
+
+// MARK: - Dispute Sheet
+
+/// Lightweight modal sheet for the owner-side dispute flow. Validates the
+/// 5-500 char reason locally so we never round-trip a definitely-invalid
+/// payload to the backend.
+///
+/// onSubmit is async and returns the failure message on error (nil on
+/// success). The sheet keeps itself up with a spinner during the call and
+/// only auto-dismisses after the server accepts — otherwise the owner
+/// would never see server-side rejections (rate limit, status race, etc.)
+/// because the sheet would have already closed.
+struct VehicleReturnDisputeSheet: View {
+    let vehicleReturn: VehicleReturn
+    let onSubmit: (String) async -> String?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var reason: String = ""
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+
+    private var trimmedReason: String {
+        reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isValid: Bool {
+        let count = trimmedReason.count
+        return count >= 5 && count <= 500
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Tell us what went wrong with the return. Our team will review and reach out within 24 hours.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("Reason") {
+                    // TextEditor is the right control here — disputes are
+                    // multi-line, and we want a visible character counter so
+                    // owners know about the 500-char ceiling.
+                    TextEditor(text: $reason)
+                        .frame(minHeight: 120)
+                        .disabled(isSubmitting)
+                    Text("\(trimmedReason.count)/500")
+                        .font(.caption)
+                        .foregroundColor(trimmedReason.count > 500 ? .red : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .font(.subheadline)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("Dispute return")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSubmitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSubmitting {
+                        ProgressView()
+                    } else {
+                        Button("Submit") {
+                            isSubmitting = true
+                            errorMessage = nil
+                            let captured = trimmedReason
+                            Task {
+                                let err = await onSubmit(captured)
+                                if let err {
+                                    errorMessage = err
+                                    isSubmitting = false
+                                } else {
+                                    dismiss()
+                                }
+                            }
+                        }
+                        .disabled(!isValid)
+                    }
+                }
+            }
+            .interactiveDismissDisabled(isSubmitting)
+        }
+    }
 }

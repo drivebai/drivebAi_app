@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/stripe/stripe-go/v81/webhook"
@@ -252,15 +253,20 @@ type Refund struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// CreateRefund issues a full refund against a PaymentIntent. The
-// idempotencyKey must be stable for the same logical refund (we use
-// "refund-<leaseRequestID>") so that worker retries after a crash, network
-// blip, or duplicate webhook do not stack multiple refunds — Stripe returns
-// the same Refund on subsequent calls with the same key.
+// CreateRefund issues a refund against a PaymentIntent. The idempotencyKey
+// must be stable for the same logical refund (we use "refund-<leaseID>"
+// for pickup-expiry, "vehicle-return-refund-<returnID>" for vehicle
+// returns) so worker retries after a crash, network blip, or duplicate
+// webhook do not stack multiple refunds — Stripe returns the same
+// Refund on subsequent calls with the same key.
 //
 // Pass `reason` as one of: "requested_by_customer", "duplicate",
 // "fraudulent", or empty to omit.
-func (s *Service) CreateRefund(paymentIntentID, idempotencyKey, reason string) (*Refund, error) {
+//
+// `amountCents` is the partial-refund amount; pass 0 for a full refund
+// (the pickup-expiry path keeps using 0 since the entire payment is
+// reversed). When > 0, Stripe refunds exactly that many cents.
+func (s *Service) CreateRefund(paymentIntentID, idempotencyKey, reason string, amountCents int64) (*Refund, error) {
 	if paymentIntentID == "" {
 		return nil, fmt.Errorf("stripe refund: payment intent id required")
 	}
@@ -268,6 +274,9 @@ func (s *Service) CreateRefund(paymentIntentID, idempotencyKey, reason string) (
 	params.Set("payment_intent", paymentIntentID)
 	if reason != "" {
 		params.Set("reason", reason)
+	}
+	if amountCents > 0 {
+		params.Set("amount", strconv.FormatInt(amountCents, 10))
 	}
 
 	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/refunds", strings.NewReader(params.Encode()))

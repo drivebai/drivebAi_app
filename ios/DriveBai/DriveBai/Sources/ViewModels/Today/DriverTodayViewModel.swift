@@ -45,6 +45,19 @@ final class DriverTodayViewModel: ObservableObject {
     /// ID of the handover currently being confirmed (drives the card's busy state)
     @Published var submittingHandoverId: UUID?
 
+    /// Active vehicle-return rows for this user (driver-initiated / awaiting
+    /// owner / disputed / freshly-completed). Includes terminal rows until
+    /// the user dismisses them — the Today card needs the "Got it" handshake
+    /// to feel deliberate.
+    @Published var vehicleReturns: [VehicleReturn] = []
+
+    /// ID of the return currently being acted on (drives the card's busy state).
+    @Published var submittingReturnId: UUID?
+
+    /// Locally-dismissed return ids — we filter these out client-side
+    /// because the backend has no per-user dismiss endpoint for returns yet.
+    private var dismissedReturnIds: Set<UUID> = []
+
     // MARK: - Private Properties
 
     private var timerCancellable: AnyCancellable?
@@ -62,6 +75,7 @@ final class DriverTodayViewModel: ObservableObject {
             await fetchActions()
             await fetchNotifications()
             await fetchKeyHandovers()
+            await fetchVehicleReturns()
         }
     }
 
@@ -143,6 +157,7 @@ final class DriverTodayViewModel: ObservableObject {
         await fetchActions()
         await fetchNotifications()
         await fetchKeyHandovers()
+        await fetchVehicleReturns()
     }
 
     // MARK: - Key Handovers
@@ -221,6 +236,95 @@ final class DriverTodayViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Vehicle Returns
+
+    /// Pull the active vehicle-return rows for the current driver. Failures
+    /// are swallowed (and just leave the list empty) so a backend not yet
+    /// running the v2 endpoints doesn't paint the Today tab with a banner.
+    func fetchVehicleReturns() async {
+        do {
+            let response = try await apiClient.fetchVehicleReturnsToday()
+            let incoming = response.vehicleReturns.map { $0.toDomain() }
+            vehicleReturns = incoming.filter { !dismissedReturnIds.contains($0.id) }
+        } catch {
+            #if DEBUG
+            print("[DriverTodayVM] fetchVehicleReturns error: \(error)")
+            #endif
+        }
+    }
+
+    /// Driver-side initiator. Called from the Today card's "I returned the
+    /// car" CTA OR from the chat-tab LeaseRequestCardView. Refreshes after
+    /// the round-trip so both surfaces show the same state.
+    func submitVehicleReturn(leaseRequestId: UUID) {
+        Task {
+            do {
+                _ = try await apiClient.initiateVehicleReturn(leaseRequestId: leaseRequestId)
+            } catch {
+                #if DEBUG
+                print("[DriverTodayVM] submitVehicleReturn error: \(error)")
+                #endif
+            }
+            await fetchVehicleReturns()
+        }
+    }
+
+    /// Single entry-point the card's "primary" CTA hits — dispatches by
+    /// viewerRole so a user who is the driver on one lease AND the owner
+    /// on another can't accidentally invoke the wrong API (e.g. tapping
+    /// "Confirm return" on an owner-perspective card from the Driver tab).
+    func actOnVehicleReturn(_ vReturn: VehicleReturn) {
+        switch vReturn.viewerRole {
+        case .driver: cancelVehicleReturn(vReturn)
+        case .owner:  confirmVehicleReturn(vReturn)
+        }
+    }
+
+    /// Driver-side undo within the 5-minute window. Backend enforces the
+    /// window; on 409 we just refetch so the UI reflects the truth.
+    func cancelVehicleReturn(_ vReturn: VehicleReturn) {
+        guard submittingReturnId == nil else { return }
+        submittingReturnId = vReturn.id
+        Task {
+            defer { submittingReturnId = nil }
+            do {
+                _ = try await apiClient.cancelVehicleReturn(returnId: vReturn.id)
+            } catch {
+                #if DEBUG
+                print("[DriverTodayVM] cancelVehicleReturn error: \(error)")
+                #endif
+            }
+            await fetchVehicleReturns()
+        }
+    }
+
+    /// Owner-perspective confirm — kept on the Driver VM too because the
+    /// underlying `vehicleReturns` array is the union of both roles for
+    /// this user. See `actOnVehicleReturn` for dispatch.
+    func confirmVehicleReturn(_ vReturn: VehicleReturn) {
+        guard submittingReturnId == nil else { return }
+        submittingReturnId = vReturn.id
+        Task {
+            defer { submittingReturnId = nil }
+            do {
+                _ = try await apiClient.confirmVehicleReturn(returnId: vReturn.id)
+            } catch {
+                #if DEBUG
+                print("[DriverTodayVM] confirmVehicleReturn error: \(error)")
+                #endif
+            }
+            await fetchVehicleReturns()
+        }
+    }
+
+    /// "Got it" tap on a terminal return card — local-only because the
+    /// backend has no per-user dismiss endpoint for returns. Persists for
+    /// the lifetime of the view model.
+    func dismissVehicleReturn(_ vReturn: VehicleReturn) {
+        dismissedReturnIds.insert(vReturn.id)
+        vehicleReturns.removeAll { $0.id == vReturn.id }
+    }
+
     // MARK: - Countdown Timer
 
     private func startCountdownTimer() {
@@ -263,6 +367,17 @@ final class DriverTodayViewModel: ObservableObject {
             .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchKeyHandovers() }
+            }
+            .store(in: &wsCancellables)
+
+        // Vehicle-return updates also re-query lease state under the hood
+        // (the lease's `vehicle_returned_at` flips on completion), so we
+        // bundle the lease publisher in here too — keeps the Today tab in
+        // sync without waiting for the next manual refresh.
+        ws.vehicleReturnUpdatedPublisher
+            .merge(with: ws.leaseRequestUpdatedPublisher)
+            .sink { [weak self] in
+                Task { await self?.fetchVehicleReturns() }
             }
             .store(in: &wsCancellables)
     }

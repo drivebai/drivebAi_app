@@ -225,6 +225,24 @@ protocol APIClientProtocol {
     /// Per-user "Got it" on a terminal pickup-refunded card.
     func dismissKeyHandover(id: UUID) async throws -> DismissAPIResponse
 
+    // Vehicle returns
+    /// Driver: kick off the post-rental return handshake. Backend gates on
+    /// the lease being paid + pickup-confirmed + no existing return row.
+    func initiateVehicleReturn(leaseRequestId: UUID) async throws -> VehicleReturnAPIModel
+    /// Driver: self-cancel within the 5-minute window. 409 once it lapses.
+    func cancelVehicleReturn(returnId: UUID) async throws -> VehicleReturnAPIModel
+    /// Owner: confirm receipt; triggers the refund pipeline server-side.
+    func confirmVehicleReturn(returnId: UUID) async throws -> VehicleReturnAPIModel
+    /// Owner: dispute the return with a 5-500 char reason.
+    func disputeVehicleReturn(returnId: UUID, reason: String) async throws -> VehicleReturnAPIModel
+    /// Today aggregation — both driver- and owner-visible rows.
+    func fetchVehicleReturnsToday() async throws -> VehicleReturnsListAPIResponse
+    /// Fetch a single return by id; participant-only on the backend.
+    func fetchVehicleReturn(id: UUID) async throws -> VehicleReturnAPIModel
+    /// Convenience lookup so the chat surface can render the in-progress
+    /// return card without scanning the entire Today list.
+    func fetchVehicleReturnForLease(leaseRequestId: UUID) async throws -> VehicleReturnAPIModel?
+
     // Payments (Stripe)
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
@@ -650,6 +668,65 @@ final class APIClient: APIClientProtocol {
 
     func dismissKeyHandover(id: UUID) async throws -> DismissAPIResponse {
         try await postEmpty(path: "key-handovers/\(id.uuidString)/dismiss", authenticated: true)
+    }
+
+    // MARK: - Vehicle Return Methods
+
+    func initiateVehicleReturn(leaseRequestId: UUID) async throws -> VehicleReturnAPIModel {
+        try await postEmpty(
+            path: "lease-requests/\(leaseRequestId.uuidString)/vehicle-return",
+            authenticated: true
+        )
+    }
+
+    func cancelVehicleReturn(returnId: UUID) async throws -> VehicleReturnAPIModel {
+        try await postEmpty(
+            path: "vehicle-returns/\(returnId.uuidString)/cancel",
+            authenticated: true
+        )
+    }
+
+    func confirmVehicleReturn(returnId: UUID) async throws -> VehicleReturnAPIModel {
+        try await postEmpty(
+            path: "vehicle-returns/\(returnId.uuidString)/owner-confirm",
+            authenticated: true
+        )
+    }
+
+    func disputeVehicleReturn(returnId: UUID, reason: String) async throws -> VehicleReturnAPIModel {
+        let body = DisputeVehicleReturnAPIRequest(reason: reason)
+        return try await post(
+            path: "vehicle-returns/\(returnId.uuidString)/dispute",
+            body: body,
+            authenticated: true
+        )
+    }
+
+    func fetchVehicleReturnsToday() async throws -> VehicleReturnsListAPIResponse {
+        try await get(path: "vehicle-returns/today", authenticated: true)
+    }
+
+    func fetchVehicleReturn(id: UUID) async throws -> VehicleReturnAPIModel {
+        try await get(path: "vehicle-returns/\(id.uuidString)", authenticated: true)
+    }
+
+    /// Best-effort lookup: returns nil on 404 (no return row exists yet for
+    /// that lease) so the chat layer can render the "Start return" button
+    /// without lighting up an error banner. Other server failures still throw.
+    func fetchVehicleReturnForLease(leaseRequestId: UUID) async throws -> VehicleReturnAPIModel? {
+        do {
+            let resp: VehicleReturnAPIModel = try await get(
+                path: "lease-requests/\(leaseRequestId.uuidString)/vehicle-return",
+                authenticated: true
+            )
+            return resp
+        } catch let error as APIError {
+            if case let .serverError(_, message) = error,
+               message.contains("404") || message.lowercased().contains("not found") {
+                return nil
+            }
+            throw error
+        }
     }
 
     // MARK: - Lease Request Methods

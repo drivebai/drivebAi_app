@@ -29,6 +29,12 @@ final class WebSocketManager: ObservableObject {
     // Key handover events (created / confirmed / completed / expired) — triggers Today refresh
     let keyHandoverUpdatedPublisher = PassthroughSubject<Void, Never>()
 
+    // Vehicle return events (created / confirmed / disputed / completed /
+    // cancelled). Both VMs and the chat-screen ChatViewModel subscribe so the
+    // counterparty's state change lights up the local card with no manual
+    // pull-to-refresh.
+    let vehicleReturnUpdatedPublisher = PassthroughSubject<Void, Never>()
+
     // Support chat events — admin reply arrives in real-time
     let supportMessageCreatedPublisher = PassthroughSubject<SupportMessageAPIResponse, Never>()
 
@@ -207,6 +213,14 @@ final class WebSocketManager: ObservableObject {
             leaseRequestUpdatedPublisher.send()
         case "key_handover_created", "key_handover_owner_confirmed", "key_handover_completed", "key_handover_expired":
             keyHandoverUpdatedPublisher.send()
+        case "vehicle_return_created",
+             "vehicle_return_initiated",
+             "vehicle_return_owner_confirmed",
+             "vehicle_return_disputed",
+             "vehicle_return_completed",
+             "vehicle_return_cancelled",
+             "vehicle_return_updated":
+            vehicleReturnUpdatedPublisher.send()
         case "notification_created":
             // Payload: { "unread_count": Int }
             if let unread = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: Int])?["unread_count"] {
