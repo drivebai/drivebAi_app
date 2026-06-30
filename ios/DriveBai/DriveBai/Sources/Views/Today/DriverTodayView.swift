@@ -36,6 +36,9 @@ struct DriverTodayView: View {
                     // Section: Key Handover (shown only when active)
                     keyHandoverSection
 
+                    // Section: Vehicle Return (shown only when active)
+                    vehicleReturnSection
+
                     // Section 2: Quick Actions and Reminders
                     actionsSection
                 }
@@ -184,6 +187,35 @@ struct DriverTodayView: View {
                             onAct: { viewModel.confirmHandover(handover) },
                             onOpen: { selectedHandover = handover },
                             onDismiss: { viewModel.dismissHandover(handover) }
+                        )
+                    }
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+            }
+        }
+    }
+
+    // MARK: - Vehicle Return Section
+
+    @ViewBuilder
+    private var vehicleReturnSection: some View {
+        if !viewModel.vehicleReturns.isEmpty {
+            VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
+                Text("Vehicle return")
+                    .font(TodayLayout.sectionTitleFont)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    ForEach(viewModel.vehicleReturns) { vReturn in
+                        VehicleReturnCard(
+                            vehicleReturn: vReturn,
+                            currentTime: viewModel.currentTime,
+                            isSubmitting: viewModel.submittingReturnId == vReturn.id,
+                            onAct: { viewModel.actOnVehicleReturn(vReturn) },
+                            onDispute: nil,
+                            onOpen: {},
+                            onDismiss: { viewModel.dismissVehicleReturn(vReturn) }
                         )
                     }
                 }

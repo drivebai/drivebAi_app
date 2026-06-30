@@ -532,6 +532,29 @@ type AdminRentRow struct {
 	StartDate       time.Time  `json:"start_date"`
 	EndDate         *time.Time `json:"end_date,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
+
+	// Vehicle-return columns (LEFT-joined from vehicle_returns).
+	// Only the driver can initiate, so return_initiated_by_* always
+	// resolves to the driver — kept as separate fields for the admin UI
+	// because the admin layout treats them as the "who started it" lens.
+	ReturnID                  *uuid.UUID `json:"return_id,omitempty"`
+	ReturnStatus              *string    `json:"return_status,omitempty"`
+	ReturnInitiatedByID       *uuid.UUID `json:"return_initiated_by_id,omitempty"`
+	ReturnInitiatedByName     *string    `json:"return_initiated_by_name,omitempty"`
+	ReturnInitiatedByEmail    *string    `json:"return_initiated_by_email,omitempty"`
+	ReturnDriverConfirmedAt   *time.Time `json:"return_driver_confirmed_at,omitempty"`
+	ReturnOwnerConfirmedAt    *time.Time `json:"return_owner_confirmed_at,omitempty"`
+	ReturnCompletedAt         *time.Time `json:"return_completed_at,omitempty"`
+	ReturnDisputedAt          *time.Time `json:"return_disputed_at,omitempty"`
+	ReturnCancelledAt         *time.Time `json:"return_cancelled_at,omitempty"`
+	ReturnUsedDays            *int       `json:"return_used_days,omitempty"`
+	ReturnUnusedDays          *int       `json:"return_unused_days,omitempty"`
+	ReturnRefundAmountCents   *int64     `json:"return_refund_amount_cents,omitempty"`
+	ReturnRefundStatus        *string    `json:"return_refund_status,omitempty"`
+	ReturnRefundID            *string    `json:"return_refund_id,omitempty"`
+	ReturnRefundedAt          *time.Time `json:"return_refunded_at,omitempty"`
+	ReturnRefundFailureReason *string    `json:"return_refund_failure_reason,omitempty"`
+	ReturnDisputeReason       *string    `json:"return_dispute_reason,omitempty"`
 }
 
 type AdminRentsPage struct {
@@ -586,23 +609,17 @@ func (r *AdminRepository) ListRents(ctx context.Context, query, statusFilter str
 
 	args = append(args, limit, (page-1)*limit)
 	listSQL := fmt.Sprintf(`
-		SELECT lr.id, lr.chat_id, lr.status::text, lr.weekly_price, lr.weeks, lr.currency,
-		       d.id, COALESCE(d.first_name || ' ' || d.last_name, ''), d.email,
-		       o.id, COALESCE(o.first_name || ' ' || o.last_name, ''), o.email,
-		       c.id, c.title, c.year,
-		       p.payment_intent_id, p.status::text,
-		       lr.created_at,
-		       CASE WHEN lr.status IN ('declined','cancelled','expired','paid') THEN lr.updated_at ELSE NULL END,
-		       lr.created_at
+		SELECT %s
 		FROM lease_requests lr
 		JOIN cars  c ON c.id = lr.listing_id
 		JOIN users d ON d.id = lr.driver_id
 		JOIN users o ON o.id = lr.owner_id
 		LEFT JOIN payments p ON p.lease_request_id = lr.id
+		LEFT JOIN vehicle_returns vr ON vr.lease_request_id = lr.id
 		%s
 		ORDER BY lr.created_at DESC
 		LIMIT $%d OFFSET $%d
-	`, whereSQL, len(args)-1, len(args))
+	`, adminRentSelectCols, whereSQL, len(args)-1, len(args))
 
 	rows, err := r.db.Pool.Query(ctx, listSQL, args...)
 	if err != nil {
@@ -612,17 +629,69 @@ func (r *AdminRepository) ListRents(ctx context.Context, query, statusFilter str
 	out := []AdminRentRow{}
 	for rows.Next() {
 		var rent AdminRentRow
-		if err := rows.Scan(&rent.ID, &rent.ChatID, &rent.Status, &rent.WeeklyPrice, &rent.Weeks, &rent.Currency,
-			&rent.DriverID, &rent.DriverName, &rent.DriverEmail,
-			&rent.OwnerID, &rent.OwnerName, &rent.OwnerEmail,
-			&rent.CarID, &rent.CarTitle, &rent.CarYear,
-			&rent.PaymentIntentID, &rent.PaymentStatus,
-			&rent.StartDate, &rent.EndDate, &rent.CreatedAt); err != nil {
+		if err := scanAdminRent(rows, &rent); err != nil {
 			return nil, err
 		}
 		out = append(out, rent)
 	}
 	return &AdminRentsPage{Items: out, Total: total, Page: page, Limit: limit}, nil
+}
+
+// adminRentSelectCols is the canonical column list for the rents joined
+// view — kept here so ListRents and GetRentDetail can't drift apart.
+// vr.* columns come back NULL when no vehicle_return exists, which the
+// pointer fields on AdminRentRow handle cleanly.
+const adminRentSelectCols = `
+	lr.id, lr.chat_id, lr.status::text, lr.weekly_price, lr.weeks, lr.currency,
+	d.id, COALESCE(d.first_name || ' ' || d.last_name, ''), d.email,
+	o.id, COALESCE(o.first_name || ' ' || o.last_name, ''), o.email,
+	c.id, c.title, c.year,
+	p.payment_intent_id, p.status::text,
+	lr.created_at,
+	CASE WHEN lr.status IN ('declined','cancelled','expired','paid') THEN lr.updated_at ELSE NULL END,
+	lr.created_at,
+	vr.id,
+	vr.status,
+	CASE WHEN vr.id IS NULL THEN NULL ELSE d.id END                                   AS return_initiated_by_id,
+	CASE WHEN vr.id IS NULL THEN NULL ELSE COALESCE(d.first_name || ' ' || d.last_name, '') END AS return_initiated_by_name,
+	CASE WHEN vr.id IS NULL THEN NULL ELSE d.email END                                AS return_initiated_by_email,
+	vr.driver_initiated_at,
+	vr.owner_confirmed_at,
+	vr.completed_at,
+	vr.disputed_at,
+	vr.cancelled_at,
+	vr.used_days,
+	CASE WHEN vr.id IS NULL THEN NULL ELSE GREATEST(vr.rental_weeks * 7 - vr.used_days, 0) END AS return_unused_days,
+	vr.refund_amount_cents,
+	vr.refund_status,
+	vr.refund_id,
+	vr.refunded_at,
+	vr.refund_failure_reason,
+	vr.dispute_reason
+`
+
+// rowScanner is satisfied by pgx.Row and pgx.Rows; lets scanAdminRent
+// serve both ListRents (rows) and GetRentDetail (row).
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAdminRent(s rowScanner, rent *AdminRentRow) error {
+	return s.Scan(&rent.ID, &rent.ChatID, &rent.Status, &rent.WeeklyPrice, &rent.Weeks, &rent.Currency,
+		&rent.DriverID, &rent.DriverName, &rent.DriverEmail,
+		&rent.OwnerID, &rent.OwnerName, &rent.OwnerEmail,
+		&rent.CarID, &rent.CarTitle, &rent.CarYear,
+		&rent.PaymentIntentID, &rent.PaymentStatus,
+		&rent.StartDate, &rent.EndDate, &rent.CreatedAt,
+		&rent.ReturnID, &rent.ReturnStatus,
+		&rent.ReturnInitiatedByID, &rent.ReturnInitiatedByName, &rent.ReturnInitiatedByEmail,
+		&rent.ReturnDriverConfirmedAt, &rent.ReturnOwnerConfirmedAt,
+		&rent.ReturnCompletedAt, &rent.ReturnDisputedAt, &rent.ReturnCancelledAt,
+		&rent.ReturnUsedDays, &rent.ReturnUnusedDays,
+		&rent.ReturnRefundAmountCents, &rent.ReturnRefundStatus,
+		&rent.ReturnRefundID, &rent.ReturnRefundedAt, &rent.ReturnRefundFailureReason,
+		&rent.ReturnDisputeReason,
+	)
 }
 
 // ========== SUPPORT CHATS ==========
@@ -766,28 +835,17 @@ func (r *AdminRepository) PostSupportMessage(ctx context.Context, chatID, sender
 
 func (r *AdminRepository) GetRentDetail(ctx context.Context, id uuid.UUID) (*AdminRentRow, error) {
 	var rent AdminRentRow
-	err := r.db.Pool.QueryRow(ctx, `
-		SELECT lr.id, lr.chat_id, lr.status::text, lr.weekly_price, lr.weeks, lr.currency,
-		       d.id, COALESCE(d.first_name || ' ' || d.last_name, ''), d.email,
-		       o.id, COALESCE(o.first_name || ' ' || o.last_name, ''), o.email,
-		       c.id, c.title, c.year,
-		       p.payment_intent_id, p.status::text,
-		       lr.created_at,
-		       CASE WHEN lr.status IN ('declined','cancelled','expired','paid') THEN lr.updated_at ELSE NULL END,
-		       lr.created_at
+	row := r.db.Pool.QueryRow(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM lease_requests lr
 		JOIN cars  c ON c.id = lr.listing_id
 		JOIN users d ON d.id = lr.driver_id
 		JOIN users o ON o.id = lr.owner_id
 		LEFT JOIN payments p ON p.lease_request_id = lr.id
+		LEFT JOIN vehicle_returns vr ON vr.lease_request_id = lr.id
 		WHERE lr.id = $1
-	`, id).Scan(&rent.ID, &rent.ChatID, &rent.Status, &rent.WeeklyPrice, &rent.Weeks, &rent.Currency,
-		&rent.DriverID, &rent.DriverName, &rent.DriverEmail,
-		&rent.OwnerID, &rent.OwnerName, &rent.OwnerEmail,
-		&rent.CarID, &rent.CarTitle, &rent.CarYear,
-		&rent.PaymentIntentID, &rent.PaymentStatus,
-		&rent.StartDate, &rent.EndDate, &rent.CreatedAt)
-	if err != nil {
+	`, adminRentSelectCols), id)
+	if err := scanAdminRent(row, &rent); err != nil {
 		return nil, err
 	}
 	return &rent, nil

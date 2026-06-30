@@ -1010,7 +1010,8 @@ func (h *LeaseRequestHandler) issueAndFinalizeRefund(ctx context.Context, lr *mo
 	}
 
 	idemKey := fmt.Sprintf("refund-%s", lr.ID.String())
-	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer")
+	// amountCents=0 → full refund (pickup expiry reverses the entire payment).
+	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer", 0)
 	if err != nil {
 		h.logger.Error("expiry: refund retry failed",
 			"phase", phase,

@@ -18,6 +18,9 @@ struct ChatView: View {
     @State private var paymentIntentResponse: PaymentIntentAPIResponse?
     @State private var paymentLeaseRequestId: UUID?
     @State private var adjustPriceLeaseRequest: LeaseRequest?
+    /// Owner-side vehicle-return dispute target. Bound to a sheet so the
+    /// owner can type the reason before we round-trip to the backend.
+    @State private var disputeVehicleReturnForLease: LeaseRequest?
 
     // Plus-menu / attachment / accident state
     @State private var showPlusMenu = false
@@ -122,6 +125,13 @@ struct ChatView: View {
         .sheet(item: $adjustPriceLeaseRequest) { leaseReq in
             AdjustPriceSheet(leaseRequest: leaseReq) { newPrice in
                 Task { await viewModel.adjustLeasePrice(id: leaseReq.id, offeredWeeklyPrice: newPrice) }
+            }
+        }
+        .sheet(item: $disputeVehicleReturnForLease) { leaseReq in
+            if let vReturn = viewModel.vehicleReturnsByLease[leaseReq.id] {
+                VehicleReturnDisputeSheet(vehicleReturn: vReturn) { reason in
+                    await viewModel.disputeVehicleReturn(leaseRequestId: leaseReq.id, reason: reason)
+                }
             }
         }
         .navigationDestination(isPresented: $showDetails) {
@@ -288,40 +298,7 @@ struct ChatView: View {
 
                         // Lease requests first
                         ForEach(viewModel.leaseRequests) { leaseReq in
-                            LeaseRequestCardView(
-                                leaseRequest: leaseReq,
-                                currentUserId: currentUserId,
-                                onAccept: {
-                                    Task { await viewModel.acceptLeaseRequest(id: leaseReq.id) }
-                                },
-                                onDecline: {
-                                    Task { await viewModel.declineLeaseRequest(id: leaseReq.id) }
-                                },
-                                onPay: {
-                                    Task { await handlePayment(for: leaseReq) }
-                                },
-                                onCancel: {
-                                    Task { await viewModel.cancelLeaseRequest(id: leaseReq.id) }
-                                },
-                                onAdjustPrice: {
-                                    adjustPriceLeaseRequest = leaseReq
-                                },
-                                onConfirmPickup: {
-                                    Task { await viewModel.confirmPickup(id: leaseReq.id) }
-                                },
-                                onRescindAccept: {
-                                    Task { await viewModel.rescindAcceptedLeaseRequest(id: leaseReq.id) }
-                                },
-                                onExtendPickup: { minutes in
-                                    Task { await viewModel.extendPickupDeadline(id: leaseReq.id, minutes: minutes) }
-                                },
-                                onAcceptPriceChange: {
-                                    Task { await viewModel.acceptPriceChange(id: leaseReq.id) }
-                                },
-                                onDeclinePriceChange: {
-                                    Task { await viewModel.declinePriceChange(id: leaseReq.id) }
-                                }
-                            )
+                            leaseRequestCard(for: leaseReq)
                         }
 
                         // Regular chat requests
@@ -342,6 +319,64 @@ struct ChatView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Lease Request Card builder
+
+    /// Builds the lease-request card for the Requests tab. Extracted from the
+    /// inline `ForEach` so the type-checker can resolve it in reasonable time
+    /// — `LeaseRequestCardView` has 17+ closure parameters which used to push
+    /// the inferred type past the compiler's complexity limit.
+    @ViewBuilder
+    private func leaseRequestCard(for leaseReq: LeaseRequest) -> some View {
+        LeaseRequestCardView(
+            leaseRequest: leaseReq,
+            currentUserId: currentUserId,
+            onAccept: {
+                Task { await viewModel.acceptLeaseRequest(id: leaseReq.id) }
+            },
+            onDecline: {
+                Task { await viewModel.declineLeaseRequest(id: leaseReq.id) }
+            },
+            onPay: {
+                Task { await handlePayment(for: leaseReq) }
+            },
+            onCancel: {
+                Task { await viewModel.cancelLeaseRequest(id: leaseReq.id) }
+            },
+            onAdjustPrice: {
+                adjustPriceLeaseRequest = leaseReq
+            },
+            onConfirmPickup: {
+                Task { await viewModel.confirmPickup(id: leaseReq.id) }
+            },
+            onRescindAccept: {
+                Task { await viewModel.rescindAcceptedLeaseRequest(id: leaseReq.id) }
+            },
+            onExtendPickup: { minutes in
+                Task { await viewModel.extendPickupDeadline(id: leaseReq.id, minutes: minutes) }
+            },
+            onAcceptPriceChange: {
+                Task { await viewModel.acceptPriceChange(id: leaseReq.id) }
+            },
+            onDeclinePriceChange: {
+                Task { await viewModel.declinePriceChange(id: leaseReq.id) }
+            },
+            vehicleReturn: viewModel.vehicleReturnsByLease[leaseReq.id],
+            onStartReturn: {
+                Task { await viewModel.submitVehicleReturn(leaseRequestId: leaseReq.id) }
+            },
+            onCancelReturn: {
+                Task { await viewModel.cancelVehicleReturn(leaseRequestId: leaseReq.id) }
+            },
+            onConfirmReturn: {
+                Task { await viewModel.confirmVehicleReturn(leaseRequestId: leaseReq.id) }
+            },
+            onDisputeReturn: {
+                disputeVehicleReturnForLease = leaseReq
+            },
+            isReturnSubmitting: viewModel.submittingVehicleReturnLeaseId == leaseReq.id
+        )
     }
 
     // MARK: - Plus menu / attachments

@@ -169,6 +169,8 @@ func main() {
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
+	vehicleReturnRepo := repository.NewVehicleReturnRepository(db)
+	vehicleReturnHandler := handlers.NewVehicleReturnHandler(vehicleReturnRepo, leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, notifHandler, logger)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -356,6 +358,15 @@ func main() {
 			r.Post("/key-handovers/{id}/driver-confirm", keyHandoverHandler.DriverConfirm)
 			r.Post("/key-handovers/{id}/dismiss", keyHandoverHandler.Dismiss)
 
+			// Vehicle returns (end-of-rental driver→owner handshake + refund)
+			r.Post("/lease-requests/{id}/vehicle-return", vehicleReturnHandler.Initiate)
+			r.Get("/lease-requests/{id}/vehicle-return", vehicleReturnHandler.GetForLease)
+			r.Get("/vehicle-returns/today", vehicleReturnHandler.Today)
+			r.Get("/vehicle-returns/{id}", vehicleReturnHandler.Get)
+			r.Post("/vehicle-returns/{id}/cancel", vehicleReturnHandler.Cancel)
+			r.Post("/vehicle-returns/{id}/owner-confirm", vehicleReturnHandler.OwnerConfirm)
+			r.Post("/vehicle-returns/{id}/dispute", vehicleReturnHandler.Dispute)
+
 			// Accident reports (user-facing)
 			r.Route("/accidents", func(r chi.Router) {
 				r.Post("/", accidentHandler.Create)
@@ -412,6 +423,10 @@ func main() {
 
 				r.Get("/car-sells", adminHandler.ListCarSells)
 				r.Get("/car-sells/{id}", adminHandler.GetCarSell)
+
+				// Vehicle returns — admin list + dispute resolution.
+				r.Get("/vehicle-returns", vehicleReturnHandler.AdminList)
+				r.Post("/vehicle-returns/{id}/resolve", vehicleReturnHandler.AdminResolve)
 			})
 		})
 	})
@@ -494,6 +509,11 @@ func main() {
 	defer workerCancel()
 	scanInterval := time.Duration(cfg.PickupExpiryScanIntervalSeconds) * time.Second
 	go leaseHandler.StartPickupExpiryScanner(workerCtx, scanInterval)
+	// Same cadence is fine for vehicle-return refund retries — they share
+	// the same Stripe budget and the same "stuck Refund" semantics. If the
+	// refund call succeeded but FinalizeRefund failed, the stable idempotency
+	// key makes the replay a server-side no-op at Stripe.
+	go vehicleReturnHandler.StartReturnRefundScanner(workerCtx, scanInterval)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)

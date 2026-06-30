@@ -23,6 +23,9 @@
 		880A42098D3B87B5D861CA75 /* ImageAttachmentViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */; };
 		A7C849DD12C04F1E78A85B01 /* PickupActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */; };
 		B8D95AEE23D15F2F89B96C01 /* PickupLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D95AEE23D15F2F89B96C02 /* PickupLiveActivityManager.swift */; };
+		C0FECA0001000000000000A1 /* VehicleReturnModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000A1 /* VehicleReturnModels.swift */; };
+		C0FECA0001000000000000A2 /* VehicleReturnAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */; };
+		C0FECA0001000000000000A3 /* VehicleReturnCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000A3 /* VehicleReturnCard.swift */; };
 		E0000001000000000000001A /* DriveBaiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000A /* DriveBaiApp.swift */; };
 		E0000001000000000000001B /* User.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000B /* User.swift */; };
 		E0000001000000000000001C /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000C /* KeychainService.swift */; };
@@ -254,6 +257,9 @@
 		F23642CA82731C1438425E6D /* ImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImagePipeline.swift; path = DriveBai/Sources/Services/ImagePipeline.swift; sourceTree = SOURCE_ROOT; };
 		F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverModels.swift; path = DriveBai/Sources/Models/KeyHandover/KeyHandoverModels.swift; sourceTree = SOURCE_ROOT; };
 		F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailView.swift; path = DriveBai/Sources/Views/KeyHandover/KeyHandoverDetailView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000A1 /* VehicleReturnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnAPIModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnAPIModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000A3 /* VehicleReturnCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnCard.swift; path = DriveBai/Sources/Views/Today/Components/VehicleReturnCard.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -312,6 +318,9 @@
 				CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */,
 				A636497A8CDE4FC742D3A54D /* KeyHandoverDetailViewModel.swift */,
 				F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */,
+				C0FECA0002000000000000A1 /* VehicleReturnModels.swift */,
+				C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */,
+				C0FECA0002000000000000A3 /* VehicleReturnCard.swift */,
 				E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */,
 				CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */,
 				702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */,
@@ -858,6 +867,9 @@
 				78B045CEB9F2C8D9A9F3605E /* KeyHandoverCard.swift in Sources */,
 				5EE64C21ADCC1B7F4BAD52BD /* KeyHandoverDetailViewModel.swift in Sources */,
 				84294759824B8DC261EF2FAE /* KeyHandoverDetailView.swift in Sources */,
+				C0FECA0001000000000000A1 /* VehicleReturnModels.swift in Sources */,
+				C0FECA0001000000000000A2 /* VehicleReturnAPIModels.swift in Sources */,
+				C0FECA0001000000000000A3 /* VehicleReturnCard.swift in Sources */,
 				55D64DD7996CF8236139E437 /* ChatPlusMenuSheet.swift in Sources */,
 				EF0F482AB376D092D87C86B8 /* AttachmentDownloadService.swift in Sources */,
 				F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */,

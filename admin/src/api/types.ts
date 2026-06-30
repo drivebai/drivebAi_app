@@ -106,6 +106,44 @@ export interface AdminRent {
   start_date: string
   end_date?: string | null
   created_at: string
+
+  // ---- Vehicle return fields (optional; backend may not populate yet) ----
+  // Source of truth: vehicle_returns table joined onto the rental row.
+  // Each field is independently optional so partial backend rollouts degrade
+  // gracefully — UI hides anything that is null/undefined.
+  return_id?: string | null
+  return_status?:
+    | 'driver_initiated'
+    | 'owner_confirmed'
+    | 'disputed'
+    | 'completed'
+    | 'cancelled'
+    | null
+  /** User who initiated the return (typically the driver). */
+  return_initiated_by_id?: string | null
+  return_initiated_by_name?: string | null
+  return_initiated_by_email?: string | null
+  /** Driver "I returned the car" timestamp. */
+  return_driver_confirmed_at?: string | null
+  /** Owner confirmation timestamp. */
+  return_owner_confirmed_at?: string | null
+  /** Final completed timestamp (refund settled or marked not_applicable). */
+  return_completed_at?: string | null
+  return_disputed_at?: string | null
+  return_cancelled_at?: string | null
+  return_used_days?: number | null
+  return_unused_days?: number | null
+  return_refund_amount_cents?: number | null
+  return_refund_status?:
+    | 'pending'
+    | 'succeeded'
+    | 'failed'
+    | 'not_applicable'
+    | null
+  return_refund_id?: string | null
+  return_refunded_at?: string | null
+  return_refund_failure_reason?: string | null
+  return_dispute_reason?: string | null
 }
 
 export interface AdminSupportChat {

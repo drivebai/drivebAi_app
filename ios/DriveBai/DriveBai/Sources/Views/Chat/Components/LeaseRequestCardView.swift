@@ -20,6 +20,24 @@ struct LeaseRequestCardView: View {
     var onAcceptPriceChange: () -> Void = {}
     /// Driver-only: decline the new price. Cancels the lease server-side.
     var onDeclinePriceChange: () -> Void = {}
+    /// Current vehicle-return row for this lease (driver_initiated through
+    /// completed). `nil` means no return has been kicked off yet — the
+    /// driver sees the "I returned the car" CTA, the owner sees a quiet
+    /// info line. Defaults to nil so older call sites still compile.
+    var vehicleReturn: VehicleReturn? = nil
+    /// Driver-only: initiate the return handshake. No-op by default.
+    var onStartReturn: () -> Void = {}
+    /// Driver-only: undo within the 5-min window.
+    var onCancelReturn: () -> Void = {}
+    /// Owner-only: confirm the return + trigger refund.
+    var onConfirmReturn: () -> Void = {}
+    /// Owner-only: open the dispute sheet. Caller is expected to present
+    /// VehicleReturnDisputeSheet and forward the trimmed reason to the
+    /// ChatViewModel.
+    var onDisputeReturn: () -> Void = {}
+    /// True while one of the return CTAs is mid-flight (drives the button's
+    /// spinner / disabled state). Defaults to false for compatibility.
+    var isReturnSubmitting: Bool = false
 
     private var isOwner: Bool { currentUserId == leaseRequest.ownerId }
     private var isDriver: Bool { currentUserId == leaseRequest.driverId }
@@ -256,6 +274,229 @@ struct LeaseRequestCardView: View {
         }
     }
 
+    // MARK: - Vehicle Return UI
+
+    /// Driver-side return UI rendered inside the lease card after a paid
+    /// + picked-up lease. Branches on the current `vehicleReturn` state —
+    /// no row at all means "Start return", driver_initiated means a
+    /// pending banner (+ optional undo), terminal states render a short
+    /// success/failure summary.
+    @ViewBuilder
+    private var driverReturnSection: some View {
+        VStack(spacing: 10) {
+            // Pickup completion summary stays for ALL return states so the
+            // driver always has a "Pickup Confirmed" affordance in the
+            // chat card.
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                Text(leaseRequest.pickupConfirmedAt != nil ? "Pickup Confirmed" : "Payment Complete")
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .foregroundColor(.green)
+
+            if let vReturn = vehicleReturn {
+                returnStatusSummary(vReturn)
+                driverReturnActions(for: vReturn)
+            } else if leaseRequest.pickupConfirmedAt != nil {
+                // No return row yet — surface the primary action.
+                Button(action: onStartReturn) {
+                    HStack(spacing: 6) {
+                        if isReturnSubmitting {
+                            ProgressView().tint(.white).scaleEffect(0.85)
+                        }
+                        Image(systemName: "arrow.uturn.backward.circle.fill")
+                        Text(isReturnSubmitting ? "Submitting…" : "I returned the car")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(isReturnSubmitting
+                        ? Color.driveBaiPrimary.opacity(0.6)
+                        : Color.driveBaiPrimary)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(isReturnSubmitting)
+            }
+        }
+    }
+
+    /// Owner-side mirror — same lifecycle, different CTAs (Confirm / Dispute).
+    @ViewBuilder
+    private var ownerReturnSection: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                Text("Pickup Confirmed")
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .foregroundColor(.green)
+
+            if let vReturn = vehicleReturn {
+                returnStatusSummary(vReturn)
+                ownerReturnActions(for: vReturn)
+            } else {
+                // No return row yet — quiet info line; owner can't kick
+                // off the return.
+                Label("Waiting for the driver to mark the car returned.", systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// One-line status summary + refund estimate. Shared between owner and
+    /// driver so the wording stays identical regardless of viewer.
+    @ViewBuilder
+    private func returnStatusSummary(_ vReturn: VehicleReturn) -> some View {
+        let (label, color) = vehicleReturnStatusInfo(vReturn)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+            }
+            if vehicleReturnShouldShowRefundLine(vReturn) {
+                Text(vehicleReturnRefundLine(vReturn))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            if let reason = vReturn.disputeReason, vReturn.status == .disputed {
+                Text("\"\(reason)\"")
+                    .font(.caption.italic())
+                    .foregroundColor(.secondary)
+                    .lineLimit(3)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Driver-side CTA group beneath the summary. Undo while the window
+    /// is open; otherwise nothing actionable to render (status row tells
+    /// the story).
+    @ViewBuilder
+    private func driverReturnActions(for vReturn: VehicleReturn) -> some View {
+        if vReturn.status == .driverInitiated, vReturn.isWithinDriverCancelWindow() {
+            Button(action: onCancelReturn) {
+                HStack(spacing: 6) {
+                    if isReturnSubmitting {
+                        ProgressView().tint(.white).scaleEffect(0.85)
+                    }
+                    Text(isReturnSubmitting ? "Working…" : "Undo return")
+                }
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(isReturnSubmitting ? Color.red.opacity(0.6) : Color.red)
+                .foregroundColor(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(isReturnSubmitting)
+        }
+    }
+
+    /// Owner-side CTA group. "Confirm return" + "Dispute" while the row is
+    /// in `driver_initiated`. All other states fall through to no CTA
+    /// (status row already says what's happening).
+    @ViewBuilder
+    private func ownerReturnActions(for vReturn: VehicleReturn) -> some View {
+        if vReturn.status == .driverInitiated {
+            HStack(spacing: 10) {
+                Button(action: onDisputeReturn) {
+                    Text("Dispute")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemGray5))
+                        .foregroundColor(.red)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(isReturnSubmitting)
+                Button(action: onConfirmReturn) {
+                    HStack(spacing: 6) {
+                        if isReturnSubmitting {
+                            ProgressView().tint(.white).scaleEffect(0.85)
+                        }
+                        Text(isReturnSubmitting ? "Working…" : "Confirm return")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(isReturnSubmitting
+                        ? Color.driveBaiPrimary.opacity(0.6)
+                        : Color.driveBaiPrimary)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(isReturnSubmitting)
+            }
+        }
+    }
+
+    /// Status pill copy + color for the in-chat return summary.
+    private func vehicleReturnStatusInfo(_ vReturn: VehicleReturn) -> (String, Color) {
+        switch vReturn.status {
+        case .driverInitiated:
+            return ("Return submitted — awaiting owner", .orange)
+        case .ownerConfirmed:
+            return ("Refund processing", Color.driveBaiPrimary)
+        case .disputed:
+            return ("Return disputed — support notified", .red)
+        case .completed:
+            if vReturn.hasRefund {
+                return ("Returned • \(vReturn.formattedRefundAmount) refunded", .green)
+            }
+            return ("Returned", .green)
+        case .cancelled:
+            return ("Return cancelled", .secondary)
+        }
+    }
+
+    /// Suppress the refund line when there's no money to talk about
+    /// (cancelled, or completed-no-refund where the headline already
+    /// covers it).
+    private func vehicleReturnShouldShowRefundLine(_ vReturn: VehicleReturn) -> Bool {
+        switch vReturn.status {
+        case .cancelled: return false
+        case .completed: return vReturn.hasRefund == false
+            ? false // completed state's pill already says "Returned"
+            : false // and the dollar amount is in the pill too
+        case .disputed: return vReturn.hasRefund
+        case .driverInitiated, .ownerConfirmed:
+            return true
+        }
+    }
+
+    /// One-line refund estimate / status. Wording adapts to whether the
+    /// refund has finalized at Stripe yet.
+    private func vehicleReturnRefundLine(_ vReturn: VehicleReturn) -> String {
+        if vReturn.hasRefund {
+            switch vReturn.refundStatus {
+            case .succeeded:
+                return "\(vReturn.formattedRefundAmount) refunded • \(vReturn.unusedDaysCount()) of \(vReturn.totalPaidDays) days unused"
+            case .failed:
+                return "Refund \(vReturn.formattedRefundAmount) failed — we'll retry shortly"
+            case .pending, .none:
+                if vReturn.status == .ownerConfirmed {
+                    return "Refund \(vReturn.formattedRefundAmount) — processing now"
+                }
+                return "Estimated refund: \(vReturn.formattedRefundAmount) (\(vReturn.unusedDaysCount()) unused day\(vReturn.unusedDaysCount() == 1 ? "" : "s"))"
+            case .notApplicable:
+                return "No refund applicable"
+            }
+        }
+        return "No refund due — full rental period used"
+    }
+
     // MARK: - Owner extension UI
 
     /// Subline shown under the owner's countdown. Reads either as "tap to add
@@ -413,15 +654,18 @@ struct LeaseRequestCardView: View {
                 accessory: { AnyView(extendButton) }
             )
         } else if isDriver && (leaseRequest.status == .paid || leaseRequest.isPaymentSucceededAwaitingWebhook) {
-            // Paid + pickup already confirmed (deadline cleared).
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                Text(leaseRequest.pickupConfirmedAt != nil ? "Pickup Confirmed" : "Payment Complete")
-            }
-            .font(.subheadline.weight(.medium))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-            .foregroundColor(.green)
+            // Paid path. Pickup is already confirmed (deadline cleared), so
+            // the "return" lifecycle kicks in. We render the return UI
+            // inline so the driver never has to leave the chat thread to
+            // find the action.
+            driverReturnSection
+        } else if isOwner && (leaseRequest.status == .paid || leaseRequest.isPaymentSucceededAwaitingWebhook)
+                  && leaseRequest.pickupConfirmedAt != nil {
+            // Owner mirror: pickup is done, the return handshake owns the
+            // card. Hidden until pickup is actually confirmed because the
+            // existing owner-side countdown branch above still wants the
+            // card while the lease is paid-but-not-picked-up.
+            ownerReturnSection
         } else if leaseRequest.status == .expiredRefunded {
             // Terminal: deadline missed, payment refunded, car back on market.
             HStack(spacing: 6) {

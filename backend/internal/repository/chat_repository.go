@@ -21,6 +21,32 @@ func NewChatRepository(db *database.DB) *ChatRepository {
 	return &ChatRepository{db: db}
 }
 
+// PostSystemMessage inserts a gray "kind=system" message into the chat
+// and bumps last_message_at. Used by post-payment handlers (key_handover,
+// vehicle_return, …) that need to surface a status update inline in the
+// conversation without going through the request/response API.
+//
+// senderID may be either party — the message renders identically as
+// 'system' regardless of who triggered it.
+func (r *ChatRepository) PostSystemMessage(ctx context.Context, chatID, senderID uuid.UUID, body string) error {
+	if body == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	if _, err := r.db.Pool.Exec(ctx, `
+		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
+		VALUES ($1, $2, $3, 'system', $4, $5)
+	`, uuid.New(), chatID, senderID, body, now); err != nil {
+		return fmt.Errorf("post system message: %w", err)
+	}
+	// Bump chat last_message_at so List endpoints surface the row. Non-
+	// fatal if it fails — the message already landed.
+	_, _ = r.db.Pool.Exec(ctx, `
+		UPDATE chats SET last_message_at = $2, updated_at = $2 WHERE id = $1
+	`, chatID, now)
+	return nil
+}
+
 // FindOrCreateChat returns an existing chat or creates a new one for the (car, driver, owner) triple.
 func (r *ChatRepository) FindOrCreateChat(ctx context.Context, carID, driverID, ownerID uuid.UUID) (*models.Chat, error) {
 	tx, err := r.db.Pool.Begin(ctx)
