@@ -178,11 +178,29 @@ func buildPushRequest(
 		Data:     map[string]string{"type": string(notifType)},
 	}
 
-	leaseRefStr := ""
+	// Route the same relatedLeaseRequestID param to the correct payload
+	// key based on the notification type family. Purchase-flow types
+	// need `purchase_request_id` (that's what iOS DeepLinkRouter reads
+	// for purchase_* taps); everything else keeps `lease_request_id`.
+	// Without this branch, purchase pushes serialized the id under
+	// `lease_request_id`, DeepLinkRouter never found `purchase_request_id`,
+	// and every purchase-notification tap silently dropped on the floor.
+	refStr := ""
 	if relatedLeaseRequestID != nil {
-		leaseRefStr = relatedLeaseRequestID.String()
-		req.Data["lease_request_id"] = leaseRefStr
+		refStr = relatedLeaseRequestID.String()
+		switch notifType {
+		case models.NotificationTypePurchaseRequest,
+			models.NotificationTypePurchasePayment,
+			models.NotificationTypePurchaseHandover,
+			models.NotificationTypePurchaseRejection:
+			req.Data["purchase_request_id"] = refStr
+		default:
+			req.Data["lease_request_id"] = refStr
+		}
 	}
+	// leaseRefStr kept as an alias for the rest of this function so the
+	// existing collapse-id lines don't need to change per family.
+	leaseRefStr := refStr
 	chatRefStr := ""
 	if relatedChatID != nil {
 		chatRefStr = relatedChatID.String()
@@ -217,6 +235,34 @@ func buildPushRequest(
 		if chatRefStr != "" {
 			req.ThreadID = "chat:" + chatRefStr
 			req.CollapseID = "chat:" + chatRefStr
+		}
+
+	case models.NotificationTypePurchaseRequest:
+		req.Category = "PURCHASE_REQUEST"
+		req.ThreadID = "purchase-requests"
+		if leaseRefStr != "" {
+			req.CollapseID = "purchase:" + leaseRefStr
+		}
+
+	case models.NotificationTypePurchasePayment:
+		req.Category = "PURCHASE_PAYMENT"
+		req.ThreadID = "purchase-payments"
+		if leaseRefStr != "" {
+			req.CollapseID = "purchase-payment:" + leaseRefStr
+		}
+
+	case models.NotificationTypePurchaseHandover:
+		req.Category = "PURCHASE_HANDOVER"
+		req.ThreadID = "purchase-handovers"
+		if leaseRefStr != "" {
+			req.CollapseID = "purchase-handover:" + leaseRefStr
+		}
+
+	case models.NotificationTypePurchaseRejection:
+		req.Category = "PURCHASE_REJECTION"
+		req.ThreadID = "purchase-rejections"
+		if leaseRefStr != "" {
+			req.CollapseID = "purchase-rejection:" + leaseRefStr
 		}
 
 	case models.NotificationTypeSystem:

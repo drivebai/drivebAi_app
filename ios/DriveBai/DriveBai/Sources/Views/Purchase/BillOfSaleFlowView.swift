@@ -279,10 +279,12 @@ struct BillOfSaleFlowView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
-            } else if dirty.contains(where: { $0 != .signature && $0 != .review }) {
-                // Guard: force the user to save pending edits before signing
-                // so their in-flight typing isn't captured mid-flight by the
-                // signed snapshot.
+            } else if hasPendingEditsForMe {
+                // Guard: force the user to save THEIR OWN pending edits
+                // before signing. Role-scoped so a buyer isn't blocked
+                // because seller-owned fields are dirty (they can't be, in
+                // practice — the buyer never mounts those steps — but the
+                // gate stays formally correct across future refactors).
                 Text("Save your pending changes before signing.")
                     .font(.subheadline)
                     .foregroundColor(.orange)
@@ -541,7 +543,7 @@ struct BillOfSaleFlowView: View {
                 if otherRoleHasSigned { return .done }
                 return .doneWaiting
             }
-            if hasPendingEdits { return .signBlocked }
+            if hasPendingEditsForMe { return .signBlocked }
             if !canSign { return .signBlocked }
             return .sign
         case .review:
@@ -550,9 +552,32 @@ struct BillOfSaleFlowView: View {
     }
 
     /// True when at least one editable step (other than signature/review)
-    /// has unsaved changes. Used to gate signing.
-    private var hasPendingEdits: Bool {
+    /// has unsaved changes across BOTH roles. Kept for close-guard / union
+    /// callers only; never gate the current actor's Sign CTA with this —
+    /// use `hasPendingEditsForMe` so the buyer isn't blocked by the seller
+    /// having dirty seller-only fields (and vice versa).
+    private var hasPendingEditsAny: Bool {
         !dirty.subtracting([.signature, .review]).isEmpty
+    }
+
+    /// Steps whose editable fields are owned by the seller (and mounted
+    /// only when `isSeller == true`).
+    private var sellerOwnedSteps: Set<BoSStep> { [.vehicle, .sale, .seller] }
+    /// Steps whose editable fields are owned by the buyer.
+    private var buyerOwnedSteps: Set<BoSStep> { [.buyer] }
+
+    /// Steps the CURRENT viewer owns. `.signature` and `.review` are never
+    /// role-owned — they aren't PATCH targets.
+    private var myOwnedSteps: Set<BoSStep> {
+        if isSeller { return sellerOwnedSteps }
+        if isBuyer  { return buyerOwnedSteps }
+        return []
+    }
+
+    /// Role-scoped gate for the Sign CTA + "save changes first" banner.
+    /// Only the current viewer's own dirty steps block them from signing.
+    private var hasPendingEditsForMe: Bool {
+        !dirty.intersection(myOwnedSteps).isEmpty
     }
 
     /// Required role fields are all populated so signing makes sense.
@@ -575,7 +600,7 @@ struct BillOfSaleFlowView: View {
         case .continueOnly:    return currentStep == .buyer ? "Continue" : "Continue"
         case .sign:            return "Sign Bill of Sale"
         case .signBlocked:
-            if hasPendingEdits { return "Save changes first" }
+            if hasPendingEditsForMe { return "Save changes first" }
             return canSign ? "Sign Bill of Sale" : "Complete your section first"
         case .doneWaiting:
             return isSeller ? "Waiting for buyer signature" : "Waiting for seller signature"
@@ -645,16 +670,60 @@ struct BillOfSaleFlowView: View {
                 purchaseRequestId: purchaseRequest.id
             )
             let domain = response.toDomain()
-            bos = domain
-            lastServer = domain
-            onBoSUpdated(domain)
-            rehydrateFields(from: domain)
+            applyServerBOS(domain, source: .load)
             hasSeeded = true
         } catch {
             #if DEBUG
             print("[BillOfSaleFlow] getBillOfSale error: \(error)")
             #endif
         }
+    }
+
+    /// Discriminates the caller so `applyServerBOS` knows which subset of
+    /// the local dirty state a fresh server snapshot invalidates.
+    private enum BOSApplySource {
+        /// A PATCH just succeeded for `step` — only that step's dirt is
+        /// cleared. Other in-flight edits (in principle: none, since only
+        /// one step is mounted at a time, but defensive) stay dirty.
+        case save(BoSStep)
+        /// A GET (cold-start or explicit reload) — the server payload is
+        /// authoritative, all local dirt is cleared.
+        case load
+        /// A WS-driven counterparty update when we had no unsaved edits —
+        /// same semantics as load.
+        case externalUpdate
+    }
+
+    /// Adopt a server-canonical BoS snapshot without triggering the
+    /// `.onChange`-driven `markDirty` handlers on the buyer/seller text
+    /// fields. This is the single choke-point every "server returned
+    /// canonical state" path funnels through — `loadBoS`, `saveEdits`, and
+    /// `mergeExternalUpdate`.
+    ///
+    /// Why the suppression window matters: after a successful PATCH, we
+    /// swap the currently-mounted step (typically buyer or seller). SwiftUI
+    /// coalesces the state changes into one view update, and the outgoing
+    /// TextField bindings re-evaluate their `.onChange` handlers once
+    /// more — which, without `suppressDirtyTracking`, re-inserts the just-
+    /// saved step back into `dirty`. That "phantom re-dirty" is what left
+    /// the buyer stuck on "Save changes first" immediately after saving.
+    private func applyServerBOS(_ domain: BillOfSale, source: BOSApplySource) {
+        let prior = suppressDirtyTracking
+        suppressDirtyTracking = true
+        defer { suppressDirtyTracking = prior }
+
+        bos = domain
+        lastServer = domain
+        rehydrateFields(from: domain)
+
+        switch source {
+        case .save(let step):
+            dirty.remove(step)
+        case .load, .externalUpdate:
+            dirty.removeAll()
+        }
+
+        onBoSUpdated(domain)
     }
 
     /// Overwrites the editable `@State` fields from a backend snapshot.
@@ -670,8 +739,14 @@ struct BillOfSaleFlowView: View {
     /// the `.onChange` handlers on the TextFields don't mistake the
     /// programmatic rewrite for genuine user typing and pollute `dirty`.
     private func rehydrateFields(from domain: BillOfSale) {
+        // Save-and-restore rather than force-`false` because this can be
+        // called from inside `applyServerBOS`, which is already holding
+        // the suppression window open. A raw `false` on exit would prem-
+        // aturely re-arm dirty tracking while the outer defer still had
+        // more programmatic writes to apply.
+        let prior = suppressDirtyTracking
         suppressDirtyTracking = true
-        defer { suppressDirtyTracking = false }
+        defer { suppressDirtyTracking = prior }
         // Vehicle + sale + seller-owned by seller role.
         if isSeller {
             let vehicleClean = !dirty.contains(.vehicle)
@@ -760,11 +835,17 @@ struct BillOfSaleFlowView: View {
 
             if let response {
                 let domain = response.toDomain()
-                bos = domain
-                lastServer = domain
-                onBoSUpdated(domain)
+                // Funnel through applyServerBOS so the buyer/seller
+                // TextField `.onChange` handlers can't phantom-re-dirty
+                // the step we just saved while SwiftUI is coalescing the
+                // step-swap into a single view update. This is what
+                // unblocked the buyer's "Save changes first" wedge.
+                applyServerBOS(domain, source: .save(step))
+            } else {
+                // No-op PATCH branch (empty body): just clear the step so
+                // the CTA moves out of the "save required" state.
+                dirty.remove(step)
             }
-            dirty.remove(step)
             advance()
         } catch let apiError as APIError {
             // Surface backend copy verbatim (role-specific per new taxonomy).
@@ -869,12 +950,17 @@ struct BillOfSaleFlowView: View {
         if let last = lastServer, fresh.updatedAt <= last.updatedAt {
             return
         }
-        bos = fresh
-        onBoSUpdated(fresh)
         if dirty.isEmpty {
-            lastServer = fresh
-            rehydrateFields(from: fresh)
+            // No unsaved edits — snap silently.
+            applyServerBOS(fresh, source: .externalUpdate)
         } else {
+            // Keep the user's in-flight edits, but let them know a fresh
+            // counterparty snapshot arrived. `bos` still moves so read-only
+            // views (e.g. review's "seller signed" chip) reflect the new
+            // state; local editable fields stay untouched until the user
+            // taps Reload.
+            bos = fresh
+            onBoSUpdated(fresh)
             showStaleBanner = true
         }
     }
