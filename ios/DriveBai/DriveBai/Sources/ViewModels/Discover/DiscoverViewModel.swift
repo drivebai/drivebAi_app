@@ -15,6 +15,9 @@ final class DiscoverViewModel: ObservableObject {
     @Published var error: String?
     @Published var searchText: String = ""
     @Published var selectedFilter: DiscoverFilter = .all
+    /// Advanced filters driven by `DiscoverFilterSheet`. v1 applies these
+    /// predicates client-side against the already-loaded listings.
+    @Published var filters: DiscoverFilters = .empty
 
     // MARK: - Private Properties
 
@@ -31,10 +34,12 @@ final class DiscoverViewModel: ObservableObject {
     // MARK: - Setup
 
     private func setupSearchDebounce() {
-        // Debounce search and filter changes
-        Publishers.CombineLatest($searchText, $selectedFilter)
+        // Debounce search and filter changes. `filters` (advanced filter
+        // sheet state) is folded in too so applying a Body/Fuel/Price cap
+        // re-runs `applyFilters` without a manual refresh.
+        Publishers.CombineLatest3($searchText, $selectedFilter, $filters)
             .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
-            .sink { [weak self] searchText, filter in
+            .sink { [weak self] searchText, filter, _ in
                 self?.applyFilters(searchText: searchText, filter: filter)
             }
             .store(in: &cancellables)
@@ -116,6 +121,7 @@ final class DiscoverViewModel: ObservableObject {
         filteredListings = []
         searchText = ""
         selectedFilter = .all
+        filters = .empty
         error = nil
         isLoading = false
     }
@@ -170,6 +176,28 @@ final class DiscoverViewModel: ObservableObject {
             // Liked filtering is done in the view layer using LikedListingsStore
             // Here we just pass through all available listings
             break
+        }
+
+        // Apply advanced filter-sheet predicates (v1: client-side against the
+        // already-loaded listings — see the spec's deferred follow-up for the
+        // eventual server-side push).
+        if let cap = filters.priceMaxWeekly {
+            result = result.filter { car in
+                guard let price = car.weeklyRentPrice?.amount else { return false }
+                return price <= cap
+            }
+        }
+        if let year = filters.minYear {
+            result = result.filter { $0.specs.year >= year }
+        }
+        if let body = filters.bodyType {
+            result = result.filter { $0.specs.bodyType == body }
+        }
+        if let fuel = filters.fuelType {
+            result = result.filter { $0.specs.fuelType == fuel }
+        }
+        if let maxDeposit = filters.maxDeposit {
+            result = result.filter { $0.requirements.depositAmount.amount <= maxDeposit }
         }
 
         #if DEBUG

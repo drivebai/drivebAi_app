@@ -28,15 +28,30 @@ struct PickupCountdownView: View {
     /// Caller supplies the view; nil means nothing extra.
     @ViewBuilder var accessory: () -> AnyView
 
+    /// Optional handover to render a tappable pickup-location row below the
+    /// countdown. When nil no location row is shown (preserves prior behavior
+    /// for lease-only countdown call sites that don't have a handover yet).
+    let handover: KeyHandover?
+
+    /// When false, the inner pickup-location row is suppressed. Set by
+    /// callers that already render `HandoverLocationRow` next to the
+    /// countdown (e.g. Today's KeyHandoverCard shows the address at the top
+    /// of the card) so the same address doesn't appear twice.
+    let showLocation: Bool
+
     init(
         deadline: Date,
         headline: String,
         subline: String? = nil,
+        handover: KeyHandover? = nil,
+        showLocation: Bool = true,
         @ViewBuilder accessory: @escaping () -> AnyView = { AnyView(EmptyView()) }
     ) {
         self.deadline = deadline
         self.headline = headline
         self.subline = subline
+        self.handover = handover
+        self.showLocation = showLocation
         self.accessory = accessory
     }
 
@@ -86,6 +101,15 @@ struct PickupCountdownView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Pickup location row (tap to open Apple Maps directions). Only
+            // rendered when a handover was passed in AND the caller didn't
+            // opt out via `showLocation: false` (Today's KeyHandoverCard
+            // renders the row at the top of the card and would otherwise
+            // duplicate the address inside the countdown block).
+            if showLocation, let handover {
+                HandoverLocationRow(handover: handover)
             }
         }
         .padding(12)

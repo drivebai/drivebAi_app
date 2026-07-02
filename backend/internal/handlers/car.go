@@ -64,7 +64,7 @@ func (h *CarHandler) ListCars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cars, err := h.carRepo.GetByOwnerID(ctx, userID)
+	cars, rentals, err := h.carRepo.GetByOwnerIDWithActiveRental(ctx, userID)
 	if err != nil {
 		slog.Error("failed to get cars", "error", err, "error_type", fmt.Sprintf("%T", err), "user_id", userID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
@@ -79,17 +79,54 @@ func (h *CarHandler) ListCars(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with photos and documents for each car
 	var responses []*models.CarResponse
-	for _, car := range cars {
+	for i, car := range cars {
 		photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
 		documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
 		// ListCars is owner-scoped (SELECT WHERE owner_id = $1) so the caller
 		// is the owner of every row — VIN is safe to include.
-		responses = append(responses, car.ToResponse(photos, documents, owner, true))
+		resp := car.ToResponse(photos, documents, owner, true)
+
+		// Attach active_rental sub-object when the LEFT JOIN found a lease
+		// currently occupying this car (paid + picked up + not yet returned).
+		// planned_end_at and current_earned_cents are DERIVED here — the
+		// canonical facts are pickup_confirmed_at + weeks.
+		if i < len(rentals) && rentals[i] != nil {
+			resp.ActiveRental = buildActiveRentalSummary(rentals[i])
+		}
+		responses = append(responses, resp)
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"cars": responses,
 	})
+}
+
+// buildActiveRentalSummary derives the owner-card "active rental" snapshot
+// from the repository row. planned_end_at is pickup_confirmed_at + weeks*7d.
+// current_earned_cents pro-rates based on how many full weeks of the rental
+// have elapsed at request time (capped at the total contracted weeks).
+func buildActiveRentalSummary(row *repository.OwnerCarActiveRental) *models.ActiveRentalSummary {
+	plannedEnd := row.PickupConfirmedAt.AddDate(0, 0, row.Weeks*7)
+
+	elapsedWeeks := int(time.Since(row.PickupConfirmedAt).Hours() / (24 * 7))
+	if elapsedWeeks < 0 {
+		elapsedWeeks = 0
+	}
+	billableWeeks := elapsedWeeks
+	if billableWeeks > row.Weeks {
+		billableWeeks = row.Weeks
+	}
+
+	return &models.ActiveRentalSummary{
+		LeaseRequestID:     row.LeaseRequestID,
+		DriverID:           row.DriverID,
+		DriverName:         row.DriverName,
+		Weeks:              row.Weeks,
+		WeeklyPriceCents:   row.EffectiveWeeklyPriceCents,
+		PickupConfirmedAt:  models.RFC3339Time(row.PickupConfirmedAt),
+		PlannedEndAt:       models.RFC3339Time(plannedEnd),
+		CurrentEarnedCents: row.EffectiveWeeklyPriceCents * int64(billableWeeks),
+	}
 }
 
 // GetCar returns a specific car by ID

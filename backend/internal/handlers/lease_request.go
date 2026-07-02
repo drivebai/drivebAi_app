@@ -1480,6 +1480,19 @@ func (h *LeaseRequestHandler) ConfirmPickup(w http.ResponseWriter, r *http.Reque
 		TargetUserIDs: []uuid.UUID{lr.DriverID, lr.OwnerID},
 	})
 
+	// The pickup confirm also flipped cars.status → 'rented' inside the
+	// repo transaction. Broadcast car_updated so open owner clients refresh
+	// the My Cars grid (chip flips green → orange, "Rented to ..." block
+	// appears) without a manual pull-to-refresh.
+	h.wsHub.Broadcast(&ws.Event{
+		Type: "car_updated",
+		Payload: map[string]any{
+			"id":     lr.ListingID,
+			"status": models.CarStatusRented,
+		},
+		TargetUserIDs: []uuid.UUID{lr.OwnerID, lr.DriverID},
+	})
+
 	chatID := lr.ChatID
 	lrID := lr.ID
 	carTitle := resp.CarTitle

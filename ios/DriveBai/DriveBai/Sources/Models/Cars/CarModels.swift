@@ -104,8 +104,8 @@ enum InsuranceCoverage: String, CaseIterable, Identifiable {
 
     var displayText: String {
         switch self {
-        case .liabilityOnly: return "Liability Only"
-        case .fullCoverage: return "Full Coverage"
+        case .liabilityOnly: return "Liability Only (state minimum)"
+        case .fullCoverage: return "Comprehensive + Collision"
         }
     }
 }
@@ -384,6 +384,25 @@ struct CarLocation: Equatable {
     }
 }
 
+// MARK: - Active Rental Summary
+//
+// Derived owner-facing snapshot of the lease currently attached to a car,
+// so the "For rent" tab can render a "Rented" chip + summary line without a
+// second lease-detail fetch. Backend deploys this alongside `CarResponse`
+// under `active_rental`; iOS gracefully decodes it as nil when the field is
+// missing (older backends or the car isn't rented right now).
+
+struct ActiveRentalSummary: Equatable, Hashable {
+    let leaseRequestId: UUID
+    let driverId: UUID
+    let driverName: String
+    let weeks: Int
+    let weeklyPriceCents: Int64
+    let pickupConfirmedAt: Date
+    let plannedEndAt: Date
+    let currentEarnedCents: Int64
+}
+
 // MARK: - Main Car Model
 
 struct Car: Identifiable, Equatable, Hashable {
@@ -422,6 +441,12 @@ struct Car: Identifiable, Equatable, Hashable {
     let createdAt: Date
     var updatedAt: Date
 
+    /// Owner-facing snapshot of the lease currently attached to this car.
+    /// Populated by the backend when a paid+picked-up lease is active; nil
+    /// otherwise (or when the backend hasn't shipped the field yet — we
+    /// decode it optionally so iOS runs against both).
+    var activeRental: ActiveRentalSummary? = nil
+
     // Computed
     var coverPhotoURL: String? {
         photoSlots.first(where: { $0.slotType == .coverFront })?.imageURL
@@ -454,7 +479,8 @@ struct Car: Identifiable, Equatable, Hashable {
         rentedWeeks: Int = 0,
         totalEarned: Money = Money(amount: 0),
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        activeRental: ActiveRentalSummary? = nil
     ) {
         self.id = id
         self.title = title
@@ -475,6 +501,7 @@ struct Car: Identifiable, Equatable, Hashable {
         self.totalEarned = totalEarned
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.activeRental = activeRental
     }
 }
 

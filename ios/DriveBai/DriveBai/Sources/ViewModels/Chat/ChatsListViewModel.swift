@@ -55,7 +55,7 @@ final class ChatsListViewModel: ObservableObject {
                     isArchived: updated.isArchived
                 )
                 self.chats[idx] = updated
-                if !isActive { self.totalUnreadCount += 1 }
+                if !isActive { self.totalUnreadCount = max(0, self.totalUnreadCount + 1) }
                 self.applySearch(self.searchText)
             }
             .store(in: &cancellables)
@@ -81,6 +81,14 @@ final class ChatsListViewModel: ObservableObject {
         )
         totalUnreadCount = max(0, totalUnreadCount - prev)
         applySearch(searchText)
+    }
+
+    /// Defensive re-sync used on app foreground and other resume-from-background
+    /// paths. Refetches the chat list (which recomputes `totalUnreadCount`
+    /// from the server aggregate) so a dropped WS + silent reconnect can't
+    /// leave the tab badge stale.
+    func resyncTotal() async {
+        await fetchChats()
     }
 
     func fetchChats() async {

@@ -900,7 +900,7 @@ struct CreateListingPricingStep: View {
 
     var body: some View {
         CreateListingStepContainer(
-            title: "Set Your Pricing",
+            title: "Your Weekly Rent & Sale Price",
             subtitle: "Choose how you want to offer your car",
             currentStep: state.currentStepIndex,
             totalSteps: state.totalSteps,
@@ -986,7 +986,7 @@ struct CreateListingRequirementsStep: View {
     var body: some View {
         CreateListingStepContainer(
             title: "Renter Requirements",
-            subtitle: "Set the requirements for drivers",
+            subtitle: "Who can rent this car",
             currentStep: state.currentStepIndex,
             totalSteps: state.totalSteps,
             canContinue: state.isRequirementsValid,
@@ -1021,7 +1021,7 @@ struct CreateListingRequirementsStep: View {
 
                 // Insurance coverage
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Required Insurance Coverage")
+                    Text("Minimum driver insurance")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
 

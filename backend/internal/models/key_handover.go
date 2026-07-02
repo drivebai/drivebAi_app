@@ -53,13 +53,19 @@ const (
 	ErrCodeKeyHandoverNotFound   = "KEY_HANDOVER_NOT_FOUND"
 	ErrCodeInvalidHandoverAction = "INVALID_HANDOVER_ACTION"
 	ErrCodeHandoverExpired       = "KEY_HANDOVER_EXPIRED"
+	// ErrCodeHandoverOwnerNotConfirmed: driver tried to confirm receipt of the
+	// keys before the owner has marked the keys handed over. Distinct from
+	// ErrCodeInvalidHandoverAction so the iOS client can render a role-specific
+	// "waiting on the owner" message instead of the generic guard copy.
+	ErrCodeHandoverOwnerNotConfirmed = "HANDOVER_OWNER_NOT_CONFIRMED"
 )
 
 var (
-	ErrKeyHandoverNotFound    = &APIError{Code: ErrCodeKeyHandoverNotFound, Message: "Key handover not found"}
-	ErrInvalidHandoverAction  = &APIError{Code: ErrCodeInvalidHandoverAction, Message: "Invalid action for the current handover status"}
-	ErrHandoverExpired        = &APIError{Code: ErrCodeHandoverExpired, Message: "The key handover confirmation window has expired"}
-	ErrHandoverNotDismissable = &APIError{Code: "HANDOVER_NOT_DISMISSABLE", Message: "This card can only be dismissed once the pickup deadline has been refunded/cancelled"}
+	ErrKeyHandoverNotFound     = &APIError{Code: ErrCodeKeyHandoverNotFound, Message: "Key handover not found"}
+	ErrInvalidHandoverAction   = &APIError{Code: ErrCodeInvalidHandoverAction, Message: "Invalid action for the current handover status"}
+	ErrHandoverExpired         = &APIError{Code: ErrCodeHandoverExpired, Message: "The key handover confirmation window has expired"}
+	ErrHandoverNotDismissable  = &APIError{Code: "HANDOVER_NOT_DISMISSABLE", Message: "This card can only be dismissed once the pickup deadline has been refunded/cancelled"}
+	ErrHandoverOwnerNotConfirmed = &APIError{Code: ErrCodeHandoverOwnerNotConfirmed, Message: "The owner hasn't handed over the keys yet. Please wait for the owner to confirm."}
 )
 
 // --- API response types ---

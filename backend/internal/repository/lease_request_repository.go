@@ -1304,6 +1304,23 @@ func (r *LeaseRequestRepository) ConfirmPickup(ctx context.Context, id, driverID
 	lr.PickupConfirmedAt = &now
 	lr.UpdatedAt = now
 
+	// Flip cars.status → 'rented' in the same transaction so the owner's
+	// My Cars grid and Discovery filter see the change atomically with the
+	// pickup confirmation. Guarded so we only overwrite an unambiguously
+	// available/pending listing — never a paused row (owner-authored state
+	// wins) and never a sold row (terminal). The reservation column is the
+	// primary "is this car currently occupied" signal; this flip is the
+	// human-readable mirror the owner UI consumes.
+	if _, err := tx.Exec(ctx, `
+		UPDATE cars
+		SET status = 'rented', updated_at = NOW()
+		WHERE id = $1
+		  AND reserved_by_lease_request_id = $2
+		  AND status IN ('available', 'pending', 'rented')
+	`, lr.ListingID, id); err != nil {
+		return nil, fmt.Errorf("flip car to rented: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

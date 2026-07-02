@@ -34,6 +34,10 @@ struct CarAPIResponse: Codable {
     let owner: CarOwnerAPIResponse?
     let createdAt: Date
     let updatedAt: Date
+    /// Present when a paid+picked-up lease is currently attached to the car.
+    /// Optional so older backends (or non-owner endpoints) that don't emit
+    /// the field decode cleanly to nil.
+    let activeRental: ActiveRentalAPIResponse?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -50,6 +54,45 @@ struct CarAPIResponse: Codable {
         case photos, documents, owner
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case activeRental = "active_rental"
+    }
+}
+
+/// Owner-facing snapshot of the current rental — mirrors the backend's
+/// `ActiveRentalSummary` (`car.go`). All monetary fields are cents to avoid
+/// float drift; the view layer formats them via `Money`.
+struct ActiveRentalAPIResponse: Codable {
+    let leaseRequestId: UUID
+    let driverId: UUID
+    let driverName: String
+    let weeks: Int
+    let weeklyPriceCents: Int64
+    let pickupConfirmedAt: Date
+    let plannedEndAt: Date
+    let currentEarnedCents: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case leaseRequestId = "lease_request_id"
+        case driverId = "driver_id"
+        case driverName = "driver_name"
+        case weeks
+        case weeklyPriceCents = "weekly_price_cents"
+        case pickupConfirmedAt = "pickup_confirmed_at"
+        case plannedEndAt = "planned_end_at"
+        case currentEarnedCents = "current_earned_cents"
+    }
+
+    func toDomain() -> ActiveRentalSummary {
+        ActiveRentalSummary(
+            leaseRequestId: leaseRequestId,
+            driverId: driverId,
+            driverName: driverName,
+            weeks: weeks,
+            weeklyPriceCents: weeklyPriceCents,
+            pickupConfirmedAt: pickupConfirmedAt,
+            plannedEndAt: plannedEndAt,
+            currentEarnedCents: currentEarnedCents
+        )
     }
 }
 
@@ -392,7 +435,8 @@ extension CarAPIResponse {
             rentedWeeks: rentedWeeks,
             totalEarned: Money(amount: totalEarned, currency: currency),
             createdAt: createdAt,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            activeRental: activeRental?.toDomain()
         )
     }
 }

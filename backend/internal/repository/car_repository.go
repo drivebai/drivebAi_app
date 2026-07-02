@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -130,6 +131,124 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 	}
 
 	return &car, nil
+}
+
+// OwnerCarActiveRental is the shape returned by GetByOwnerIDWithActiveRental
+// alongside each *models.Car when a lease is currently active on that car.
+// "Active" means: the lease is paid, pickup was confirmed, and the vehicle
+// hasn't been returned yet.
+//
+// EffectiveWeeklyPriceCents mirrors LeaseRequest.TotalAmountCents: it
+// coalesces offered_weekly_price with weekly_price and converts dollars → cents.
+type OwnerCarActiveRental struct {
+	LeaseRequestID           uuid.UUID
+	DriverID                 uuid.UUID
+	DriverName               string
+	Weeks                    int
+	EffectiveWeeklyPriceCents int64
+	PickupConfirmedAt        time.Time
+}
+
+// GetByOwnerIDWithActiveRental is a cover over GetByOwnerID that additionally
+// left-joins each car row with the lease currently occupying it (if any). It
+// returns parallel slices so the caller can zip them 1:1; the rental pointer
+// is nil for any car that is not currently rented.
+//
+// This is the query behind the owner's My Cars grid — the rental sub-object
+// is what drives the "Rented to Jamie R. · 4 weeks · $180/wk" line and the
+// derived Rented/Reserved status chip on the client. Discovery + admin
+// endpoints do NOT use this path; they take the plain GetByOwnerID above.
+func (r *CarRepository) GetByOwnerIDWithActiveRental(ctx context.Context, ownerID uuid.UUID) ([]*models.Car, []*OwnerCarActiveRental, error) {
+	query := `
+		SELECT
+			c.id, c.owner_id, c.title, c.description,
+			c.vin, c.make, c.model, c.year, c.body_type, c.fuel_type, c.mileage,
+			c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
+			c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
+			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
+			c.status, c.is_paused, c.rented_weeks, c.total_earned,
+			c.created_at, c.updated_at,
+			lr.id, lr.driver_id, lr.weeks,
+			COALESCE(lr.offered_weekly_price, lr.weekly_price),
+			lr.pickup_confirmed_at,
+			u.first_name, u.last_name
+		FROM cars c
+		LEFT JOIN lease_requests lr
+		       ON lr.id = c.reserved_by_lease_request_id
+		      AND lr.status = 'paid'
+		      AND lr.pickup_confirmed_at IS NOT NULL
+		      AND lr.vehicle_returned_at IS NULL
+		LEFT JOIN users u
+		       ON u.id = lr.driver_id
+		WHERE c.owner_id = $1
+		ORDER BY c.created_at DESC
+	`
+
+	rows, err := r.db.Pool.Query(ctx, query, ownerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var cars []*models.Car
+	var rentals []*OwnerCarActiveRental
+	for rows.Next() {
+		var car models.Car
+		var (
+			leaseID           *uuid.UUID
+			driverID          *uuid.UUID
+			weeks             *int
+			weeklyPriceDollars *float64
+			pickupConfirmedAt *time.Time
+			firstName         *string
+			lastName          *string
+		)
+		if err := rows.Scan(
+			&car.ID, &car.OwnerID, &car.Title, &car.Description,
+			&car.VIN, &car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
+			&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
+			&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
+			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
+			&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
+			&car.CreatedAt, &car.UpdatedAt,
+			&leaseID, &driverID, &weeks,
+			&weeklyPriceDollars,
+			&pickupConfirmedAt,
+			&firstName, &lastName,
+		); err != nil {
+			return nil, nil, err
+		}
+		cars = append(cars, &car)
+
+		// A NULL lease id means the LEFT JOIN found no active rental for
+		// this car — all other rental fields will also be NULL.
+		if leaseID == nil || weeks == nil || weeklyPriceDollars == nil || pickupConfirmedAt == nil || driverID == nil {
+			rentals = append(rentals, nil)
+			continue
+		}
+
+		name := ""
+		if firstName != nil {
+			name = *firstName
+		}
+		if lastName != nil && *lastName != "" {
+			if name != "" {
+				name += " "
+			}
+			name += *lastName
+		}
+
+		rentals = append(rentals, &OwnerCarActiveRental{
+			LeaseRequestID:           *leaseID,
+			DriverID:                 *driverID,
+			DriverName:               name,
+			Weeks:                    *weeks,
+			EffectiveWeeklyPriceCents: int64(*weeklyPriceDollars * 100),
+			PickupConfirmedAt:        *pickupConfirmedAt,
+		})
+	}
+
+	return cars, rentals, nil
 }
 
 // GetByOwnerID retrieves all cars for a specific owner

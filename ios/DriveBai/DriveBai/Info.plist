@@ -39,6 +39,13 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<!-- Optional Google Maps chooser for the pickup-location row.
+		     Apple Maps is the default; this only enables detection so we
+		     can offer Google Maps when it's installed. -->
+		<string>comgooglemaps</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<!-- Branded background instead of blank white on cold start.

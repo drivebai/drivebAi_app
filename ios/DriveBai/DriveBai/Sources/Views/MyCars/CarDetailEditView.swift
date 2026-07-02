@@ -648,7 +648,7 @@ private struct RequirementsContent: View {
 
             // Insurance coverage
             VStack(alignment: .leading, spacing: 8) {
-                Text("Insurance coverage required")
+                Text("Minimum driver insurance")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
 
@@ -978,7 +978,7 @@ private struct ActionButtonsSection: View {
             )
 
             ActionButton(
-                title: "Set/change unavailable dates",
+                title: "Manage unavailable dates",
                 iconName: "calendar",
                 action: onSetUnavailableDates
             )

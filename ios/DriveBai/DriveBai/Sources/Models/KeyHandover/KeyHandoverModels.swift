@@ -59,9 +59,12 @@ extension KeyHandover {
     var statusMessage: String {
         switch status {
         case .pending:
+            // Driver-side gate: no action is available until the owner marks
+            // handover confirmed. Copy makes the wait explicit so we don't
+            // imply a hidden CTA.
             return isOwner
                 ? "Meet the driver at the pickup location and hand over the keys."
-                : "Meet the owner at the pickup location to collect the keys."
+                : "Waiting for the owner to hand over the keys."
         case .ownerConfirmed:
             return isOwner
                 ? "You marked the keys as handed over. Waiting for the driver to confirm receipt."

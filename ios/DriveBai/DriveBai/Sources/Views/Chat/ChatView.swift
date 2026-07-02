@@ -462,7 +462,8 @@ struct ChatView: View {
             onDisputeReturn: {
                 disputeVehicleReturnForLease = leaseReq
             },
-            isReturnSubmitting: viewModel.submittingVehicleReturnLeaseId == leaseReq.id
+            isReturnSubmitting: viewModel.submittingVehicleReturnLeaseId == leaseReq.id,
+            keyHandover: viewModel.keyHandoversByLease[leaseReq.id]
         )
     }
 
