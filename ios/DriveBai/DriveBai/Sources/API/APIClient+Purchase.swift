@@ -13,12 +13,14 @@ import Foundation
 extension APIClient {
     // MARK: - Buyer
 
-    /// POST /cars/{id}/purchase-requests
+    /// POST /cars/{id}/purchase-requests — backend returns the newly
+    /// created purchase row directly (same shape as GET
+    /// /purchase-requests/{id}). No wrapper envelope.
     func createPurchaseRequest(
         carId: UUID,
         offerAmountCents: Int64,
         buyerMessage: String?
-    ) async throws -> CreatePurchaseRequestAPIResponse {
+    ) async throws -> PurchaseRequestAPIResponse {
         let body = CreatePurchaseRequestAPIRequest(
             offerAmountCents: offerAmountCents,
             buyerMessage: buyerMessage

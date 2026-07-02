@@ -234,9 +234,8 @@ struct BuyRequestSheet: View {
                     offerAmountCents: offerCents,
                     buyerMessage: buyerMessage.isEmpty ? nil : buyerMessage
                 )
-                let chatId = response.chatId ?? response.purchaseRequest.chatId
                 dismiss()
-                onSubmitted(chatId)
+                onSubmitted(response.chatId)
             } catch let apiError as APIError {
                 errorMessage = apiError.errorDescription
             } catch {

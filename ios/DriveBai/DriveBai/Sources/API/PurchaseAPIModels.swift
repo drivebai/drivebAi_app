@@ -279,15 +279,11 @@ struct PurchaseRequestsListAPIResponse: Codable {
     }
 }
 
-struct CreatePurchaseRequestAPIResponse: Codable {
-    let chatId: UUID?
-    let purchaseRequest: PurchaseRequestAPIResponse
-
-    enum CodingKeys: String, CodingKey {
-        case chatId = "chat_id"
-        case purchaseRequest = "purchase_request"
-    }
-}
+// NOTE: POST /cars/{carId}/purchase-requests returns the raw
+// PurchaseRequestAPIResponse (matching GET /purchase-requests/{id} and
+// all other purchase reads) — no wrapper envelope. The previous
+// wrapper struct triggered "The data couldn't be read because it is
+// missing" every time a buyer tapped Send offer.
 
 // MARK: - Request payloads
 
