@@ -274,9 +274,17 @@ struct CarListRow: View {
 
     private var contentView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            CarStatusChipSmall(status: car.status)
+            // Chip is derived from car.status + activeRental. `cars.status`
+            // is never flipped to "rented" server-side today (three other
+            // flows own its semantics), so an active paid+picked-up lease
+            // must be the source of truth for the visible chip.
+            CarStatusChipSmall(displayStatus: DisplayCarStatus.forCar(car),
+                               activeRental: car.activeRental)
             titleText
             metadataRow
+            if let rental = car.activeRental {
+                rentalSummaryLine(rental: rental)
+            }
         }
     }
 
@@ -296,6 +304,31 @@ struct CarListRow: View {
             CarMetadataLabel(label: "Rented", value: car.rentedWeeksFormatted)
             CarMetadataLabel(label: "Total", value: car.totalEarnedFormatted)
         }
+    }
+
+    /// One-liner shown under the metadata row when the car has an active
+    /// rental — mirrors the spec: "Ends ~{plannedEndAt} · {currentEarned}".
+    private func rentalSummaryLine(rental: ActiveRentalSummary) -> some View {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        let ends = formatter.string(from: rental.plannedEndAt)
+        let earned = Money(amount: Double(rental.currentEarnedCents) / 100.0)
+        return HStack(spacing: 6) {
+            Image(systemName: "calendar")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
+            Text("Ends ~\(ends)")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text("·")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text("Earned \(earned.formatted)")
+                .font(.caption2.weight(.medium))
+                .foregroundColor(.secondary)
+        }
+        .lineLimit(1)
     }
 
     private var chatButton: some View {
@@ -322,15 +355,50 @@ struct CarListRow: View {
 
 // MARK: - Supporting Views
 
-struct CarStatusChipSmall: View {
-    let status: CarListingStatus
+/// UI-only display status for an owner's car card. Derived from
+/// `car.status` + `car.activeRental` so we don't have to rely on
+/// `cars.status` flipping to `rented` server-side (which it never does —
+/// three other flows own the semantics of that column).
+enum DisplayCarStatus {
+    case available, rented, pending, paused
 
+    static func forCar(_ car: Car) -> DisplayCarStatus {
+        // An active rental is authoritative — a paused-but-rented listing
+        // still shows as rented because the paused-toggle only prevents
+        // NEW requests, not the running one.
+        if car.activeRental != nil { return .rented }
+        switch car.status {
+        case .paused:    return .paused
+        case .pending:   return .pending
+        case .rented:    return .rented   // defensive: honor server if it ever flips
+        case .available: return .available
+        }
+    }
+}
+
+struct CarStatusChipSmall: View {
+    let displayStatus: DisplayCarStatus
+    let activeRental: ActiveRentalSummary?
+
+    // Back-compat init used by call sites that still pass CarListingStatus
+    // directly (e.g. detail views). Falls back to a rental-agnostic mapping.
     init(status: CarListingStatus = .available) {
-        self.status = status
+        switch status {
+        case .available: self.displayStatus = .available
+        case .rented:    self.displayStatus = .rented
+        case .pending:   self.displayStatus = .pending
+        case .paused:    self.displayStatus = .paused
+        }
+        self.activeRental = nil
+    }
+
+    init(displayStatus: DisplayCarStatus, activeRental: ActiveRentalSummary? = nil) {
+        self.displayStatus = displayStatus
+        self.activeRental = activeRental
     }
 
     private var statusIcon: String {
-        switch status {
+        switch displayStatus {
         case .available: return "checkmark.circle.fill"
         case .rented: return "key.fill"
         case .pending: return "clock.fill"
@@ -339,20 +407,36 @@ struct CarStatusChipSmall: View {
     }
 
     private var statusColor: Color {
-        switch status {
+        switch displayStatus {
         case .available: return .green
-        case .rented: return .blue
+        case .rented: return .orange
         case .pending: return .orange
         case .paused: return .gray
         }
     }
 
+    /// Chip text — when we have an active rental we surface the weeks and
+    /// driver first name so the owner can tell listings apart at a glance.
     private var statusText: String {
-        switch status {
+        switch displayStatus {
         case .available: return "Available"
-        case .rented: return "Rented"
-        case .pending: return "Pending"
-        case .paused: return "Paused"
+        case .pending:   return "Pending"
+        case .paused:    return "Paused"
+        case .rented:
+            if let rental = activeRental {
+                let firstName = rental.driverName
+                    .split(separator: " ", maxSplits: 1)
+                    .first
+                    .map(String.init) ?? rental.driverName
+                // Empty driverName → the split fallback still returns "".
+                // Skip the trailing " — " so the chip doesn't render with a
+                // dangling em-dash when the API omits the driver's name.
+                if firstName.isEmpty {
+                    return "Rented — \(rental.weeks)w"
+                }
+                return "Rented — \(rental.weeks)w — \(firstName)"
+            }
+            return "Rented"
         }
     }
 
@@ -363,6 +447,7 @@ struct CarStatusChipSmall: View {
             Text(statusText)
                 .font(.caption2)
                 .fontWeight(.medium)
+                .lineLimit(1)
         }
         .foregroundColor(statusColor)
         .padding(.horizontal, 6)

@@ -111,6 +111,11 @@ struct DriveBaiApp: App {
                     guard phase == .active, authStore.state.isAuthenticated else { return }
                     WebSocketManager.shared.reconnectIfNeeded()
                     Task { await supportInboxStore.refresh() }
+                    // Close the drift window on the Chats tab badge: if the
+                    // WS dropped while backgrounded and reconnected silently
+                    // we could miss new_message events, so re-sync the list
+                    // (and the totalUnread aggregate) on foreground.
+                    Task { await ChatsListViewModel.shared.resyncTotal() }
                 }
                 // Backend registration is owned by PushNotificationCoordinator
                 // (with retry/backoff). Keep this listener as a no-op hook

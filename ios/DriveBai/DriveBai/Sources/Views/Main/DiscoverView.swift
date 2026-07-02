@@ -17,6 +17,7 @@ struct DiscoverView: View {
     @StateObject private var viewModel = DiscoverViewModel.shared
     @State private var showMapView = false
     @State private var showSortOptions = false
+    @State private var showFilterSheet = false
 
     var body: some View {
         NavigationStack {
@@ -57,17 +58,35 @@ struct DiscoverView: View {
                             .cornerRadius(16)
                         }
 
-                        // Filter button
-                        Button(action: {}) {
-                            Image(systemName: "slider.horizontal.3")
-                                .font(.system(size: 16))
-                                .foregroundColor(.primary)
+                        // Filter button — presents DiscoverFilterSheet.
+                        // Badge shows the number of active advanced filters.
+                        Button(action: { showFilterSheet = true }) {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.primary)
+                                    .padding(4)
+                                if viewModel.filters.activeCount > 0 {
+                                    Text("\(viewModel.filters.activeCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .frame(minWidth: 14, minHeight: 14)
+                                        .background(Color.red)
+                                        .clipShape(Capsule())
+                                        .offset(x: 4, y: -4)
+                                }
+                            }
                         }
                     }
                 }
             }
             .task {
                 await viewModel.fetchListings()
+            }
+            .sheet(isPresented: $showFilterSheet) {
+                DiscoverFilterSheet(viewModel: viewModel)
             }
         }
     }

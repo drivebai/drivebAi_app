@@ -88,3 +88,23 @@ func TestErrHandoverNotDismissable_Shape(t *testing.T) {
 		t.Error("error message should not be empty (client renders this verbatim)")
 	}
 }
+
+// Pins the role-specific "waiting on owner" error shape. The iOS client
+// keys off the code (HANDOVER_OWNER_NOT_CONFIRMED) to render a distinct
+// message from the generic INVALID_HANDOVER_ACTION guard, so a drift here
+// would silently downgrade the UX.
+func TestErrHandoverOwnerNotConfirmed_Shape(t *testing.T) {
+	if got, want := models.ErrHandoverOwnerNotConfirmed.Code, "HANDOVER_OWNER_NOT_CONFIRMED"; got != want {
+		t.Errorf("error code drift: got %q want %q", got, want)
+	}
+	if got, want := models.ErrHandoverOwnerNotConfirmed.Code, models.ErrCodeHandoverOwnerNotConfirmed; got != want {
+		t.Errorf("error code constant drift: got %q want %q", got, want)
+	}
+	if models.ErrHandoverOwnerNotConfirmed.Message == "" {
+		t.Error("error message should not be empty (client renders this verbatim)")
+	}
+	// Must be distinct from the generic guard so the client can branch.
+	if models.ErrHandoverOwnerNotConfirmed.Code == models.ErrInvalidHandoverAction.Code {
+		t.Error("HANDOVER_OWNER_NOT_CONFIRMED must be distinct from INVALID_HANDOVER_ACTION")
+	}
+}

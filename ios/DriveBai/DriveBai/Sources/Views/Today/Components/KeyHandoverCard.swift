@@ -48,6 +48,11 @@ struct KeyHandoverCard: View {
                         ? "Pick up before"
                         : "Driver pickup deadline",
                     subline: pickupSubline,
+                    handover: handover,
+                    // KeyHandoverCard already renders HandoverLocationRow at
+                    // the top of the card; suppress the countdown's inner
+                    // copy so the address isn't shown twice.
+                    showLocation: false,
                     accessory: { AnyView(extendAccessory) }
                 )
             } else if handover.isPickupRefunded {
@@ -200,16 +205,16 @@ struct KeyHandoverCard: View {
     }
 
     private var carRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             if !handover.carTitle.isEmpty {
                 Text(handover.carTitle)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.primary)
             }
-            Label(handover.pickupLocationText, systemImage: "mappin.and.ellipse")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(2)
+            // Tappable pickup-location row (Apple Maps by default, chooser if
+            // Google Maps is installed). The row degrades gracefully when
+            // coordinates are missing.
+            HandoverLocationRow(handover: handover)
         }
     }
 

@@ -41,6 +41,14 @@ final class ChatViewModel: ObservableObject {
     /// Per-lease busy state for the chat-card CTAs.
     @Published var submittingVehicleReturnLeaseId: UUID?
 
+    /// Active key handovers keyed by lease_request_id. Fetched from
+    /// /key-handovers/today on chat load + refreshed on
+    /// `key_handover_owner_confirmed` / `key_handover_completed` /
+    /// `key_handover_created` WS events. Used to gate the driver's
+    /// "I've picked up the car" CTA on `.ownerConfirmed` (mirrors the
+    /// Today card's rule so both surfaces flip together).
+    @Published var keyHandoversByLease: [UUID: KeyHandover] = [:]
+
     /// Driver onboarding documents (license) shared into this chat through
     /// one or more lease requests. Surfaced to the OWNER side of the chat
     /// only — `vehicleDocuments` is the matching driver-side payload.
@@ -174,6 +182,18 @@ final class ChatViewModel: ObservableObject {
                     await self?.loadLeaseRequests()
                     await self?.loadSharedDocuments()
                     await self?.loadVehicleReturnsForChatLeases()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Key handover transitions (owner_confirmed / completed / expired)
+        // flip the chat-card pickup CTA gate — refetch so the button appears
+        // for the driver the instant the owner taps "I handed over the keys".
+        WebSocketManager.shared.keyHandoverUpdatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { [weak self] in
+                    await self?.loadKeyHandoversForChatLeases()
                 }
             }
             .store(in: &cancellables)
@@ -449,6 +469,31 @@ final class ChatViewModel: ObservableObject {
         // time the lease list changes shape. Cheap; bounded to one HTTP
         // call per lease, and most chats have exactly one lease row.
         await loadVehicleReturnsForChatLeases()
+        // Same rationale for handovers: gate the chat-card pickup CTA on
+        // owner-confirmed and stay in sync with the Today card without
+        // duplicating fetch machinery per surface.
+        await loadKeyHandoversForChatLeases()
+    }
+
+    /// Fetches the current user's active key handovers and indexes them by
+    /// lease_request_id so LeaseRequestCardView can gate the pickup CTA on
+    /// `.ownerConfirmed`. Best-effort — errors leave the cache empty (the
+    /// CTA then stays in "Waiting for the owner…" mode, which is the safe
+    /// default).
+    func loadKeyHandoversForChatLeases() async {
+        do {
+            let resp = try await apiClient.fetchKeyHandoversToday()
+            var map: [UUID: KeyHandover] = [:]
+            for api in resp.keyHandovers {
+                let kh = api.toDomain()
+                map[kh.leaseRequestId] = kh
+            }
+            keyHandoversByLease = map
+        } catch {
+            #if DEBUG
+            print("[ChatVM] loadKeyHandoversForChatLeases error: \(error)")
+            #endif
+        }
     }
 
     // MARK: - Shared Driver Documents

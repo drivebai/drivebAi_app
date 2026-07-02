@@ -199,6 +199,15 @@ func (h *KeyHandoverHandler) DriverConfirm(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusConflict, models.ErrHandoverExpired)
 		return
 	}
+	// Role-specific guard: if the driver is trying to confirm receipt before
+	// the owner has marked the keys handed over, return a distinct error code
+	// so the iOS client can surface the "waiting on the owner" message.
+	// Anything else (unexpected state that isn't owner_confirmed) still falls
+	// through to the generic INVALID_HANDOVER_ACTION conflict.
+	if kh.Status == models.KeyHandoverPending {
+		httputil.WriteError(w, http.StatusConflict, models.ErrHandoverOwnerNotConfirmed)
+		return
+	}
 	if kh.Status != models.KeyHandoverOwnerConfirmed {
 		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidHandoverAction)
 		return
@@ -245,6 +254,17 @@ func (h *KeyHandoverHandler) DriverConfirm(w http.ResponseWriter, r *http.Reques
 		h.wsHub.Broadcast(&ws.Event{
 			Type:          "lease_request_updated",
 			Payload:       map[string]any{"lease_request_id": updated.LeaseRequestID},
+			TargetUserIDs: []uuid.UUID{updated.OwnerID, updated.DriverID},
+		})
+		// ConfirmPickup also flipped cars.status → 'rented' in the same
+		// transaction; broadcast car_updated so the owner's My Cars grid
+		// reflects the new chip + rental block immediately.
+		h.wsHub.Broadcast(&ws.Event{
+			Type: "car_updated",
+			Payload: map[string]any{
+				"id":     updated.CarID,
+				"status": models.CarStatusRented,
+			},
 			TargetUserIDs: []uuid.UUID{updated.OwnerID, updated.DriverID},
 		})
 	}

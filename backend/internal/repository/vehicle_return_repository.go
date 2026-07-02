@@ -332,9 +332,19 @@ func (r *VehicleReturnRepository) finalize(ctx context.Context, id uuid.UUID, re
 	// Release the car if it's still reserved by this lease. unreserve is
 	// safe regardless of whether another reservation is in play because
 	// we only clear the slot when it still matches this lease's ID.
+	//
+	// Also flip status back from 'rented' → 'available' in the same
+	// UPDATE. Guarded on status='rented' so we never overwrite a paused
+	// row (owner-set state) or a sold row (terminal). Owners paused
+	// mid-rental will see their pause honored when the return finalizes.
 	if _, err := tx.Exec(ctx, `
 		UPDATE cars
-		SET reserved_by_lease_request_id = NULL
+		SET reserved_by_lease_request_id = NULL,
+		    status = CASE
+		        WHEN status = 'rented' THEN 'available'
+		        ELSE status
+		    END,
+		    updated_at = NOW()
 		WHERE reserved_by_lease_request_id = $1
 	`, v.LeaseRequestID); err != nil {
 		return nil, fmt.Errorf("unreserve car: %w", err)

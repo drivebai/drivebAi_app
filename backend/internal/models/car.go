@@ -154,6 +154,26 @@ type CarDocument struct {
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
+// ActiveRentalSummary is a per-car snapshot of the lease currently occupying
+// the car (paid + pickup_confirmed + not yet returned). Attached to CarResponse
+// so the owner's My Cars grid can show "Rented to Jamie R. · 4 weeks · $180/wk"
+// without a second round-trip to /lease-requests.
+//
+// All money fields are cents to stay consistent with the rest of the payment
+// pipeline (payments.amount, PaymentSummary.Amount). PlannedEndAt and
+// CurrentEarnedCents are DERIVED — computed in the handler from
+// pickup_confirmed_at + weeks — and are NOT stored on any table.
+type ActiveRentalSummary struct {
+	LeaseRequestID     uuid.UUID   `json:"lease_request_id"`
+	DriverID           uuid.UUID   `json:"driver_id"`
+	DriverName         string      `json:"driver_name"`
+	Weeks              int         `json:"weeks"`
+	WeeklyPriceCents   int64       `json:"weekly_price_cents"`
+	PickupConfirmedAt  RFC3339Time `json:"pickup_confirmed_at"`
+	PlannedEndAt       RFC3339Time `json:"planned_end_at"`
+	CurrentEarnedCents int64       `json:"current_earned_cents"`
+}
+
 // CarResponse is the API response format for a car
 type CarResponse struct {
 	ID          uuid.UUID        `json:"id"`
@@ -191,6 +211,12 @@ type CarResponse struct {
 
 	// Owner info (for display)
 	Owner *CarOwnerResponse `json:"owner,omitempty"`
+
+	// ActiveRental is populated on the owner's own /cars listing when a lease
+	// is currently active on this car (paid, picked up, not yet returned).
+	// Omitted otherwise so drivers browsing Discovery never see rental data
+	// from another user's transaction.
+	ActiveRental *ActiveRentalSummary `json:"active_rental,omitempty"`
 
 	// Timestamps
 	CreatedAt RFC3339Time `json:"created_at"`

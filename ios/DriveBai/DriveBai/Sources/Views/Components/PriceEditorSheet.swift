@@ -3,19 +3,34 @@ import SwiftUI
 // MARK: - Price Editor Mode
 
 enum PriceEditorMode: String, CaseIterable, Identifiable {
-    case adjust = "Adjust"
-    case set = "Set"
-    case dynamic = "Dynamic"
+    /// Raw values are stable enum identifiers — NOT displayed to the user.
+    /// Use `displayName` to render the segment label so we can rename copy
+    /// without touching any persistence/serialization.
+    case adjust
+    case set
+    case dynamic
 
     var id: String { rawValue }
+
+    /// User-facing label used by the segmented picker. Renamed from the
+    /// original "Adjust / Set / Dynamic" trio: "Type" is clearer than "Set"
+    /// (which was reading as a Turo-style CTA), and "Auto" better describes
+    /// the future auto-adjust behavior than "Dynamic".
+    var displayName: String {
+        switch self {
+        case .adjust:  return "Adjust"
+        case .set:     return "Type"
+        case .dynamic: return "Auto"
+        }
+    }
 }
 
 // MARK: - Price Editor Sheet
 
-/// A reusable bottom-sheet price editor with Adjust / Set / Dynamic segments.
+/// A reusable bottom-sheet price editor with Adjust / Type / Auto segments.
 /// - Adjust: large centered price with -/+ buttons (±$10 per tap)
-/// - Set: numeric text entry with a Done toolbar button
-/// - Dynamic: placeholder ("coming soon")
+/// - Type: numeric text entry with a Done toolbar button
+/// - Auto: placeholder ("coming soon")
 ///
 /// Bind to a `Double` (the underlying price amount). The sheet preserves the
 /// value when switching modes. Enforces `minValue` (default 0).
@@ -60,7 +75,7 @@ struct PriceEditorSheet: View {
             // Segmented picker
             Picker("Mode", selection: $mode) {
                 ForEach(PriceEditorMode.allCases) { m in
-                    Text(m.rawValue).tag(m)
+                    Text(m.displayName).tag(m)
                 }
             }
             .pickerStyle(.segmented)
@@ -83,7 +98,7 @@ struct PriceEditorSheet: View {
                 case .set:
                     setView
                 case .dynamic:
-                    dynamicView
+                    autoAdjustView
                 }
             }
             .frame(maxWidth: .infinity)
@@ -215,18 +230,18 @@ struct PriceEditorSheet: View {
         }
     }
 
-    // MARK: - Dynamic mode
+    // MARK: - Auto-adjust mode (placeholder — "coming soon")
 
-    private var dynamicView: some View {
+    private var autoAdjustView: some View {
         VStack(spacing: 16) {
             Spacer(minLength: 0)
             Image(systemName: "sparkles")
                 .font(.system(size: 40))
                 .foregroundColor(.driveBaiPrimary)
-            Text("Dynamic pricing")
+            Text("Auto-adjust price")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Smart pricing that adjusts to demand is coming soon.")
+            Text("We'll suggest weekly prices based on your car and city. Available in a future update.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

@@ -39,6 +39,15 @@ struct LeaseRequestCardView: View {
     /// spinner / disabled state). Defaults to false for compatibility.
     var isReturnSubmitting: Bool = false
 
+    /// The key handover row for this lease (fetched by ChatViewModel from
+    /// /key-handovers/today). Used to gate the driver's "I've picked up the
+    /// car" button — the button must only appear AFTER the owner tapped
+    /// "I handed over the keys" and the handover flipped to
+    /// `owner_confirmed`. Defaults to nil so previews / legacy call sites
+    /// still compile; nil is treated as "not yet unlocked" for the driver
+    /// pickup CTA (safer default — the Today card is the primary surface).
+    var keyHandover: KeyHandover? = nil
+
     private var isOwner: Bool { currentUserId == leaseRequest.ownerId }
     private var isDriver: Bool { currentUserId == leaseRequest.driverId }
 
@@ -631,16 +640,37 @@ struct LeaseRequestCardView: View {
                         : "Confirm pickup or you'll be auto-refunded when the timer hits zero."
                 )
 
-                Button(action: onConfirmPickup) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "key.fill")
-                        Text("I've picked up the car")
+                // Gate the pickup CTA on the key handover flipping to
+                // `owner_confirmed` — same rule the Today card uses. Before
+                // the owner taps "I handed over the keys" the driver sees a
+                // muted waiting line, not an actionable button they would
+                // 409 on. Backend also enforces this (409
+                // OWNER_NOT_CONFIRMED), so a stale UI can't slip through.
+                if keyHandover?.status == .ownerConfirmed {
+                    Button(action: onConfirmPickup) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "key.fill")
+                            Text("I've picked up the car")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.driveBaiPrimary)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.driveBaiPrimary)
-                    .foregroundColor(.white)
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "hourglass")
+                            .foregroundColor(.secondary)
+                        Text("Waiting for the owner to hand over the keys.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 12)
+                    .background(Color(.systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }

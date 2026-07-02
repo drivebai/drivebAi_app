@@ -47,7 +47,7 @@ struct AdjustPriceSheet: View {
 
                 // Price input
                 VStack(spacing: 12) {
-                    Text("Set weekly price")
+                    Text("Weekly price")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
