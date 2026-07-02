@@ -407,21 +407,35 @@ func (h *PurchaseRequestHandler) Accept(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	car, _ := h.carRepo.GetByID(r.Context(), existing.CarID)
+	// Fail loud on car-lookup failure. Previously we swallowed the error
+	// with `car, _ :=` and fell through with a nil car, which silently
+	// left year/make/model/vin as Go zero-values (0, "", "", "") — the
+	// wizard's Review step then showed `—` for every seeded field. If the
+	// car row genuinely disappeared, return a 409 so the seller sees a
+	// concrete "Car no longer exists" rather than an opaque bad seed.
+	car, err := h.carRepo.GetByID(r.Context(), existing.CarID)
+	if err != nil {
+		h.logger.Error("purchase.accept: car lookup failed", "purchase_id", id, "car_id", existing.CarID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if car == nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("CAR_MISSING", "Car no longer exists"))
+		return
+	}
 	seller, _ := h.userRepo.GetByID(r.Context(), existing.SellerID)
 	buyer, _ := h.userRepo.GetByID(r.Context(), existing.BuyerID)
 
 	seed := repository.BillOfSaleSeed{
 		Currency:        "USD",
 		SaleAmountCents: existing.OfferAmountCents,
+		VehicleYear:     car.Year,
+		VehicleMake:     car.Make,
+		VehicleModel:    car.Model,
+		TermsConditions: models.DefaultBOSTerms,
 	}
-	if car != nil {
-		seed.VehicleYear = car.Year
-		seed.VehicleMake = car.Make
-		seed.VehicleModel = car.Model
-		if car.VIN.Valid {
-			seed.VIN = car.VIN.String
-		}
+	if car.VIN.Valid {
+		seed.VIN = car.VIN.String
 	}
 	if seller != nil {
 		seed.SellerName = seller.FullName()
@@ -522,6 +536,13 @@ func (h *PurchaseRequestHandler) UpdateBOS(w http.ResponseWriter, r *http.Reques
 		Payload:       resp,
 		TargetUserIDs: []uuid.UUID{existing.SellerID, existing.BuyerID},
 	})
+	// Chat trail + counterparty notification so the buyer knows the
+	// seller touched the document.
+	h.postSystemMessage(r.Context(), existing.ChatID, userID, "Seller updated the Bill of Sale")
+	go h.notifHandler.Notify(existing.BuyerID, models.NotificationTypePurchaseRequest,
+		"Bill of Sale updated",
+		"The seller updated the Bill of Sale. Review the changes.",
+		&existing.ChatID, &existing.ID)
 }
 
 // UpdateBOSBuyerFields — PATCH /api/v1/purchase-requests/{id}/bos/buyer-fields
@@ -535,7 +556,12 @@ func (h *PurchaseRequestHandler) UpdateBOSBuyerFields(w http.ResponseWriter, r *
 		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
 		return
 	}
-	if userID != existing.BuyerID && userID != existing.SellerID {
+	// Buyer-only. The prior guard admitted both sides ("!= buyer AND !=
+	// seller"), letting the seller rewrite buyer_name / buyer_address
+	// before the buyer signed — and the counterparty notification then
+	// fired at the seller (the actor), never reaching the buyer. Field
+	// ownership per DESIGN SPEC §B.
+	if userID != existing.BuyerID {
 		httputil.WriteError(w, http.StatusForbidden, models.ErrInvalidPurchaseAction)
 		return
 	}
@@ -561,6 +587,11 @@ func (h *PurchaseRequestHandler) UpdateBOSBuyerFields(w http.ResponseWriter, r *
 		Payload:       resp,
 		TargetUserIDs: []uuid.UUID{existing.SellerID, existing.BuyerID},
 	})
+	h.postSystemMessage(r.Context(), existing.ChatID, userID, "Buyer updated the Bill of Sale")
+	go h.notifHandler.Notify(existing.SellerID, models.NotificationTypePurchaseRequest,
+		"Bill of Sale updated",
+		"The buyer updated the Bill of Sale. Review the changes.",
+		&existing.ChatID, &existing.ID)
 }
 
 // SignBOS — POST /api/v1/purchase-requests/{id}/bos/sign
@@ -652,13 +683,26 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 	h.broadcast("purchase_request_updated", p, nil)
 
 	// Chat system message + notification.
-	if role == "seller" {
-		h.postSystemMessage(r.Context(), p.ChatID, userID, "Seller signed the Bill of Sale")
-	} else {
-		h.postSystemMessage(r.Context(), p.ChatID, userID, "Buyer signed the Bill of Sale")
+	// Only post the per-role signed message the first time each role
+	// signs — a repeat multipart hit (alreadySigned) shouldn't spam the
+	// chat with duplicate rows or re-notify the counterparty.
+	if !alreadySigned {
+		if role == "seller" {
+			h.postSystemMessage(r.Context(), p.ChatID, userID, "Seller signed the Bill of Sale")
+			go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseRequest,
+				"Seller signed",
+				"The seller signed the Bill of Sale.",
+				&p.ChatID, &p.ID)
+		} else {
+			h.postSystemMessage(r.Context(), p.ChatID, userID, "Buyer signed the Bill of Sale")
+			go h.notifHandler.Notify(p.SellerID, models.NotificationTypePurchaseRequest,
+				"Buyer signed",
+				"The buyer signed the Bill of Sale.",
+				&p.ChatID, &p.ID)
+		}
 	}
-	if p.Status == models.PurchaseStatusBOSSigned {
-		h.postSystemMessage(r.Context(), p.ChatID, userID, "Bill of Sale fully signed — buyer can now authorize payment")
+	if p.Status == models.PurchaseStatusBOSSigned && !alreadySigned {
+		h.postSystemMessage(r.Context(), p.ChatID, userID, "Bill of Sale completed. Buyer can proceed to payment.")
 		go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseRequest,
 			"Bill of Sale signed",
 			"Both parties signed the Bill of Sale. Authorize payment to proceed.",
@@ -679,6 +723,15 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 	bos, err := h.repo.GetBillOfSale(r.Context(), id)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	// Row not yet seeded (offer still in `requested`): return a real 404
+	// so the iOS BoS cache treats it as "no row exists yet" rather than
+	// decoding a null body as a required struct. Prior behavior served
+	// HTTP 200 with a `null` body, which the iOS Codable then rejected
+	// as a missing-key decoding error.
+	if bos == nil {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("BILL_OF_SALE_NOT_FOUND", "Bill of Sale hasn't been created yet"))
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, h.buildBOSResponse(bos))

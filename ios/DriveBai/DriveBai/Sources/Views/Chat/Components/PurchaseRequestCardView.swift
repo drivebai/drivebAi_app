@@ -6,6 +6,11 @@ import SwiftUI
 struct PurchaseRequestCardView: View {
     let purchaseRequest: PurchaseRequest
     let currentUserId: UUID
+    /// Optional BoS row (from ChatViewModel.billOfSalesByPurchase). When
+    /// present the card refines its status copy based on how much of the
+    /// document has been filled and signed — otherwise we fall back to
+    /// the raw purchase status.
+    var billOfSale: BillOfSale? = nil
 
     /// Called with a "which action to run" so ChatView keeps the sheet
     /// presentation state (BoS wizard, ChoosePaymentOptionView, …) instead
@@ -133,29 +138,73 @@ struct PurchaseRequestCardView: View {
         purchaseRequest.status == .inspectionRejected ? "exclamationmark.triangle.fill" : "hourglass"
     }
 
+    /// BoS-aware banner copy. Falls back to the purchase-status defaults
+    /// when we don't have a BoS row yet.
     private var statusBannerText: String? {
-        switch (purchaseRequest.status, isBuyer, isSeller) {
-        case (.bosPendingSeller, true, _):
-            return "Waiting on the seller's signature."
-        case (.bosPendingBuyer, _, true):
-            return "Waiting on the buyer's signature."
-        case (.bosSigned, false, true):
-            return "Waiting for the buyer to authorize payment."
-        case (.paymentAuthorized, true, _):
-            return "Payment held. Waiting for the seller to schedule handover."
-        case (.handoverScheduled, _, _):
+        switch purchaseRequest.status {
+        case .accepted:
+            return acceptedBannerText
+        case .bosPendingSeller:
+            return isSeller
+                ? "Sign to complete the Bill of Sale."
+                : "Waiting on the seller's signature."
+        case .bosPendingBuyer:
+            return isBuyer
+                ? "Sign to continue to payment."
+                : "Waiting on the buyer's signature."
+        case .bosSigned:
+            return isBuyer
+                ? "Bill of Sale ready. Authorize payment to continue."
+                : "Waiting for the buyer to authorize payment."
+        case .paymentAuthorized:
+            return isBuyer
+                ? "Payment held. Waiting for the seller to schedule handover."
+                : "Payment authorized — schedule the handover."
+        case .handoverScheduled:
             if let ts = purchaseRequest.handoverScheduledAt,
                let loc = purchaseRequest.handoverLocation {
                 return "Meet \(loc) on \(ts.formatted(date: .abbreviated, time: .shortened))."
             }
             return "Handover scheduled — check the details in chat."
-        case (.awaitingInspection, false, true):
-            return "Buyer is inspecting the vehicle."
-        case (.inspectionRejected, _, _):
+        case .awaitingInspection:
+            return isSeller
+                ? "Buyer is inspecting the vehicle."
+                : "Inspect the vehicle to accept or reject the sale."
+        case .inspectionRejected:
             return "DrivaBai support is reviewing the rejection."
         default:
             return nil
         }
+    }
+
+    /// Copy for the `.accepted` status. Splits on how much of the BoS
+    /// has been filled by which party.
+    private var acceptedBannerText: String {
+        guard let bos = billOfSale else {
+            return isSeller
+                ? "Bill of Sale not started. Open to fill in vehicle and seller details."
+                : "Waiting for the seller to complete the Bill of Sale."
+        }
+        // Seller-owned fields all populated?
+        let sellerReady = !bos.vehicleMake.isEmpty
+            && !bos.vehicleModel.isEmpty
+            && !bos.vin.isEmpty
+            && !bos.sellerName.isEmpty
+            && !bos.sellerAddress.isEmpty
+        let buyerReady = !bos.buyerName.isEmpty && !bos.buyerAddress.isEmpty
+
+        if !sellerReady {
+            return isSeller
+                ? "Complete your section of the Bill of Sale."
+                : "Waiting for the seller to complete their section."
+        }
+        if !buyerReady {
+            return isBuyer
+                ? "Fill in your buyer details to continue."
+                : "Waiting for the buyer to fill in their details."
+        }
+        // Both sides filled but nobody has signed yet.
+        return "Ready to sign."
     }
 
     // MARK: - Participants footer
@@ -324,14 +373,36 @@ struct PurchaseRequestCardView: View {
         }
     }
 
+    /// Label reads off the same "what's the next thing this user should
+    /// do" logic as `acceptedBannerText`. If both parties have already
+    /// signed we bias toward "Open Bill of Sale" (review-only).
     private var openBoSLabel: String {
+        // Bill of Sale fully signed — view-only.
+        if let bos = billOfSale, bos.isFullySigned { return "Open Bill of Sale" }
+
+        // Role has already signed — waiting on the other side.
+        if let bos = billOfSale {
+            if isSeller && bos.sellerHasSigned { return "Open Bill of Sale" }
+            if isBuyer && bos.buyerHasSigned { return "Open Bill of Sale" }
+        }
+
         switch (purchaseRequest.status, isBuyer, isSeller) {
-        case (.accepted, true, _),
-             (.bosPendingBuyer, true, _):
-            return "Sign Bill of Sale"
         case (.accepted, _, true),
              (.bosPendingSeller, _, true):
-            return "Sign Bill of Sale"
+            if let bos = billOfSale {
+                let sellerReady = !bos.vehicleMake.isEmpty
+                    && !bos.vehicleModel.isEmpty && !bos.vin.isEmpty
+                    && !bos.sellerName.isEmpty && !bos.sellerAddress.isEmpty
+                return sellerReady ? "Sign Bill of Sale" : "Complete Bill of Sale"
+            }
+            return "Complete Bill of Sale"
+        case (.accepted, true, _),
+             (.bosPendingBuyer, true, _):
+            if let bos = billOfSale {
+                let buyerReady = !bos.buyerName.isEmpty && !bos.buyerAddress.isEmpty
+                return buyerReady ? "Sign Bill of Sale" : "Complete Bill of Sale"
+            }
+            return "Open Bill of Sale"
         default:
             return "Open Bill of Sale"
         }

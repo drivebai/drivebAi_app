@@ -40,6 +40,17 @@ final class WebSocketManager: ObservableObject {
     /// affected surface — the payload is intentionally minimal.
     let purchaseRequestUpdatedPublisher = PassthroughSubject<Void, Never>()
 
+    /// Purchase Bill of Sale-only channel. Fires ONLY on
+    /// `purchase_bill_of_sale_updated`. The catch-all
+    /// `purchaseRequestUpdatedPublisher` still fires for the same event
+    /// so status-list refreshes keep working; this dedicated subject lets
+    /// ChatViewModel re-fetch just the BoS row without pulling every
+    /// purchase request in the chat.
+    ///
+    /// The payload is the affected purchase-request id when the backend
+    /// includes it in the JSON payload; `nil` if the payload was empty.
+    let purchaseBillOfSaleUpdatedPublisher = PassthroughSubject<UUID?, Never>()
+
     // Support chat events — admin reply arrives in real-time
     let supportMessageCreatedPublisher = PassthroughSubject<SupportMessageAPIResponse, Never>()
 
@@ -233,6 +244,23 @@ final class WebSocketManager: ObservableObject {
              "purchase_handover_updated",
              "purchase_rejection_created":
             purchaseRequestUpdatedPublisher.send()
+            // Additionally fan out to the BoS-only channel so the wizard
+            // and cache can refetch just the row that changed. Payload
+            // shape is best-effort — backend may include
+            // {"purchase_request_id": "..."} or {"id": "..."}; we accept
+            // both, and fall back to nil (which forces a broader refresh
+            // on the subscriber side).
+            if type == "purchase_bill_of_sale_updated" {
+                var purchaseID: UUID? = nil
+                if let obj = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] {
+                    if let s = obj["purchase_request_id"] as? String {
+                        purchaseID = UUID(uuidString: s)
+                    } else if let s = obj["id"] as? String {
+                        purchaseID = UUID(uuidString: s)
+                    }
+                }
+                purchaseBillOfSaleUpdatedPublisher.send(purchaseID)
+            }
         case "notification_created":
             // Payload: { "unread_count": Int }
             if let unread = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: Int])?["unread_count"] {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -312,23 +313,33 @@ func (r *PurchaseRequestRepository) AcceptOffer(ctx context.Context, id, sellerI
 
 	// Insert the BoS row idempotently. If one already exists (retry path)
 	// we leave it alone — sellers only get one shot at pre-filling.
+	//
+	// terms_conditions is inserted explicitly (not relying on the migration
+	// column default) so that any drift between DB default and Go constant
+	// is impossible — the Review step always renders a concrete value.
+	terms := bosSeed.TermsConditions
+	if strings.TrimSpace(terms) == "" {
+		terms = models.DefaultBOSTerms
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO purchase_bill_of_sales
 			(id, purchase_request_id,
 			 vehicle_year, vehicle_make, vehicle_model, vin,
-			 sale_amount_cents, currency, seller_name, seller_address,
+			 sale_amount_cents, currency, terms_conditions,
+			 seller_name, seller_address,
 			 buyer_name, buyer_address,
 			 created_at, updated_at)
 		VALUES
 			(gen_random_uuid(), $1,
 			 $2, $3, $4, $5,
-			 $6, $7, $8, $9,
-			 $10, $11,
+			 $6, $7, $8,
+			 $9, $10,
+			 $11, $12,
 			 NOW(), NOW())
 		ON CONFLICT (purchase_request_id) DO NOTHING
 	`, p.ID,
 		bosSeed.VehicleYear, bosSeed.VehicleMake, bosSeed.VehicleModel, bosSeed.VIN,
-		bosSeed.SaleAmountCents, bosSeed.Currency,
+		bosSeed.SaleAmountCents, bosSeed.Currency, terms,
 		bosSeed.SellerName, bosSeed.SellerAddress,
 		bosSeed.BuyerName, bosSeed.BuyerAddress,
 	); err != nil {
@@ -342,6 +353,11 @@ func (r *PurchaseRequestRepository) AcceptOffer(ctx context.Context, id, sellerI
 }
 
 // BillOfSaleSeed carries the pre-fill values written on `accept`.
+//
+// TermsConditions is populated by the handler with models.DefaultBOSTerms
+// so that the seeded row always has a concrete disclaimer string — no
+// silent fallback to the DB column default and no `—` in the wizard's
+// Review step.
 type BillOfSaleSeed struct {
 	VehicleYear     int
 	VehicleMake     string
@@ -349,6 +365,7 @@ type BillOfSaleSeed struct {
 	VIN             string
 	SaleAmountCents int64
 	Currency        string
+	TermsConditions string
 	SellerName      string
 	SellerAddress   string
 	BuyerName       string
@@ -445,10 +462,50 @@ func (r *PurchaseRequestRepository) GetBillOfSale(ctx context.Context, purchaseI
 	return &b, nil
 }
 
+// validateNonBlankPatch returns a 400 APIError when the caller sent an
+// explicit empty (or all-whitespace) string for a field that must remain
+// populated. nil pointers (field omitted from JSON) are always allowed.
+//
+// This is the last line of defence against the iOS "send-all-fields-every-
+// time" pattern — if the wizard @State happens to be empty when the user
+// taps Save (e.g. a fresh open before rehydration lands), the API rejects
+// it instead of silently clobbering the seeded value with `''`.
+func validateNonBlankPatch(field string, p *string) *models.APIError {
+	if p == nil {
+		return nil
+	}
+	if strings.TrimSpace(*p) == "" {
+		return models.NewValidationError(field + " cannot be blank")
+	}
+	return nil
+}
+
 // UpdateBillOfSaleFields is the seller-side PATCH for the "vehicle" and
-// seller identity fields. Guarded so it fails with BOS_LOCKED once any
-// party has signed — the row becomes append-only.
+// seller identity fields. Guarded so it fails with BOS_LOCKED (self-locked
+// variant) once the SELLER has signed — buyer's signature does NOT block
+// seller edits, because the seller's block is still editable until they
+// sign it themselves. The UPDATE SQL touches only columns owned by the
+// seller/vehicle side; no implicit clearing of buyer fields.
 func (r *PurchaseRequestRepository) UpdateBillOfSaleFields(ctx context.Context, purchaseID uuid.UUID, patch models.UpdateBOSBody) (*models.PurchaseBillOfSale, error) {
+	// Reject explicit-empty patches for required strings before we hit the
+	// DB. Addresses may be `""` (user intentionally clears); name/make/
+	// model/vin/terms are load-bearing on the printed BoS.
+	if apiErr := validateNonBlankPatch("vehicle_make", patch.VehicleMake); apiErr != nil {
+		return nil, apiErr
+	}
+	if apiErr := validateNonBlankPatch("vehicle_model", patch.VehicleModel); apiErr != nil {
+		return nil, apiErr
+	}
+	if apiErr := validateNonBlankPatch("vin", patch.VIN); apiErr != nil {
+		return nil, apiErr
+	}
+	if apiErr := validateNonBlankPatch("seller_name", patch.SellerName); apiErr != nil {
+		return nil, apiErr
+	}
+	if apiErr := validateNonBlankPatch("terms_conditions", patch.TermsConditions); apiErr != nil {
+		return nil, apiErr
+	}
+
 	// Fetch first to check lock. Cheap (indexed).
 	b, err := r.GetBillOfSale(ctx, purchaseID)
 	if err != nil {
@@ -457,50 +514,82 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleFields(ctx context.Context, 
 	if b == nil {
 		return nil, models.ErrInvalidPurchaseAction
 	}
-	if b.SellerSigned() || b.BuyerSigned() {
-		return nil, models.ErrBOSLocked
+	// Seller-fields lock: only the seller's own signature blocks this
+	// endpoint. The buyer signing MUST NOT lock the seller out — before
+	// this fix the OR-guard cross-blocked the wrong party.
+	if b.SellerSigned() {
+		return nil, models.ErrBOSSelfLocked
 	}
+
+	// Build a dynamic SET clause so we only write the columns the caller
+	// actually patched. This prevents a stale @State from re-writing a
+	// column the user hasn't touched, and keeps the UPDATE role-scoped
+	// (buyer columns are never mentioned by this endpoint).
+	sets := []string{}
+	args := []interface{}{purchaseID}
+	next := 2
 	if patch.VehicleYear != nil {
-		b.VehicleYear = *patch.VehicleYear
+		sets = append(sets, fmt.Sprintf("vehicle_year = $%d", next))
+		args = append(args, *patch.VehicleYear)
+		next++
 	}
 	if patch.VehicleMake != nil {
-		b.VehicleMake = *patch.VehicleMake
+		sets = append(sets, fmt.Sprintf("vehicle_make = $%d", next))
+		args = append(args, *patch.VehicleMake)
+		next++
 	}
 	if patch.VehicleModel != nil {
-		b.VehicleModel = *patch.VehicleModel
+		sets = append(sets, fmt.Sprintf("vehicle_model = $%d", next))
+		args = append(args, *patch.VehicleModel)
+		next++
 	}
 	if patch.VIN != nil {
-		b.VIN = *patch.VIN
+		sets = append(sets, fmt.Sprintf("vin = $%d", next))
+		args = append(args, *patch.VIN)
+		next++
 	}
 	// sale_amount_cents intentionally NOT patchable — it's seeded from
 	// purchase_requests.offer_amount_cents and must never diverge from
 	// the amount CreatePaymentIntent actually charges.
 	if patch.TermsConditions != nil {
-		b.TermsConditions = *patch.TermsConditions
+		sets = append(sets, fmt.Sprintf("terms_conditions = $%d", next))
+		args = append(args, *patch.TermsConditions)
+		next++
 	}
 	if patch.SellerName != nil {
-		b.SellerName = *patch.SellerName
+		sets = append(sets, fmt.Sprintf("seller_name = $%d", next))
+		args = append(args, *patch.SellerName)
+		next++
 	}
 	if patch.SellerAddress != nil {
-		b.SellerAddress = *patch.SellerAddress
+		sets = append(sets, fmt.Sprintf("seller_address = $%d", next))
+		args = append(args, *patch.SellerAddress)
+		next++
 	}
-	_, err = r.db.Pool.Exec(ctx, `
-		UPDATE purchase_bill_of_sales
-		SET vehicle_year = $2, vehicle_make = $3, vehicle_model = $4, vin = $5,
-		    sale_amount_cents = $6, terms_conditions = $7,
-		    seller_name = $8, seller_address = $9,
-		    updated_at = NOW()
-		WHERE purchase_request_id = $1
-	`, purchaseID, b.VehicleYear, b.VehicleMake, b.VehicleModel, b.VIN,
-		b.SaleAmountCents, b.TermsConditions, b.SellerName, b.SellerAddress)
-	if err != nil {
+	if len(sets) == 0 {
+		// Nothing to write — return the current row as a friendly no-op.
+		return b, nil
+	}
+	q := "UPDATE purchase_bill_of_sales SET " + strings.Join(sets, ", ") +
+		", updated_at = NOW() WHERE purchase_request_id = $1"
+	if _, err := r.db.Pool.Exec(ctx, q, args...); err != nil {
 		return nil, fmt.Errorf("update bos: %w", err)
 	}
 	return r.GetBillOfSale(ctx, purchaseID)
 }
 
 // UpdateBillOfSaleBuyerFields is the buyer-owned identity PATCH.
+//
+// Symmetric to UpdateBillOfSaleFields: only the BUYER's own signature
+// blocks this endpoint. The seller signing MUST NOT lock the buyer out —
+// pre-signature identity edits are a per-role concern.
+// The UPDATE SQL touches only buyer_* columns; the vehicle / seller
+// block is untouched.
 func (r *PurchaseRequestRepository) UpdateBillOfSaleBuyerFields(ctx context.Context, purchaseID uuid.UUID, patch models.UpdateBOSBuyerFieldsBody) (*models.PurchaseBillOfSale, error) {
+	if apiErr := validateNonBlankPatch("buyer_name", patch.BuyerName); apiErr != nil {
+		return nil, apiErr
+	}
+
 	b, err := r.GetBillOfSale(ctx, purchaseID)
 	if err != nil {
 		return nil, err
@@ -508,21 +597,29 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleBuyerFields(ctx context.Cont
 	if b == nil {
 		return nil, models.ErrInvalidPurchaseAction
 	}
-	if b.SellerSigned() || b.BuyerSigned() {
-		return nil, models.ErrBOSLocked
+	if b.BuyerSigned() {
+		return nil, models.ErrBOSSelfLocked
 	}
+
+	sets := []string{}
+	args := []interface{}{purchaseID}
+	next := 2
 	if patch.BuyerName != nil {
-		b.BuyerName = *patch.BuyerName
+		sets = append(sets, fmt.Sprintf("buyer_name = $%d", next))
+		args = append(args, *patch.BuyerName)
+		next++
 	}
 	if patch.BuyerAddress != nil {
-		b.BuyerAddress = *patch.BuyerAddress
+		sets = append(sets, fmt.Sprintf("buyer_address = $%d", next))
+		args = append(args, *patch.BuyerAddress)
+		next++
 	}
-	_, err = r.db.Pool.Exec(ctx, `
-		UPDATE purchase_bill_of_sales
-		SET buyer_name = $2, buyer_address = $3, updated_at = NOW()
-		WHERE purchase_request_id = $1
-	`, purchaseID, b.BuyerName, b.BuyerAddress)
-	if err != nil {
+	if len(sets) == 0 {
+		return b, nil
+	}
+	q := "UPDATE purchase_bill_of_sales SET " + strings.Join(sets, ", ") +
+		", updated_at = NOW() WHERE purchase_request_id = $1"
+	if _, err := r.db.Pool.Exec(ctx, q, args...); err != nil {
 		return nil, fmt.Errorf("update bos buyer fields: %w", err)
 	}
 	return r.GetBillOfSale(ctx, purchaseID)

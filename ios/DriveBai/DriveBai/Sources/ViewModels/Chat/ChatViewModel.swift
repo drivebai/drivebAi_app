@@ -139,6 +139,27 @@ final class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // BoS-only channel. On a targeted BoS update we refresh the
+        // affected row in `billOfSalesByPurchase` so an open
+        // BillOfSaleFlowView (or a PurchaseRequestCardView reading from
+        // the cache) sees the counterparty's edits without needing a
+        // full purchase-list reload. If the WS payload didn't carry an
+        // id we fall back to refreshing every accepted purchase in this
+        // chat — bounded and rare.
+        WebSocketManager.shared.purchaseBillOfSaleUpdatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] purchaseID in
+                Task { [weak self] in
+                    guard let self else { return }
+                    if let id = purchaseID {
+                        await self.fetchBillOfSale(purchaseRequestId: id)
+                    } else {
+                        await self.refreshBillOfSaleCacheForChat()
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
         // On any lease status flip we also refresh shared documents. This
         // matters for the driver side: vehicle documents (registration /
         // insurance / …) are gated by `HasAcceptedLeaseForChat` on the
@@ -820,6 +841,51 @@ final class ChatViewModel: ObservableObject {
             #if DEBUG
             print("[ChatViewModel] loadPurchaseRequests error: \(error)")
             #endif
+        }
+        // Populate BoS cache for every purchase that already has a row
+        // server-side (accepted → bos_signed). The card and wizard both
+        // read from this map, so hydrating it here means the sheet opens
+        // with correct data on the very first tap.
+        await refreshBillOfSaleCacheForChat()
+    }
+
+    /// Fetches (or refetches) the BoS row for a single purchase request
+    /// and stores it in `billOfSalesByPurchase`. Silent on 404 — the
+    /// backend returns 404 before the seller has accepted, which is the
+    /// expected state during .requested/.declined/.cancelled.
+    func fetchBillOfSale(purchaseRequestId: UUID) async {
+        do {
+            let response = try await apiClient.getBillOfSale(
+                purchaseRequestId: purchaseRequestId
+            )
+            billOfSalesByPurchase[purchaseRequestId] = response.toDomain()
+        } catch let apiError as APIError {
+            if case .serverError(_, let msg) = apiError,
+               msg.lowercased().contains("not found") {
+                return
+            }
+            #if DEBUG
+            print("[ChatViewModel] fetchBillOfSale(\(purchaseRequestId)) error: \(apiError)")
+            #endif
+        } catch {
+            #if DEBUG
+            print("[ChatViewModel] fetchBillOfSale(\(purchaseRequestId)) error: \(error)")
+            #endif
+        }
+    }
+
+    /// Refresh the BoS cache for every purchase in this chat that is
+    /// past `requested`. Bounded to at most one HTTP call per open
+    /// purchase; almost all chats have zero or one purchase request.
+    func refreshBillOfSaleCacheForChat() async {
+        let openStatuses: Set<PurchaseRequestStatus> = [
+            .accepted, .bosPendingSeller, .bosPendingBuyer, .bosSigned,
+            .paymentAuthorized, .handoverScheduled, .awaitingInspection,
+            .inspectionAccepted, .inspectionRejected, .completed
+        ]
+        let targets = purchaseRequests.filter { openStatuses.contains($0.status) }
+        for pr in targets {
+            await fetchBillOfSale(purchaseRequestId: pr.id)
         }
     }
 

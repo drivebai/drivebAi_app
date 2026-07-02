@@ -125,6 +125,13 @@ const (
 	PurchaseRejectionEvidenceMaxBytes = 50 * 1024 * 1024
 )
 
+// DefaultBOSTerms is the standard as-is/where-is disclaimer written into
+// every freshly-seeded Bill of Sale. Kept as a Go constant (not just the
+// migration column default) so that Accept can INSERT it explicitly and
+// the wizard's Review step always renders a value — no more silent `—`
+// when the row happens to predate the migration default.
+const DefaultBOSTerms = "Vehicle is sold as-is, where-is, with no warranties unless otherwise stated in writing."
+
 // ─── Domain models ──────────────────────────────────────────────────────────
 
 // PurchaseRequest is the root row backing the buy-the-car state machine.
@@ -434,7 +441,19 @@ var (
 	ErrCarSold                = &APIError{Code: ErrCodeCarSold, Message: "This car has already been sold or is reserved for another purchase"}
 	ErrDuplicatePurchase      = &APIError{Code: ErrCodeDuplicatePurchase, Message: "You already have an active purchase offer for this car"}
 	ErrInvalidPurchaseAction  = &APIError{Code: ErrCodeInvalidPurchaseAction, Message: "This action is not allowed for the current purchase state"}
-	ErrBOSLocked              = &APIError{Code: ErrCodeBOSLocked, Message: "Bill of Sale is locked — one or more parties have already signed"}
+	// ErrBOSSelfLocked is returned by PATCH /bos and /bos/buyer-fields when
+	// the current caller's role has already signed. iOS shows this to the
+	// signer to explain that unsigning is a support-only operation.
+	ErrBOSSelfLocked = &APIError{Code: ErrCodeBOSLocked, Message: "You have already signed the Bill of Sale. Unsigning is not supported — contact support to reset."}
+	// ErrBOSOtherRoleLocked is currently unused by the two PATCH endpoints
+	// (buyer signature no longer blocks seller edits, and vice versa) but
+	// is retained as a typed sentinel for future flows (e.g. an admin
+	// re-open) so callers have a canonical string to key on.
+	ErrBOSOtherRoleLocked = &APIError{Code: ErrCodeBOSLocked, Message: "The other party has signed. This section is now read-only."}
+	// ErrBOSLocked is preserved as a compatibility alias so any callers or
+	// tests that reference the old sentinel keep compiling. Deprecated —
+	// new code should return ErrBOSSelfLocked or ErrBOSOtherRoleLocked.
+	ErrBOSLocked              = ErrBOSSelfLocked
 	ErrBOSNotSigned           = &APIError{Code: ErrCodeBOSNotSigned, Message: "The Bill of Sale must be fully signed before payment can be authorized"}
 	ErrAlreadySigned          = &APIError{Code: ErrCodeAlreadySigned, Message: "You have already signed this Bill of Sale"}
 	ErrNotAwaitingInspection  = &APIError{Code: ErrCodeNotAwaitingInspection, Message: "The vehicle is not currently awaiting buyer inspection"}
