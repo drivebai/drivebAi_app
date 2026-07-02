@@ -635,11 +635,14 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 		// Discard the freshly-uploaded file since we didn't update the DB.
 		_ = os.Remove(filePath)
 	}
+	// Return the raw BillOfSaleResponse so iOS can decode it with the same
+	// model it uses for GET /bos and PATCH /bos. The prior envelope
+	// (`{"bill_of_sale": ..., "already_signed": ...}`) broke iOS decode.
+	// `already_signed` was informational only — iOS can detect a no-op
+	// sign by comparing seller_signed_at / buyer_signed_at to what it
+	// already had.
 	resp := h.buildBOSResponse(bos)
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{
-		"bill_of_sale":   resp,
-		"already_signed": alreadySigned,
-	})
+	httputil.WriteJSON(w, http.StatusOK, resp)
 	// Broadcast purchase + BoS updates so both sides refresh.
 	h.wsHub.Broadcast(&ws.Event{
 		Type:          "purchase_bill_of_sale_updated",
