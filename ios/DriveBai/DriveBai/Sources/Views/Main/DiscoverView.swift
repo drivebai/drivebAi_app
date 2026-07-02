@@ -619,6 +619,9 @@ struct ListingDetailView: View {
     @State private var navigateToChat: ChatNavigationData?
     @State private var isRequestingLease = false
     @State private var leaseRequestError: String?
+    /// Present the "Buy this car" offer sheet.  Non-nil while it's on
+    /// screen so we can hand the Car through by identity binding.
+    @State private var buyRequestCar: Car?
 
     private var isLiked: Bool {
         likedStore.isLiked(car.id)
@@ -790,6 +793,19 @@ struct ListingDetailView: View {
                 counterpartyId: data.counterpartyId,
                 counterpartyName: data.counterpartyName
             )
+        }
+        .sheet(item: $buyRequestCar) { car in
+            BuyRequestSheet(car: car) { chatId in
+                guard let user = authStore.state.user else { return }
+                navigateToChat = ChatNavigationData(
+                    chatId: chatId,
+                    currentUserId: user.id,
+                    counterpartyId: car.owner.id,
+                    counterpartyName: car.owner.name
+                )
+                Task { await ChatsListViewModel.shared.fetchChats() }
+            }
+            .environmentObject(authStore)
         }
         .alert("Lease Request Failed", isPresented: .constant(leaseRequestError != nil)) {
             Button("OK") { leaseRequestError = nil }
@@ -984,28 +1000,55 @@ struct ListingDetailView: View {
         VStack(spacing: 0) {
             Divider()
 
-            // Request lease button (primary). Only show when the listing is
-            // for rent; cars listed for sale only get a different surface.
-            if car.isForRent {
-                Button(action: requestLease) {
-                    HStack(spacing: 6) {
-                        if isRequestingLease {
-                            ProgressView()
-                                .tint(.white)
+            // Rent + Buy CTAs stack vertically when the listing is both.
+            // Both remain optional so cars set for-rent-only or for-sale-
+            // only render exactly one button.
+            VStack(spacing: 10) {
+                if car.isForRent {
+                    Button(action: requestLease) {
+                        HStack(spacing: 6) {
+                            if isRequestingLease {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text("Request lease")
+                                .font(.headline)
                         }
-                        Text("Request lease")
-                            .font(.headline)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.driveBaiPrimary)
+                        .cornerRadius(12)
                     }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.driveBaiPrimary)
-                    .cornerRadius(12)
+                    .disabled(isRequestingLease)
                 }
-                .disabled(isRequestingLease)
-                .padding(16)
-                .background(Color(.systemBackground))
+
+                if car.isForSale {
+                    Button {
+                        buyRequestCar = car
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "cart.fill")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Buy this car")
+                                    .font(.headline)
+                                if let price = car.salePrice {
+                                    Text("Sale price \(price.formatted)")
+                                        .font(.caption)
+                                        .foregroundColor(.white.opacity(0.9))
+                                }
+                            }
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.green)
+                        .cornerRadius(12)
+                    }
+                }
             }
+            .padding(16)
+            .background(Color(.systemBackground))
         }
     }
 }

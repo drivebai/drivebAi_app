@@ -47,6 +47,9 @@ struct OwnerTodayView: View {
                     // Section: Vehicle Return (shown only when active)
                     vehicleReturnSection
 
+                    // Section: Purchase requests (seller-side cards)
+                    purchaseSection
+
                     // Section 2: Actions to Take
                     actionsSection
                 }
@@ -138,6 +141,14 @@ struct OwnerTodayView: View {
             .onChange(of: viewModel.keyHandovers) { _, _ in
                 if let leaseId = deepLinkRouter.pendingLeasePickupId {
                     handleLeasePickupDeepLink(leaseId)
+                }
+            }
+            .onChange(of: deepLinkRouter.pendingPurchaseTap) { _, newId in
+                handlePurchaseDeepLink(newId)
+            }
+            .onChange(of: viewModel.purchaseRequests) { _, _ in
+                if let id = deepLinkRouter.pendingPurchaseTap {
+                    handlePurchaseDeepLink(id)
                 }
             }
             .task {
@@ -273,6 +284,38 @@ struct OwnerTodayView: View {
         }
     }
 
+    // MARK: - Purchase Section
+
+    @ViewBuilder
+    private var purchaseSection: some View {
+        if !viewModel.purchaseRequests.isEmpty,
+           let user = authStore.state.user {
+            VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
+                Text("Purchase requests")
+                    .font(TodayLayout.sectionTitleFont)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    ForEach(viewModel.purchaseRequests) { purchase in
+                        PurchaseTodayCard(
+                            purchaseRequest: purchase,
+                            currentUserId: user.id,
+                            onOpen: {
+                                deepLinkPickupChat = DeepLinkPickupTarget(
+                                    chatId: purchase.chatId,
+                                    counterpartyId: purchase.buyerId,
+                                    counterpartyName: purchase.buyerName
+                                )
+                            }
+                        )
+                    }
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
+            }
+        }
+    }
+
     // MARK: - Actions Section
 
     private var actionsSection: some View {
@@ -391,6 +434,20 @@ extension OwnerTodayView {
             counterpartyName: handover.driverName
         )
         deepLinkRouter.clearPendingLeasePickup()
+    }
+
+    /// Purchase deep-link mirror.  Seller-side: counterparty is the buyer.
+    fileprivate func handlePurchaseDeepLink(_ purchaseId: UUID?) {
+        guard let purchaseId else { return }
+        guard let purchase = viewModel.purchaseRequests.first(where: { $0.id == purchaseId }) else {
+            return
+        }
+        deepLinkPickupChat = DeepLinkPickupTarget(
+            chatId: purchase.chatId,
+            counterpartyId: purchase.buyerId,
+            counterpartyName: purchase.buyerName
+        )
+        deepLinkRouter.clearPendingPurchaseTap()
     }
 }
 

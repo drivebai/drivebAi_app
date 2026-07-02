@@ -35,6 +35,11 @@ final class WebSocketManager: ObservableObject {
     // pull-to-refresh.
     let vehicleReturnUpdatedPublisher = PassthroughSubject<Void, Never>()
 
+    /// Purchase-flow events (created / updated / payment / handover /
+    /// rejection).  ChatViewModel + Today VMs subscribe and refetch the
+    /// affected surface — the payload is intentionally minimal.
+    let purchaseRequestUpdatedPublisher = PassthroughSubject<Void, Never>()
+
     // Support chat events — admin reply arrives in real-time
     let supportMessageCreatedPublisher = PassthroughSubject<SupportMessageAPIResponse, Never>()
 
@@ -221,6 +226,13 @@ final class WebSocketManager: ObservableObject {
              "vehicle_return_cancelled",
              "vehicle_return_updated":
             vehicleReturnUpdatedPublisher.send()
+        case "purchase_request_created",
+             "purchase_request_updated",
+             "purchase_bill_of_sale_updated",
+             "purchase_payment_updated",
+             "purchase_handover_updated",
+             "purchase_rejection_created":
+            purchaseRequestUpdatedPublisher.send()
         case "notification_created":
             // Payload: { "unread_count": Int }
             if let unread = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: Int])?["unread_count"] {

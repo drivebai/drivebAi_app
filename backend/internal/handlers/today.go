@@ -10,9 +10,10 @@ import (
 )
 
 type TodayHandler struct {
-	leaseRepo *repository.LeaseRequestRepository
-	userRepo  *repository.UserRepository
-	logger    *slog.Logger
+	leaseRepo    *repository.LeaseRequestRepository
+	userRepo     *repository.UserRepository
+	purchaseRepo *repository.PurchaseRequestRepository
+	logger       *slog.Logger
 }
 
 func NewTodayHandler(
@@ -25,6 +26,13 @@ func NewTodayHandler(
 		userRepo:  userRepo,
 		logger:    logger,
 	}
+}
+
+// SetPurchaseRepository wires the purchase repo so Today aggregates buyer
+// + seller purchase cards alongside the lease-side ones. Setter (not ctor
+// arg) so existing tests don't break.
+func (h *TodayHandler) SetPurchaseRepository(p *repository.PurchaseRequestRepository) {
+	h.purchaseRepo = p
 }
 
 // GetActions returns actionable items for the current user's Today tab.
@@ -57,6 +65,23 @@ func (h *TodayHandler) GetActions(w http.ResponseWriter, r *http.Request) {
 	actions := make([]models.TodayAction, 0, len(ownerActions)+len(driverActions))
 	actions = append(actions, ownerActions...)
 	actions = append(actions, driverActions...)
+
+	// Purchase actions (buyer + seller) — same user can be both, mirroring
+	// the driver + owner concat above.
+	if h.purchaseRepo != nil {
+		buyerActions, err := h.purchaseRepo.ListTodayActionsForBuyer(r.Context(), userID)
+		if err != nil {
+			h.logger.Error("get buyer today actions", "error", err)
+		} else {
+			actions = append(actions, buyerActions...)
+		}
+		sellerActions, err := h.purchaseRepo.ListTodayActionsForSeller(r.Context(), userID)
+		if err != nil {
+			h.logger.Error("get seller today actions", "error", err)
+		} else {
+			actions = append(actions, sellerActions...)
+		}
+	}
 
 	// Unread badge — true if either side has activity since last seen.
 	lastSeen, err := h.userRepo.GetLastSeenActionsAt(r.Context(), userID)

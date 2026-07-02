@@ -262,3 +262,212 @@ export interface AdminCarSell {
   car_title?: string
   created_at: string
 }
+
+// ---------------------------------------------------------------------------
+// Buy the Car (purchase) admin types
+// Backend endpoints: /api/v1/admin/purchase-requests (list, detail),
+// /api/v1/admin/purchase-rejections (queue),
+// /api/v1/admin/purchase-rejections/{id}/resolve,
+// /api/v1/admin/purchase-requests/{id}/retry-refund.
+//
+// These mirror the purchase_requests, purchase_bill_of_sales,
+// purchase_rejections, and purchase_rejection_evidence tables described in
+// the Buy the Car design spec. Every field is independently optional where
+// the backend may not populate it yet — this lets the admin UI degrade
+// gracefully during backend rollout.
+// ---------------------------------------------------------------------------
+
+/** Full purchase_request_status enum from the design spec. */
+export type PurchaseRequestStatus =
+  | 'requested'
+  | 'accepted'
+  | 'declined'
+  | 'cancelled'
+  | 'bos_pending_seller'
+  | 'bos_pending_buyer'
+  | 'bos_signed'
+  | 'payment_authorized'
+  | 'handover_scheduled'
+  | 'awaiting_inspection'
+  | 'inspection_accepted'
+  | 'completed'
+  | 'inspection_rejected'
+  | 'rejected_refunded'
+  | 'rejected_upheld'
+  | 'expired'
+  | 'expired_auth'
+
+/** Payment status mirroring backend payment_status enum. */
+export type PurchasePaymentStatus =
+  | 'requires_payment_method'
+  | 'requires_confirmation'
+  | 'requires_action'
+  | 'processing'
+  | 'requires_capture'
+  | 'authorized'
+  | 'captured'
+  | 'succeeded'
+  | 'canceled'
+  | 'refunded'
+  | 'failed'
+  | string
+
+/** Refund status (matches vehicle_returns.refund_status). */
+export type PurchaseRefundStatus =
+  | 'pending'
+  | 'succeeded'
+  | 'failed'
+  | 'not_applicable'
+  | 'pending_manual'
+  | string
+
+export type PurchaseRejectionReason =
+  | 'undisclosed_damage'
+  | 'mechanical_issues'
+  | 'title_or_paperwork'
+  | 'vin_mismatch'
+  | 'not_as_described'
+  | 'no_show'
+  | 'other'
+
+export type PurchaseRejectionStatus =
+  | 'submitted'
+  | 'under_review'
+  | 'accepted'
+  | 'upheld'
+  | 'withdrawn'
+
+export interface PurchaseRejectionEvidence {
+  id: string
+  purchase_rejection_id: string
+  /** Signed URL (already run through PrivateURLSigner) suitable for <img>/<video>/<a>. */
+  file_url: string
+  file_path?: string | null
+  filename?: string | null
+  mime_type: string
+  size_bytes?: number | null
+  created_at: string
+}
+
+export interface PurchaseRejection {
+  id: string
+  purchase_request_id: string
+  reason_category: PurchaseRejectionReason | string
+  explanation: string
+  status: PurchaseRejectionStatus | string
+  refund_status?: PurchaseRefundStatus | null
+  admin_note?: string | null
+  resolved_by?: string | null
+  resolved_at?: string | null
+  created_at: string
+  updated_at: string
+  evidence?: PurchaseRejectionEvidence[]
+}
+
+export interface PurchaseBillOfSale {
+  id: string
+  purchase_request_id: string
+
+  // Vehicle block
+  vehicle_year?: number | null
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vin?: string | null
+
+  // Sale block
+  sale_amount_cents?: number | null
+  currency?: string | null
+  terms_conditions?: string | null
+
+  // Seller identity + signature
+  seller_name?: string | null
+  seller_address?: string | null
+  /** Signed URL for the seller's signature PNG. */
+  seller_signature_url?: string | null
+  seller_signed_at?: string | null
+
+  // Buyer identity + signature
+  buyer_name?: string | null
+  buyer_address?: string | null
+  /** Signed URL for the buyer's signature PNG. */
+  buyer_signature_url?: string | null
+  buyer_signed_at?: string | null
+
+  // Rendered artifact
+  finalized_pdf_url?: string | null
+  finalized_at?: string | null
+
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Row shape returned by GET /admin/purchase-requests. The detail endpoint
+ * (GET /admin/purchase-requests/{id}) additionally attaches `bill_of_sale`
+ * and `rejection` (with `evidence`). Every joined display field
+ * (car_title, buyer_email, ...) is treated as optional so the UI keeps
+ * rendering if the backend list endpoint returns a slimmer projection.
+ */
+export interface PurchaseRequest {
+  id: string
+  car_id: string
+  car_title?: string | null
+  car_year?: number | null
+  car_make?: string | null
+  car_model?: string | null
+  vin?: string | null
+  cover_photo_url?: string | null
+
+  seller_id: string
+  seller_name?: string | null
+  seller_email?: string | null
+
+  buyer_id: string
+  buyer_name?: string | null
+  buyer_email?: string | null
+
+  chat_id?: string | null
+
+  offer_amount_cents: number
+  currency: string
+  buyer_message?: string | null
+
+  status: PurchaseRequestStatus | string
+  expires_at?: string | null
+  auth_expires_at?: string | null
+
+  handover_location?: string | null
+  handover_latitude?: number | null
+  handover_longitude?: number | null
+  handover_scheduled_at?: string | null
+  keys_handed_over_at?: string | null
+  inspection_deadline_at?: string | null
+  inspection_accepted_at?: string | null
+  completed_at?: string | null
+
+  payment_intent_id?: string | null
+  payment_status?: PurchasePaymentStatus | null
+  refund_status?: PurchaseRefundStatus | null
+  refund_id?: string | null
+  refunded_at?: string | null
+  refund_failure_reason?: string | null
+
+  /** Convenience roll-up so list tables can render a single "BoS" column. */
+  bos_status?:
+    | 'not_started'
+    | 'pending_seller'
+    | 'pending_buyer'
+    | 'signed'
+    | string
+    | null
+
+  cancellation_reason?: string | null
+
+  created_at: string
+  updated_at: string
+}
+
+export interface PurchaseRequestDetail extends PurchaseRequest {
+  bill_of_sale?: PurchaseBillOfSale | null
+  rejection?: PurchaseRejection | null
+}

@@ -5,6 +5,7 @@ import { api, qs } from './client'
 import type {
   AdminUser, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
   AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
+  PurchaseRequest, PurchaseRequestDetail, PurchaseRejection,
 } from './types'
 
 const BASE = '/api/v1/admin'
@@ -66,4 +67,18 @@ export const adminApi = {
   updateAccidentStatus: (id: string, status: string) =>
     api.patch<{ ok: boolean }>(`${BASE}/accidents/${id}/status`, { status }),
   listCarSells: () => api.get<Page<AdminCarSell>>(`${BASE}/car-sells`),
+
+  // ---- Buy the Car (purchase requests) ----
+  // Paths per the Buy the Car spec. Backend may not have shipped these yet;
+  // the page catches the resulting 404/500 and shows an empty state.
+  listPurchaseRequests: (q: { query?: string; status?: string; page?: number; limit?: number }) =>
+    api.get<Page<PurchaseRequest>>(`${BASE}/purchase-requests${qs(q)}`),
+  getPurchaseRequest: (id: string) =>
+    api.get<PurchaseRequestDetail>(`${BASE}/purchase-requests/${id}`),
+  listPurchaseRejections: (q: { status?: string; page?: number; limit?: number }) =>
+    api.get<Page<PurchaseRejection>>(`${BASE}/purchase-rejections${qs(q)}`),
+  resolvePurchaseRejection: (id: string, body: { resolution: 'accept' | 'uphold'; note?: string }) =>
+    api.post<PurchaseRejection>(`${BASE}/purchase-rejections/${id}/resolve`, body),
+  retryPurchaseRefund: (id: string) =>
+    api.post<{ ok: boolean }>(`${BASE}/purchase-requests/${id}/retry-refund`, {}),
 }

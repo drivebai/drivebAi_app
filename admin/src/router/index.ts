@@ -22,6 +22,7 @@ const router = createRouter({
         { path: 'support',   name: 'support',   component: () => import('../pages/Support.vue') },
         { path: 'accidents', name: 'accidents', component: () => import('../pages/Accidents.vue') },
         { path: 'car-sell',  name: 'car-sell',  component: () => import('../pages/CarSell.vue') },
+        { path: 'purchases', name: 'purchases', component: () => import('../pages/Purchases.vue') },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: { name: 'users' } },

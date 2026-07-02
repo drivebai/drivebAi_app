@@ -52,6 +52,9 @@ final class OwnerTodayViewModel: ObservableObject {
     /// ID of the return currently being acted on (drives the card's busy state).
     @Published var submittingReturnId: UUID?
 
+    /// Active purchase requests where the current user is the SELLER.
+    @Published var purchaseRequests: [PurchaseRequest] = []
+
     /// Locally-dismissed return ids; same client-only pattern as the
     /// driver-side VM.
     private var dismissedReturnIds: Set<UUID> = []
@@ -74,6 +77,20 @@ final class OwnerTodayViewModel: ObservableObject {
             await fetchNotifications()
             await fetchKeyHandovers()
             await fetchVehicleReturns()
+            await fetchPurchaseRequests()
+        }
+    }
+
+    /// Fetches the current seller's active purchase requests.  Silent
+    /// failure on legacy backends.
+    func fetchPurchaseRequests() async {
+        do {
+            let response = try await APIClient.shared.fetchPurchaseRequestsToday()
+            purchaseRequests = response.purchaseRequests.map { $0.toDomain() }
+        } catch {
+            #if DEBUG
+            print("[OwnerTodayVM] fetchPurchaseRequests error: \(error)")
+            #endif
         }
     }
 
@@ -155,6 +172,7 @@ final class OwnerTodayViewModel: ObservableObject {
         await fetchNotifications()
         await fetchKeyHandovers()
         await fetchVehicleReturns()
+        await fetchPurchaseRequests()
     }
 
     // MARK: - Key Handovers
@@ -391,6 +409,12 @@ final class OwnerTodayViewModel: ObservableObject {
             .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchVehicleReturns() }
+            }
+            .store(in: &wsCancellables)
+
+        ws.purchaseRequestUpdatedPublisher
+            .sink { [weak self] in
+                Task { await self?.fetchPurchaseRequests() }
             }
             .store(in: &wsCancellables)
     }

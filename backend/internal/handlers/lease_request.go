@@ -35,10 +35,21 @@ type LeaseRequestHandler struct {
 	notifHandler    *NotificationHandler
 	urlSigner       *PrivateURLSigner
 	logger          *slog.Logger
+	// purchaseHandler is optional. When wired, the shared Stripe webhook
+	// dispatches PIs whose metadata carries `kind=purchase` to the
+	// purchase-side state machine instead of the lease side.
+	purchaseHandler *PurchaseRequestHandler
 	// pickupDeadline is the grace window after payment_intent.succeeded in
 	// which the driver must confirm pickup. Past this point a background
 	// scanner will refund the payment and unreserve the car.
 	pickupDeadline time.Duration
+}
+
+// SetPurchaseHandler wires the purchase-side handler so the shared Stripe
+// webhook can route by PI metadata. Setter (not ctor arg) to avoid
+// cascading changes to existing test constructors.
+func (h *LeaseRequestHandler) SetPurchaseHandler(p *PurchaseRequestHandler) {
+	h.purchaseHandler = p
 }
 
 func NewLeaseRequestHandler(
@@ -728,6 +739,19 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 	if intentID == "" {
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+
+	// Route by PI metadata: purchase intents carry metadata.kind="purchase"
+	// so the purchase state machine handles amount_capturable_updated /
+	// succeeded / canceled without polluting the lease code paths.
+	if h.purchaseHandler != nil {
+		if md, ok := obj["metadata"].(map[string]interface{}); ok {
+			if kind, _ := md["kind"].(string); kind == "purchase" {
+				h.purchaseHandler.HandleStripeEvent(r.Context(), eventType, intentID)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+		}
 	}
 
 	switch eventType {
