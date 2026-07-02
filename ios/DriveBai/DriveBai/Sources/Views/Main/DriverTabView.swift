@@ -57,6 +57,16 @@ struct DriverTabView: View {
             selectedTab = 2
             deepLinkRouter.clearPendingChatTap()
         }
+        // Push tap on any `purchase_*` push → switch to Chats tab so
+        // ChatsListView can pick up `pendingPurchaseChat` and push into
+        // ChatView(initialTab: .requests). Mirrors the pendingChatTap /
+        // pendingLeasePickupId observers above — the tab view owns tab
+        // selection only; navigation lives with the view that owns the
+        // NavigationStack.
+        .onChange(of: deepLinkRouter.pendingPurchaseChat) { _, next in
+            guard next != nil else { return }
+            selectedTab = 2
+        }
     }
 }
 

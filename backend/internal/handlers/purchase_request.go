@@ -237,6 +237,83 @@ func (h *PurchaseRequestHandler) postSystemMessage(ctx context.Context, chatID, 
 	}
 }
 
+// notifyPurchaseCounterparty writes a notification row + push to whichever of
+// buyer/seller is NOT the actor. The related_chat_id + related_lease_request_id
+// slots on the notification row carry the chat + purchase-request ids so the
+// iOS bell + APNs deep link can route back into the same purchase card.
+//
+// The lease_request_id column is reused as the generic "related resource id"
+// slot for purchase pushes to avoid a schema fork; iOS DeepLinkRouter switches
+// on the `type` string first so a purchase_* type + a UUID in that field
+// resolves to the purchase branch.
+//
+// Runs in its own goroutine so the caller (an HTTP handler or a scanner tick)
+// never blocks on repo/push work. The push fan-out is already spawned inside
+// NotificationHandler.Notify (per the notifications.go contract) so this
+// wrapper deliberately does NOT double-spawn a push — it only pushes the
+// Notify call itself onto a background goroutine.
+func (h *PurchaseRequestHandler) notifyPurchaseCounterparty(
+	p *models.PurchaseRequest,
+	actorID uuid.UUID,
+	notifType models.NotificationType,
+	title, body string,
+) {
+	if h.notifHandler == nil || p == nil {
+		return
+	}
+	// The recipient is whichever party is NOT the actor. If the actor id
+	// matches neither (e.g. system-triggered from the expiry scanner), we
+	// fall back to notifying the buyer — callers that need to reach both
+	// parties should invoke this twice, once per party.
+	var recipient uuid.UUID
+	switch actorID {
+	case p.SellerID:
+		recipient = p.BuyerID
+	case p.BuyerID:
+		recipient = p.SellerID
+	default:
+		recipient = p.BuyerID
+	}
+	if recipient == uuid.Nil {
+		return
+	}
+	chatID := p.ChatID
+	purchaseID := p.ID
+	go h.notifHandler.Notify(recipient, notifType, title, body, &chatID, &purchaseID)
+}
+
+// notifyPurchaseParty writes a notification row + push to a specific user id
+// (not derived from actor). Used when both parties must be notified (admin
+// resolutions, offer expiry, refund completion) or when the sender/recipient
+// mapping isn't a simple actor→counterparty flip.
+func (h *PurchaseRequestHandler) notifyPurchaseParty(
+	p *models.PurchaseRequest,
+	recipient uuid.UUID,
+	notifType models.NotificationType,
+	title, body string,
+) {
+	if h.notifHandler == nil || p == nil || recipient == uuid.Nil {
+		return
+	}
+	chatID := p.ChatID
+	purchaseID := p.ID
+	go h.notifHandler.Notify(recipient, notifType, title, body, &chatID, &purchaseID)
+}
+
+// rejectionResolutionVerb yields grammatically correct past-tense forms for
+// the admin rejection resolution copy. Previously we used fmt.Sprintf("%sed",
+// resolution) which produced "upholded" for the "uphold" resolution.
+func rejectionResolutionVerb(resolution string) string {
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "accept":
+		return "accepted"
+	case "uphold":
+		return "upheld"
+	default:
+		return resolution
+	}
+}
+
 // ─── Buyer: create + cancel ─────────────────────────────────────────────────
 
 // Create — POST /api/v1/cars/{carId}/purchase-requests
@@ -317,10 +394,9 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 	h.postSystemMessage(r.Context(), chatID, userID,
 		fmt.Sprintf("New purchase offer: %s", formatMoney(created.OfferAmountCents)))
 
-	go h.notifHandler.Notify(created.SellerID, models.NotificationTypePurchaseRequest,
+	h.notifyPurchaseCounterparty(created, userID, models.NotificationTypePurchaseRequest,
 		"New purchase offer",
-		fmt.Sprintf("%s offered %s for %s", nameOr(resp.BuyerName, "A buyer"), formatMoney(created.OfferAmountCents), carTitleOr(resp.CarTitle)),
-		&chatID, &created.ID)
+		fmt.Sprintf("%s offered %s for %s", nameOr(resp.BuyerName, "A buyer"), formatMoney(created.OfferAmountCents), carTitleOr(resp.CarTitle)))
 }
 
 // Cancel — POST /api/v1/purchase-requests/{id}/cancel
@@ -371,10 +447,9 @@ func (h *PurchaseRequestHandler) Cancel(w http.ResponseWriter, r *http.Request) 
 	h.broadcast("purchase_request_updated", p, nil)
 	h.postSystemMessage(r.Context(), p.ChatID, userID, "Buyer cancelled the purchase offer")
 
-	go h.notifHandler.Notify(p.SellerID, models.NotificationTypePurchaseRequest,
+	h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseRequest,
 		"Purchase offer cancelled",
-		fmt.Sprintf("%s cancelled the purchase offer.", nameOr(resp.BuyerName, "The buyer")),
-		&p.ChatID, &p.ID)
+		fmt.Sprintf("%s cancelled the purchase offer.", nameOr(resp.BuyerName, "The buyer")))
 }
 
 // ─── Seller: accept / decline ───────────────────────────────────────────────
@@ -460,10 +535,9 @@ func (h *PurchaseRequestHandler) Accept(w http.ResponseWriter, r *http.Request) 
 	h.broadcast("purchase_request_updated", p, nil)
 	h.postSystemMessage(r.Context(), p.ChatID, userID, "Seller accepted the offer — Bill of Sale opened for signing")
 
-	go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseRequest,
+	h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseRequest,
 		"Offer accepted",
-		fmt.Sprintf("%s accepted your purchase offer. Review and sign the Bill of Sale.", nameOr(resp.SellerName, "The seller")),
-		&p.ChatID, &p.ID)
+		fmt.Sprintf("%s accepted your purchase offer for %s. Review and sign the Bill of Sale.", nameOr(resp.SellerName, "The seller"), carTitleOr(resp.CarTitle)))
 }
 
 // Decline — POST /api/v1/purchase-requests/{id}/decline
@@ -490,10 +564,9 @@ func (h *PurchaseRequestHandler) Decline(w http.ResponseWriter, r *http.Request)
 	h.broadcast("purchase_request_updated", p, nil)
 	h.postSystemMessage(r.Context(), p.ChatID, userID, "Seller declined the purchase offer")
 
-	go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseRequest,
+	h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseRequest,
 		"Offer declined",
-		fmt.Sprintf("%s declined your purchase offer.", nameOr(resp.SellerName, "The seller")),
-		&p.ChatID, &p.ID)
+		fmt.Sprintf("%s declined your purchase offer.", nameOr(resp.SellerName, "The seller")))
 }
 
 // ─── Bill of Sale editing + signing ─────────────────────────────────────────
@@ -539,10 +612,9 @@ func (h *PurchaseRequestHandler) UpdateBOS(w http.ResponseWriter, r *http.Reques
 	// Chat trail + counterparty notification so the buyer knows the
 	// seller touched the document.
 	h.postSystemMessage(r.Context(), existing.ChatID, userID, "Seller updated the Bill of Sale")
-	go h.notifHandler.Notify(existing.BuyerID, models.NotificationTypePurchaseRequest,
+	h.notifyPurchaseCounterparty(existing, userID, models.NotificationTypePurchaseRequest,
 		"Bill of Sale updated",
-		"The seller updated the Bill of Sale. Review the changes.",
-		&existing.ChatID, &existing.ID)
+		"The seller updated the Bill of Sale. Review the changes.")
 }
 
 // UpdateBOSBuyerFields — PATCH /api/v1/purchase-requests/{id}/bos/buyer-fields
@@ -588,10 +660,9 @@ func (h *PurchaseRequestHandler) UpdateBOSBuyerFields(w http.ResponseWriter, r *
 		TargetUserIDs: []uuid.UUID{existing.SellerID, existing.BuyerID},
 	})
 	h.postSystemMessage(r.Context(), existing.ChatID, userID, "Buyer updated the Bill of Sale")
-	go h.notifHandler.Notify(existing.SellerID, models.NotificationTypePurchaseRequest,
+	h.notifyPurchaseCounterparty(existing, userID, models.NotificationTypePurchaseRequest,
 		"Bill of Sale updated",
-		"The buyer updated the Bill of Sale. Review the changes.",
-		&existing.ChatID, &existing.ID)
+		"The buyer updated the Bill of Sale. Review the changes.")
 }
 
 // SignBOS — POST /api/v1/purchase-requests/{id}/bos/sign
@@ -689,24 +760,26 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 	if !alreadySigned {
 		if role == "seller" {
 			h.postSystemMessage(r.Context(), p.ChatID, userID, "Seller signed the Bill of Sale")
-			go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseRequest,
+			h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseRequest,
 				"Seller signed",
-				"The seller signed the Bill of Sale.",
-				&p.ChatID, &p.ID)
+				"The seller signed the Bill of Sale. Sign to proceed to payment.")
 		} else {
 			h.postSystemMessage(r.Context(), p.ChatID, userID, "Buyer signed the Bill of Sale")
-			go h.notifHandler.Notify(p.SellerID, models.NotificationTypePurchaseRequest,
+			h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseRequest,
 				"Buyer signed",
-				"The buyer signed the Bill of Sale.",
-				&p.ChatID, &p.ID)
+				"The buyer signed the Bill of Sale.")
 		}
 	}
+	// State-transition notification when the second signature completes the
+	// document — always fires at the buyer (who must next authorize payment).
+	// This is not an "echo" of the buyer's own sign, it's a distinct
+	// transition into the "payment required" state, so we let it fire even
+	// when the buyer is the actor.
 	if p.Status == models.PurchaseStatusBOSSigned && !alreadySigned {
 		h.postSystemMessage(r.Context(), p.ChatID, userID, "Bill of Sale completed. Buyer can proceed to payment.")
-		go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseRequest,
+		h.notifyPurchaseParty(p, p.BuyerID, models.NotificationTypePurchasePayment,
 			"Bill of Sale signed",
-			"Both parties signed the Bill of Sale. Authorize payment to proceed.",
-			&p.ChatID, &p.ID)
+			"Both parties have signed. Authorize payment to continue.")
 	}
 }
 
@@ -835,9 +908,18 @@ func (h *PurchaseRequestHandler) SyncPayment(w http.ResponseWriter, r *http.Requ
 	if pi.Status == "requires_capture" || pi.Status == "processing" {
 		updated, err := h.repo.MarkAuthorized(r.Context(), *p.PaymentIntentID)
 		if err == nil && updated != nil {
+			// Notify seller only when we actually flipped the row from
+			// a prior state into authorized — a repeat sync on an
+			// already-authorized row must not re-buzz.
+			priorStatus := p.Status
 			p = updated
 			h.broadcast("purchase_payment_updated", p, map[string]any{"payment_status": "requires_capture"})
 			h.postSystemMessage(r.Context(), p.ChatID, p.BuyerID, "Buyer authorized payment — funds are held pending inspection")
+			if priorStatus != models.PurchaseStatusPaymentAuthorized {
+				h.notifyPurchaseParty(p, p.SellerID, models.NotificationTypePurchasePayment,
+					"Payment authorized",
+					"The buyer's payment is authorized. Schedule the vehicle handover.")
+			}
 		}
 	}
 	httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), p, userID))
@@ -883,10 +965,9 @@ func (h *PurchaseRequestHandler) ScheduleHandover(w http.ResponseWriter, r *http
 	h.postSystemMessage(r.Context(), p.ChatID, userID,
 		fmt.Sprintf("Seller scheduled handover on %s at %s", body.HandoverScheduledAt.Format(time.RFC1123), body.HandoverLocation))
 
-	go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseHandover,
+	h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseHandover,
 		"Handover scheduled",
-		fmt.Sprintf("%s scheduled the handover. Check the chat for details.", nameOr(resp.SellerName, "The seller")),
-		&p.ChatID, &p.ID)
+		fmt.Sprintf("%s scheduled the handover for %s at %s.", nameOr(resp.SellerName, "The seller"), body.HandoverScheduledAt.Format(time.RFC1123), body.HandoverLocation))
 }
 
 // KeysHandedOver — POST /api/v1/purchase-requests/{id}/keys-handed-over
@@ -923,10 +1004,9 @@ func (h *PurchaseRequestHandler) KeysHandedOver(w http.ResponseWriter, r *http.R
 	h.postSystemMessage(r.Context(), p.ChatID, userID,
 		fmt.Sprintf("Seller confirmed keys handed over — buyer has %.0fh to inspect", models.PurchaseInspectionWindow.Hours()))
 
-	go h.notifHandler.Notify(p.BuyerID, models.NotificationTypePurchaseHandover,
+	h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseHandover,
 		"Keys handed over",
-		fmt.Sprintf("You have %.0f hours to inspect the vehicle and accept or reject the sale.", models.PurchaseInspectionWindow.Hours()),
-		&p.ChatID, &p.ID)
+		fmt.Sprintf("You have %.0fh to inspect the vehicle and accept or reject.", models.PurchaseInspectionWindow.Hours()))
 }
 
 // InspectAccept — POST /api/v1/purchase-requests/{id}/inspect/accept
@@ -956,10 +1036,9 @@ func (h *PurchaseRequestHandler) InspectAccept(w http.ResponseWriter, r *http.Re
 	h.broadcast("purchase_request_updated", final, nil)
 	h.postSystemMessage(r.Context(), final.ChatID, userID, "Buyer accepted the vehicle — payment captured, sale complete")
 
-	go h.notifHandler.Notify(final.SellerID, models.NotificationTypePurchasePayment,
+	h.notifyPurchaseCounterparty(final, userID, models.NotificationTypePurchasePayment,
 		"Sale complete",
-		fmt.Sprintf("%s accepted the vehicle. Payment has been captured.", nameOr(resp.BuyerName, "The buyer")),
-		&final.ChatID, &final.ID)
+		fmt.Sprintf("%s accepted the vehicle. Payment has been captured.", nameOr(resp.BuyerName, "The buyer")))
 }
 
 // capturePayment runs Stripe capture + MarkCaptured. Returns the updated
@@ -1073,10 +1152,9 @@ func (h *PurchaseRequestHandler) InspectReject(w http.ResponseWriter, r *http.Re
 	h.postSystemMessage(r.Context(), updated.ChatID, userID,
 		fmt.Sprintf("Buyer rejected the vehicle — reason: %s. DrivaBai support is reviewing.", rejectionOut.ReasonCategory))
 
-	go h.notifHandler.Notify(updated.SellerID, models.NotificationTypePurchaseRejection,
+	h.notifyPurchaseCounterparty(updated, userID, models.NotificationTypePurchaseRejection,
 		"Vehicle rejected",
-		fmt.Sprintf("%s rejected the vehicle. DrivaBai support is reviewing.", nameOr(resp.BuyerName, "The buyer")),
-		&updated.ChatID, &updated.ID)
+		fmt.Sprintf("%s rejected the vehicle. DrivaBai support is reviewing.", nameOr(resp.BuyerName, "The buyer")))
 }
 
 // UploadEvidence — POST /api/v1/purchase-requests/{id}/rejection-evidence (multipart)
@@ -1211,6 +1289,10 @@ func (h *PurchaseRequestHandler) WithdrawRejection(w http.ResponseWriter, r *htt
 	httputil.WriteJSON(w, http.StatusOK, resp)
 	h.broadcast("purchase_request_updated", p, nil)
 	h.postSystemMessage(r.Context(), p.ChatID, userID, "Buyer withdrew the rejection — sale proceeding")
+
+	h.notifyPurchaseCounterparty(p, userID, models.NotificationTypePurchaseRejection,
+		"Rejection withdrawn",
+		fmt.Sprintf("%s withdrew the rejection. The sale is proceeding.", nameOr(resp.BuyerName, "The buyer")))
 }
 
 // ─── Shared reads ───────────────────────────────────────────────────────────
@@ -1419,10 +1501,13 @@ func (h *PurchaseRequestHandler) AdminResolveRejection(w http.ResponseWriter, r 
 		"purchase_request": h.buildResponse(r.Context(), final, adminID),
 	})
 	h.broadcast("purchase_request_updated", final, nil)
-	go h.notifHandler.Notify(final.BuyerID, models.NotificationTypePurchaseRejection,
-		"Rejection resolved", fmt.Sprintf("DrivaBai support %sed your rejection.", res), &final.ChatID, &final.ID)
-	go h.notifHandler.Notify(final.SellerID, models.NotificationTypePurchaseRejection,
-		"Rejection resolved", fmt.Sprintf("DrivaBai support %sed the buyer's rejection.", res), &final.ChatID, &final.ID)
+	verb := rejectionResolutionVerb(res)
+	h.notifyPurchaseParty(final, final.BuyerID, models.NotificationTypePurchaseRejection,
+		"Rejection resolved",
+		fmt.Sprintf("DrivaBai support %s your rejection.", verb))
+	h.notifyPurchaseParty(final, final.SellerID, models.NotificationTypePurchaseRejection,
+		"Rejection resolved",
+		fmt.Sprintf("DrivaBai support %s the buyer's rejection.", verb))
 }
 
 // AdminRetryRefund — POST /api/v1/admin/purchase-requests/{id}/retry-refund
@@ -1466,6 +1551,18 @@ func (h *PurchaseRequestHandler) AdminRetryRefund(w http.ResponseWriter, r *http
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	// Only push refund-completion messages when the refund actually settled
+	// synchronously (Stripe returned status=succeeded). Pending-refund kicks
+	// stay silent — the succeeded webhook will notify when it lands.
+	if refund.Status == "succeeded" {
+		amount := formatMoney(updated.OfferAmountCents)
+		h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchasePayment,
+			"Refund issued",
+			fmt.Sprintf("%s refunded to your card.", amount))
+		h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchasePayment,
+			"Refund completed",
+			fmt.Sprintf("Refund of %s to the buyer has completed.", amount))
+	}
 	httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), updated, updated.SellerID))
 }
 
@@ -1478,20 +1575,42 @@ func (h *PurchaseRequestHandler) AdminRetryRefund(w http.ResponseWriter, r *http
 func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventType, intentID string) {
 	switch eventType {
 	case "payment_intent.amount_capturable_updated":
+		// Snapshot status before the transition so we only notify on a
+		// real transition. Stripe re-emits this event on resync + on
+		// initial confirm, and SyncPayment may have already run this
+		// path — without the guard the seller gets "Payment authorized"
+		// twice for the same authorization.
+		before, _ := h.repo.GetByPaymentIntentID(ctx, intentID)
 		p, err := h.repo.MarkAuthorized(ctx, intentID)
 		if err == nil && p != nil {
 			h.broadcast("purchase_payment_updated", p, map[string]any{"payment_status": "requires_capture"})
-			h.postSystemMessage(ctx, p.ChatID, p.BuyerID, "Buyer authorized payment — funds are held pending inspection")
-			go h.notifHandler.Notify(p.SellerID, models.NotificationTypePurchasePayment,
-				"Payment authorized",
-				"The buyer's payment is authorized. Schedule the vehicle handover.",
-				&p.ChatID, &p.ID)
+			if before == nil || before.Status != models.PurchaseStatusPaymentAuthorized {
+				h.postSystemMessage(ctx, p.ChatID, p.BuyerID, "Buyer authorized payment — funds are held pending inspection")
+				h.notifyPurchaseParty(p, p.SellerID, models.NotificationTypePurchasePayment,
+					"Payment authorized",
+					"The buyer's payment is authorized. Schedule the vehicle handover.")
+			}
 		}
 	case "payment_intent.succeeded":
 		p, err := h.repo.GetByPaymentIntentID(ctx, intentID)
 		if err == nil && p != nil {
+			// Snapshot pre-capture status — if the sync path in
+			// InspectAccept.capturePayment already flipped the row to
+			// `completed`, the webhook's follow-up MarkCaptured still
+			// succeeds (its WHERE admits `completed`), and without this
+			// guard we'd fire a duplicate "Payment captured" pair.
+			priorStatus := p.Status
 			if updated, err := h.repo.MarkCaptured(ctx, p.ID); err == nil {
 				h.broadcast("purchase_payment_updated", updated, map[string]any{"payment_status": "succeeded"})
+				if priorStatus != models.PurchaseStatusCompleted {
+					amount := formatMoney(updated.OfferAmountCents)
+					h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchasePayment,
+						"Payment captured",
+						fmt.Sprintf("Your payment of %s has been captured.", amount))
+					h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchasePayment,
+						"Payment captured",
+						fmt.Sprintf("Payment of %s has been captured. Funds are on the way.", amount))
+				}
 			}
 		}
 	case "payment_intent.canceled":
@@ -1503,6 +1622,12 @@ func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventTyp
 			}
 			if updated, err := h.repo.MarkAuthCancelled(ctx, p.ID, terminal); err == nil {
 				h.broadcast("purchase_payment_updated", updated, map[string]any{"payment_status": "canceled"})
+				h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchasePayment,
+					"Authorization released",
+					"The payment authorization on your card has been released.")
+				h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchaseRequest,
+					"Authorization released",
+					"The buyer's payment authorization was released.")
 			}
 		}
 	}
@@ -1544,6 +1669,17 @@ func (h *PurchaseRequestHandler) runOfferExpiry(ctx context.Context) {
 		}
 		h.broadcast("purchase_request_updated", p, nil)
 		h.postSystemMessage(ctx, p.ChatID, p.BuyerID, "Purchase offer expired")
+		// Look up the car title once for a friendly notification body — a
+		// missing title falls back to "the car".
+		carTitle := "the car"
+		if car, err := h.carRepo.GetByID(ctx, p.CarID); err == nil && car != nil {
+			carTitle = carTitleOr(car.Title)
+		}
+		body := fmt.Sprintf("The purchase offer for %s has expired.", carTitle)
+		h.notifyPurchaseParty(p, p.BuyerID, models.NotificationTypePurchaseRequest,
+			"Offer expired", body)
+		h.notifyPurchaseParty(p, p.SellerID, models.NotificationTypePurchaseRequest,
+			"Offer expired", body)
 	}
 }
 
@@ -1560,6 +1696,12 @@ func (h *PurchaseRequestHandler) runAuthExpiry(ctx context.Context) {
 		}
 		h.broadcast("purchase_request_updated", released, nil)
 		h.postSystemMessage(ctx, released.ChatID, released.BuyerID, "Payment authorization expired — sale cancelled")
+		h.notifyPurchaseParty(released, released.BuyerID, models.NotificationTypePurchasePayment,
+			"Authorization expired",
+			"Your payment authorization has expired. Re-authorize to continue the sale.")
+		h.notifyPurchaseParty(released, released.SellerID, models.NotificationTypePurchaseRequest,
+			"Sale on hold",
+			"The buyer's payment authorization expired. Awaiting re-authorization.")
 	}
 }
 

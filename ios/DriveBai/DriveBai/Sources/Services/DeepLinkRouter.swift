@@ -64,6 +64,18 @@ final class DeepLinkRouter: ObservableObject {
     /// `clearPendingPurchaseTap()`.
     @Published var pendingPurchaseTap: UUID?
 
+    /// Set when the user taps a `purchase_*` push that carries a
+    /// `chat_id`. Consumer views (DriverTabView / OwnerTabView) observe
+    /// this to switch to the Chats tab and push a `ChatView(initialTab:
+    /// .requests)` for the matching chat. Cleared via
+    /// `clearPendingPurchaseChat()` once the destination view has taken
+    /// ownership of the navigation.
+    ///
+    /// Mirrors the `pendingLeasePickupId` pattern but bundles the chat id
+    /// and purchase-request id together so the consumer doesn't have to
+    /// correlate two separate `@Published` props on the same frame.
+    @Published var pendingPurchaseChat: PendingPurchaseChat?
+
     private init() {}
 
     func handle(url: URL) {
@@ -114,12 +126,20 @@ final class DeepLinkRouter: ObservableObject {
         pendingPurchaseTap = nil
     }
 
+    /// Called by the tab view (or ChatsListView) once it has consumed a
+    /// `pendingPurchaseChat` and kicked off the navigation, so subsequent
+    /// tab switches don't re-navigate.
+    func clearPendingPurchaseChat() {
+        pendingPurchaseChat = nil
+    }
+
     func clearPendingRoute() {
         pendingRoute = nil
         showResetPassword = false
         resetPasswordToken = nil
         pendingLeasePickupId = nil
         pendingPurchaseTap = nil
+        pendingPurchaseChat = nil
     }
 
     func clearError() {
@@ -163,15 +183,36 @@ final class DeepLinkRouter: ObservableObject {
              "purchase_payment",
              "purchase_handover",
              "purchase_rejection":
-            if let raw = userInfo["purchase_request_id"] as? String,
-               let purchaseId = UUID(uuidString: raw) {
+            let purchaseId: UUID? = {
+                guard let raw = userInfo["purchase_request_id"] as? String else { return nil }
+                return UUID(uuidString: raw)
+            }()
+            let chatId: UUID? = {
+                guard let raw = userInfo["chat_id"] as? String else { return nil }
+                return UUID(uuidString: raw)
+            }()
+
+            // Route via the SINGLE most-specific channel available so we
+            // don't fire two navigations for one push:
+            //   • both ids present → pendingPurchaseChat (Chats-tab push)
+            //   • purchase-only    → pendingPurchaseTap  (Today handoff)
+            //   • chat-only        → pendingChatTap      (chat_message-style)
+            //
+            // Prior version published pendingPurchaseTap AND
+            // pendingPurchaseChat when both ids were present, so
+            // DriverTodayView + ChatsListView each pushed a ChatView on
+            // their own NavigationStack — user saw one, then a stale
+            // ChatView surfaced when they switched back to Today.
+            if let purchaseId, let chatId {
+                pendingPurchaseChat = nil
+                pendingPurchaseChat = PendingPurchaseChat(
+                    chatID: chatId,
+                    purchaseRequestID: purchaseId
+                )
+            } else if let purchaseId {
                 pendingPurchaseTap = nil
                 pendingPurchaseTap = purchaseId
-            }
-            // Also unwrap the chat if the payload carries one so consumer
-            // views can push the chat first, then focus the card.
-            if let raw = userInfo["chat_id"] as? String,
-               let chatId = UUID(uuidString: raw) {
+            } else if let chatId {
                 pendingChatTap = nil
                 pendingChatTap = chatId
             }
@@ -190,4 +231,15 @@ final class DeepLinkRouter: ObservableObject {
     func clearPendingChatTap() {
         pendingChatTap = nil
     }
+}
+
+// MARK: - Pending purchase-chat navigation
+
+/// Payload published by `DeepLinkRouter` when a purchase-flow push is
+/// tapped. Consumer views (tab views + ChatsListView) use this to switch
+/// to the Chats tab and push a `ChatView(initialTab: .requests)` for the
+/// matching chat, then focus the row for `purchaseRequestID`.
+struct PendingPurchaseChat: Equatable, Hashable {
+    let chatID: UUID
+    let purchaseRequestID: UUID
 }
