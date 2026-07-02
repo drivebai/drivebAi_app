@@ -25,6 +25,7 @@ struct ChatView: View {
     // Purchase-flow sheet state — driven by PurchaseRequestCardView taps.
     @State private var billOfSalePurchase: PurchaseRequest?
     @State private var billOfSaleSeed: BillOfSale?
+    @State private var billOfSaleInitialStep: BoSStep?
     @State private var choosePaymentPurchase: PurchaseRequest?
     @State private var inspectPurchase: PurchaseRequest?
     @State private var scheduleHandoverPurchase: PurchaseRequest?
@@ -146,12 +147,14 @@ struct ChatView: View {
                 purchaseRequest: purchase,
                 currentUserId: currentUserId,
                 initialBoS: billOfSaleSeed,
+                initialStep: billOfSaleInitialStep,
                 onBoSUpdated: { bos in
                     viewModel.billOfSalesByPurchase[bos.purchaseRequestId] = bos
                 },
                 onPurchaseUpdated: { updated in
                     viewModel.upsertPurchaseRequest(updated)
-                }
+                },
+                externalBoSStream: viewModel.billOfSalesByPurchase[purchase.id]
             )
         }
         .sheet(item: $choosePaymentPurchase) { purchase in
@@ -364,6 +367,7 @@ struct ChatView: View {
                             PurchaseRequestCardView(
                                 purchaseRequest: purchase,
                                 currentUserId: currentUserId,
+                                billOfSale: viewModel.billOfSalesByPurchase[purchase.id],
                                 onAction: { action in
                                     handlePurchaseCardAction(purchase: purchase, action: action)
                                 }
@@ -533,7 +537,14 @@ struct ChatView: View {
         case .buyerCancel:
             Task { await viewModel.cancelPurchaseRequest(id: purchase.id) }
         case .openBillOfSale:
-            billOfSaleSeed = viewModel.billOfSalesByPurchase[purchase.id]
+            let bos = viewModel.billOfSalesByPurchase[purchase.id]
+            billOfSaleSeed = bos
+            billOfSaleInitialStep = nextIncompleteStep(
+                bos: bos,
+                purchase: purchase,
+                isSeller: purchase.sellerId == currentUserId,
+                isBuyer: purchase.buyerId == currentUserId
+            )
             billOfSalePurchase = purchase
         case .buyerAuthorizePayment:
             choosePaymentPurchase = purchase
@@ -544,6 +555,33 @@ struct ChatView: View {
         case .buyerInspect:
             inspectPurchase = purchase
         }
+    }
+
+    /// Best-effort "which BoS step should the wizard open on" for the
+    /// current user. Called from `openBillOfSale` to skip the user past
+    /// steps they've already completed.
+    private func nextIncompleteStep(
+        bos: BillOfSale?,
+        purchase: PurchaseRequest,
+        isSeller: Bool,
+        isBuyer: Bool
+    ) -> BoSStep {
+        guard let bos else { return .vehicle }
+        if isSeller {
+            if bos.vehicleMake.isEmpty || bos.vehicleModel.isEmpty || bos.vin.isEmpty {
+                return .vehicle
+            }
+            if bos.termsConditions.isEmpty { return .sale }
+            if bos.sellerName.isEmpty || bos.sellerAddress.isEmpty { return .seller }
+            if !bos.sellerHasSigned { return .signature }
+            return .review
+        }
+        if isBuyer {
+            if bos.buyerName.isEmpty || bos.buyerAddress.isEmpty { return .buyer }
+            if !bos.buyerHasSigned { return .signature }
+            return .review
+        }
+        return .vehicle
     }
 
     private func handlePayment(for leaseRequest: LeaseRequest) async {
