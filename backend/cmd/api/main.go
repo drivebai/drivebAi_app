@@ -188,6 +188,14 @@ func main() {
 	vehicleReturnRepo := repository.NewVehicleReturnRepository(db)
 	vehicleReturnHandler := handlers.NewVehicleReturnHandler(vehicleReturnRepo, leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, notifHandler, logger)
 
+	// Purchase (buy the car) — mirrors the lease flow but with manual capture
+	// held until buyer inspection accept. See DESIGN SPEC for the state
+	// machine.
+	purchaseRepo := repository.NewPurchaseRequestRepository(db)
+	purchaseHandler := handlers.NewPurchaseRequestHandler(purchaseRepo, carRepo, userRepo, chatRepo, leaseRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, uploadDir, logger)
+	leaseHandler.SetPurchaseHandler(purchaseHandler)
+	todayHandler.SetPurchaseRepository(purchaseRepo)
+
 	// Setup router
 	r := chi.NewRouter()
 
@@ -383,6 +391,27 @@ func main() {
 			r.Post("/vehicle-returns/{id}/owner-confirm", vehicleReturnHandler.OwnerConfirm)
 			r.Post("/vehicle-returns/{id}/dispute", vehicleReturnHandler.Dispute)
 
+			// Purchase requests (buy the car flow).
+			r.Post("/cars/{carId}/purchase-requests", purchaseHandler.Create)
+			r.Get("/chats/{chatId}/purchase-requests", purchaseHandler.ListForChat)
+			r.Get("/today/purchase-requests", purchaseHandler.Today)
+			r.Get("/purchase-requests/{id}", purchaseHandler.Get)
+			r.Post("/purchase-requests/{id}/cancel", purchaseHandler.Cancel)
+			r.Post("/purchase-requests/{id}/accept", purchaseHandler.Accept)
+			r.Post("/purchase-requests/{id}/decline", purchaseHandler.Decline)
+			r.Patch("/purchase-requests/{id}/bos", purchaseHandler.UpdateBOS)
+			r.Patch("/purchase-requests/{id}/bos/buyer-fields", purchaseHandler.UpdateBOSBuyerFields)
+			r.Get("/purchase-requests/{id}/bos", purchaseHandler.GetBOS)
+			r.Post("/purchase-requests/{id}/bos/sign", purchaseHandler.SignBOS)
+			r.Post("/purchase-requests/{id}/payment-intent", purchaseHandler.CreatePaymentIntent)
+			r.Post("/purchase-requests/{id}/sync-payment", purchaseHandler.SyncPayment)
+			r.Post("/purchase-requests/{id}/schedule-handover", purchaseHandler.ScheduleHandover)
+			r.Post("/purchase-requests/{id}/keys-handed-over", purchaseHandler.KeysHandedOver)
+			r.Post("/purchase-requests/{id}/inspect/accept", purchaseHandler.InspectAccept)
+			r.Post("/purchase-requests/{id}/inspect/reject", purchaseHandler.InspectReject)
+			r.Post("/purchase-requests/{id}/rejection-evidence", purchaseHandler.UploadEvidence)
+			r.Post("/purchase-requests/{id}/rejection/withdraw", purchaseHandler.WithdrawRejection)
+
 			// Accident reports (user-facing)
 			r.Route("/accidents", func(r chi.Router) {
 				r.Post("/", accidentHandler.Create)
@@ -443,6 +472,13 @@ func main() {
 				// Vehicle returns — admin list + dispute resolution.
 				r.Get("/vehicle-returns", vehicleReturnHandler.AdminList)
 				r.Post("/vehicle-returns/{id}/resolve", vehicleReturnHandler.AdminResolve)
+
+				// Purchase requests + rejections.
+				r.Get("/purchase-requests", purchaseHandler.AdminList)
+				r.Get("/purchase-requests/{id}", purchaseHandler.AdminGet)
+				r.Post("/purchase-requests/{id}/retry-refund", purchaseHandler.AdminRetryRefund)
+				r.Get("/purchase-rejections", purchaseHandler.AdminListRejections)
+				r.Post("/purchase-rejections/{id}/resolve", purchaseHandler.AdminResolveRejection)
 			})
 		})
 	})
@@ -530,6 +566,9 @@ func main() {
 	// refund call succeeded but FinalizeRefund failed, the stable idempotency
 	// key makes the replay a server-side no-op at Stripe.
 	go vehicleReturnHandler.StartReturnRefundScanner(workerCtx, scanInterval)
+	// Purchase expiry: sweeps both offer-TTL and Stripe manual-capture
+	// auth-TTL rows. Same cadence keeps ops budgets aligned.
+	go purchaseHandler.StartExpiryScanner(workerCtx, scanInterval)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)

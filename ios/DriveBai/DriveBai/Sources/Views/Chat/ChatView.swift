@@ -22,6 +22,13 @@ struct ChatView: View {
     /// owner can type the reason before we round-trip to the backend.
     @State private var disputeVehicleReturnForLease: LeaseRequest?
 
+    // Purchase-flow sheet state — driven by PurchaseRequestCardView taps.
+    @State private var billOfSalePurchase: PurchaseRequest?
+    @State private var billOfSaleSeed: BillOfSale?
+    @State private var choosePaymentPurchase: PurchaseRequest?
+    @State private var inspectPurchase: PurchaseRequest?
+    @State private var scheduleHandoverPurchase: PurchaseRequest?
+
     // Plus-menu / attachment / accident state
     @State private var showPlusMenu = false
     @State private var pendingPlusAction: ChatPlusAction?
@@ -134,6 +141,52 @@ struct ChatView: View {
                 }
             }
         }
+        .sheet(item: $billOfSalePurchase) { purchase in
+            BillOfSaleFlowView(
+                purchaseRequest: purchase,
+                currentUserId: currentUserId,
+                initialBoS: billOfSaleSeed,
+                onBoSUpdated: { bos in
+                    viewModel.billOfSalesByPurchase[bos.purchaseRequestId] = bos
+                },
+                onPurchaseUpdated: { updated in
+                    viewModel.upsertPurchaseRequest(updated)
+                }
+            )
+        }
+        .sheet(item: $choosePaymentPurchase) { purchase in
+            ChoosePaymentOptionView(
+                purchaseRequest: purchase,
+                onPurchaseUpdated: { updated in
+                    viewModel.upsertPurchaseRequest(updated)
+                },
+                onDismiss: {
+                    Task { await viewModel.refreshPurchase(id: purchase.id) }
+                }
+            )
+        }
+        .sheet(item: $inspectPurchase) { purchase in
+            InspectionView(
+                purchaseRequest: purchase,
+                onPurchaseUpdated: { updated in
+                    viewModel.upsertPurchaseRequest(updated)
+                }
+            )
+        }
+        .sheet(item: $scheduleHandoverPurchase) { purchase in
+            ScheduleHandoverSheet(
+                purchaseRequest: purchase,
+                onSubmit: { scheduledAt, location in
+                    await viewModel.scheduleHandover(
+                        purchaseRequestId: purchase.id,
+                        scheduledAt: scheduledAt,
+                        location: location,
+                        latitude: nil,
+                        longitude: nil
+                    )
+                }
+            )
+        }
         .navigationDestination(isPresented: $showDetails) {
             ChatDetailsView(chatId: chatId)
         }
@@ -159,9 +212,10 @@ struct ChatView: View {
             await viewModel.loadInitialMessages()
             async let reqTask: () = viewModel.loadRequests()
             async let leaseTask: () = viewModel.loadLeaseRequests()
+            async let purchaseTask: () = viewModel.loadPurchaseRequests()
             async let sharedDocsTask: () = viewModel.loadSharedDocuments()
             async let carIdTask: () = loadRelatedCarId()
-            _ = await (reqTask, leaseTask, sharedDocsTask, carIdTask)
+            _ = await (reqTask, leaseTask, purchaseTask, sharedDocsTask, carIdTask)
             await viewModel.markAsRead()
             ChatsListViewModel.shared.markChatRead(chatId)
         }
@@ -236,11 +290,15 @@ struct ChatView: View {
     // MARK: - Requests Tab
 
     private var hasAnyRequests: Bool {
-        !viewModel.requests.isEmpty || !viewModel.leaseRequests.isEmpty
+        !viewModel.requests.isEmpty
+            || !viewModel.leaseRequests.isEmpty
+            || !viewModel.purchaseRequests.isEmpty
     }
 
     private var isLoadingAnyRequests: Bool {
-        viewModel.isLoadingRequests || viewModel.isLoadingLeaseRequests
+        viewModel.isLoadingRequests
+            || viewModel.isLoadingLeaseRequests
+            || viewModel.isLoadingPurchaseRequests
     }
 
     /// The current user is the car owner in this chat if they appear as the
@@ -301,6 +359,17 @@ struct ChatView: View {
                             leaseRequestCard(for: leaseReq)
                         }
 
+                        // Purchase requests
+                        ForEach(viewModel.purchaseRequests) { purchase in
+                            PurchaseRequestCardView(
+                                purchaseRequest: purchase,
+                                currentUserId: currentUserId,
+                                onAction: { action in
+                                    handlePurchaseCardAction(purchase: purchase, action: action)
+                                }
+                            )
+                        }
+
                         // Regular chat requests
                         ForEach(viewModel.requests) { request in
                             RequestCardView(
@@ -328,7 +397,8 @@ struct ChatView: View {
                     async let reqs:   () = viewModel.loadRequests()
                     async let docs:   () = viewModel.loadSharedDocuments()
                     async let vrets:  () = viewModel.loadVehicleReturnsForChatLeases()
-                    _ = await (leases, reqs, docs, vrets)
+                    async let purs:   () = viewModel.loadPurchaseRequests()
+                    _ = await (leases, reqs, docs, vrets, purs)
                 }
             }
         }
@@ -449,6 +519,30 @@ struct ChatView: View {
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
                 ?? "application/octet-stream"
             await viewModel.sendAttachment(data: data, filename: filename, mimeType: mime)
+        }
+    }
+
+    // MARK: - Purchase card actions
+
+    private func handlePurchaseCardAction(purchase: PurchaseRequest, action: PurchaseCardAction) {
+        switch action {
+        case .sellerAccept:
+            Task { await viewModel.acceptPurchaseRequest(id: purchase.id) }
+        case .sellerDecline:
+            Task { await viewModel.declinePurchaseRequest(id: purchase.id) }
+        case .buyerCancel:
+            Task { await viewModel.cancelPurchaseRequest(id: purchase.id) }
+        case .openBillOfSale:
+            billOfSaleSeed = viewModel.billOfSalesByPurchase[purchase.id]
+            billOfSalePurchase = purchase
+        case .buyerAuthorizePayment:
+            choosePaymentPurchase = purchase
+        case .sellerScheduleHandover:
+            scheduleHandoverPurchase = purchase
+        case .sellerMarkHandedOver:
+            Task { await viewModel.confirmKeysHandedOver(purchaseRequestId: purchase.id) }
+        case .buyerInspect:
+            inspectPurchase = purchase
         }
     }
 

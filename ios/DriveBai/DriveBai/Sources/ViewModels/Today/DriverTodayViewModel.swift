@@ -54,6 +54,11 @@ final class DriverTodayViewModel: ObservableObject {
     /// ID of the return currently being acted on (drives the card's busy state).
     @Published var submittingReturnId: UUID?
 
+    /// Active purchase requests where the current user is the BUYER.  Empty
+    /// on backends that don't yet ship the purchase endpoints (silent
+    /// failure — see `fetchPurchaseRequests`).
+    @Published var purchaseRequests: [PurchaseRequest] = []
+
     /// Locally-dismissed return ids — we filter these out client-side
     /// because the backend has no per-user dismiss endpoint for returns yet.
     private var dismissedReturnIds: Set<UUID> = []
@@ -76,6 +81,21 @@ final class DriverTodayViewModel: ObservableObject {
             await fetchNotifications()
             await fetchKeyHandovers()
             await fetchVehicleReturns()
+            await fetchPurchaseRequests()
+        }
+    }
+
+    /// Fetches the current buyer's active purchase requests from the shared
+    /// `/today/purchase-requests` endpoint.  Failures are logged and leave
+    /// the list empty so an older backend doesn't paint the Today tab red.
+    func fetchPurchaseRequests() async {
+        do {
+            let response = try await APIClient.shared.fetchPurchaseRequestsToday()
+            purchaseRequests = response.purchaseRequests.map { $0.toDomain() }
+        } catch {
+            #if DEBUG
+            print("[DriverTodayVM] fetchPurchaseRequests error: \(error)")
+            #endif
         }
     }
 
@@ -158,6 +178,7 @@ final class DriverTodayViewModel: ObservableObject {
         await fetchNotifications()
         await fetchKeyHandovers()
         await fetchVehicleReturns()
+        await fetchPurchaseRequests()
     }
 
     // MARK: - Key Handovers
@@ -378,6 +399,12 @@ final class DriverTodayViewModel: ObservableObject {
             .merge(with: ws.leaseRequestUpdatedPublisher)
             .sink { [weak self] in
                 Task { await self?.fetchVehicleReturns() }
+            }
+            .store(in: &wsCancellables)
+
+        ws.purchaseRequestUpdatedPublisher
+            .sink { [weak self] in
+                Task { await self?.fetchPurchaseRequests() }
             }
             .store(in: &wsCancellables)
     }

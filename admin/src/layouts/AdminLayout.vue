@@ -17,6 +17,7 @@ const items = [
   { to: '/support',   label: 'Support',   icon: 'support' },
   { to: '/accidents', label: 'Accidents', icon: 'accident' },
   { to: '/car-sell',  label: 'Car Sell',  icon: 'sell' },
+  { to: '/purchases', label: 'Purchases', icon: 'purchase' },
 ]
 
 // Mobile drawer state. Sidebar is hidden by default on small viewports and
@@ -54,6 +55,7 @@ function pageTitle(): string {
   const name = String(route.name || '')
   if (!name) return 'Admin'
   if (name === 'car-sell') return 'Car Sell'
+  if (name === 'purchases') return 'Purchases'
   return name.charAt(0).toUpperCase() + name.slice(1)
 }
 
@@ -270,6 +272,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-icon[data-icon="support"]  { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9a2.5 2.5 0 015 0c0 1.5-2.5 2-2.5 4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9a2.5 2.5 0 015 0c0 1.5-2.5 2-2.5 4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="accident"] { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 3l10 18H2L12 3z'/%3E%3Cpath d='M12 10v4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 3l10 18H2L12 3z'/%3E%3Cpath d='M12 10v4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="sell"]     { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6'/%3E%3C/svg%3E"); }
+.nav-icon[data-icon="purchase"] { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M6 6h15l-1.5 9h-12z'/%3E%3Cpath d='M6 6L4 3H2'/%3E%3Ccircle cx='9' cy='20' r='1.5'/%3E%3Ccircle cx='18' cy='20' r='1.5'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M6 6h15l-1.5 9h-12z'/%3E%3Cpath d='M6 6L4 3H2'/%3E%3Ccircle cx='9' cy='20' r='1.5'/%3E%3Ccircle cx='18' cy='20' r='1.5'/%3E%3C/svg%3E"); }
 
 .badge {
   margin-left: auto;

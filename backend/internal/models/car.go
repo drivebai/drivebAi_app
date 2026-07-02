@@ -15,6 +15,11 @@ const (
 	CarStatusRented    CarListingStatus = "rented"
 	CarStatusPending   CarListingStatus = "pending"
 	CarStatusPaused    CarListingStatus = "paused"
+	// CarStatusSold is a terminal state set the moment a purchase moves
+	// to `completed` or `rejected_upheld` — the car has been sold and is
+	// no longer eligible for either rental or purchase. Discovery filters
+	// exclude these rows (see car_repository.GetAvailableListings).
+	CarStatusSold CarListingStatus = "sold"
 )
 
 // CarBodyType represents the body type of a car

@@ -134,8 +134,36 @@ func (s *Service) CreateEphemeralKey(customerID string) (*EphemeralKey, error) {
 
 // --- PaymentIntent ---
 
+// PaymentIntentOptions captures optional Stripe params on CreatePaymentIntent.
+// Kept as an options struct so callers that don't need manual capture or
+// custom metadata don't have to touch anything and existing behavior stays
+// the same.
+type PaymentIntentOptions struct {
+	// CaptureMethod is either "automatic" (default) or "manual". Manual
+	// authorizes the card and holds the funds; a follow-up call to
+	// CapturePaymentIntent is required to actually charge, and
+	// CancelPaymentIntent releases the hold.
+	CaptureMethod string
+	// Metadata is copied to Stripe as `metadata[key]=value`. Used by the
+	// purchase flow to persist `purchase_request_id` on the PI so the
+	// webhook can route generic PI events back to the right handler.
+	Metadata map[string]string
+}
+
 // CreatePaymentIntent creates a Stripe PaymentIntent for mobile PaymentSheet.
+// Preserved for existing (lease) callers — delegates to
+// CreatePaymentIntentWithOptions with default automatic capture.
 func (s *Service) CreatePaymentIntent(amountCents int64, currency, customerID string, platformFeeCents int64, idempotencyKey string) (*PaymentIntent, error) {
+	return s.CreatePaymentIntentWithOptions(amountCents, currency, customerID, platformFeeCents, idempotencyKey, PaymentIntentOptions{})
+}
+
+// CreatePaymentIntentWithOptions is the manual-capture-aware constructor.
+// The purchase flow (buy the car) uses this with `CaptureMethod = "manual"`
+// so payment is held (authorized) until the buyer inspects and accepts.
+//
+// Honesty note: manual-capture is a hold on the buyer's card, not an
+// escrow — no funds move to a third party. See DESIGN SPEC §3.1 & §3.4.
+func (s *Service) CreatePaymentIntentWithOptions(amountCents int64, currency, customerID string, platformFeeCents int64, idempotencyKey string, opts PaymentIntentOptions) (*PaymentIntent, error) {
 	params := url.Values{}
 	params.Set("amount", fmt.Sprintf("%d", amountCents))
 	params.Set("currency", strings.ToLower(currency))
@@ -148,6 +176,12 @@ func (s *Service) CreatePaymentIntent(amountCents int64, currency, customerID st
 	// For now, platform collects full amount and records fee separately.
 
 	params.Set("metadata[platform_fee_cents]", fmt.Sprintf("%d", platformFeeCents))
+	for k, v := range opts.Metadata {
+		params.Set("metadata["+k+"]", v)
+	}
+	if opts.CaptureMethod == "manual" {
+		params.Set("capture_method", "manual")
+	}
 
 	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/payment_intents", strings.NewReader(params.Encode()))
 	if err != nil {
@@ -168,6 +202,44 @@ func (s *Service) CreatePaymentIntent(amountCents int64, currency, customerID st
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("stripe error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var pi PaymentIntent
+	if err := json.Unmarshal(body, &pi); err != nil {
+		return nil, fmt.Errorf("decode payment intent: %w", err)
+	}
+	return &pi, nil
+}
+
+// CapturePaymentIntent captures a previously-authorized (manual capture)
+// PaymentIntent. Used by the purchase flow on inspection accept and admin
+// uphold. Idempotent — Stripe returns the same PI on repeat calls with
+// the same idempotency key.
+func (s *Service) CapturePaymentIntent(paymentIntentID, idempotencyKey string) (*PaymentIntent, error) {
+	if paymentIntentID == "" {
+		return nil, fmt.Errorf("stripe capture: payment intent id required")
+	}
+	req, err := http.NewRequest("POST",
+		"https://api.stripe.com/v1/payment_intents/"+paymentIntentID+"/capture",
+		strings.NewReader(""))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("capture payment intent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("stripe capture error %d: %s", resp.StatusCode, string(body))
 	}
 
 	var pi PaymentIntent
@@ -208,6 +280,13 @@ func (s *Service) RetrievePaymentIntent(id string) (*PaymentIntent, error) {
 // facing flow that triggered it. Errors are returned so the caller can
 // decide their own logging story.
 func (s *Service) CancelPaymentIntent(paymentIntentID string) error {
+	return s.CancelPaymentIntentWithKey(paymentIntentID, "")
+}
+
+// CancelPaymentIntentWithKey is CancelPaymentIntent with an explicit Stripe
+// idempotency key. Used by the purchase flow so retries on rejection accept
+// don't stack multiple cancel calls.
+func (s *Service) CancelPaymentIntentWithKey(paymentIntentID, idempotencyKey string) error {
 	if paymentIntentID == "" {
 		return fmt.Errorf("stripe cancel: payment intent id required")
 	}
@@ -226,6 +305,9 @@ func (s *Service) CancelPaymentIntent(paymentIntentID string) error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {

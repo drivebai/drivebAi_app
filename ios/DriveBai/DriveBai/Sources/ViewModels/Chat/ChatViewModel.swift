@@ -22,6 +22,14 @@ final class ChatViewModel: ObservableObject {
     @Published var leaseRequests: [LeaseRequest] = []
     @Published var isLoadingLeaseRequests = false
 
+    /// Purchase requests attached to this chat.  The Requests tab renders
+    /// these between the lease requests and the generic chat requests.
+    @Published var purchaseRequests: [PurchaseRequest] = []
+    @Published var isLoadingPurchaseRequests = false
+    /// Cached BoS rows keyed by purchase-request id.  Fetched lazily —
+    /// only when the wizard needs a seed.
+    @Published var billOfSalesByPurchase: [UUID: BillOfSale] = [:]
+
     /// Active vehicle-return rows keyed by lease-request id. Powers the
     /// in-chat lease card so the same surface that drove pickup-confirmation
     /// now also drives "Start return" / "Confirm return" / status copy.
@@ -118,6 +126,16 @@ final class ChatViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 Task { [weak self] in await self?.loadVehicleReturnsForChatLeases() }
+            }
+            .store(in: &cancellables)
+
+        // Purchase-request events (created / updated / payment / handover /
+        // rejection).  We refetch the entire chat's purchase list on any
+        // event so the card state is authoritative.
+        WebSocketManager.shared.purchaseRequestUpdatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { [weak self] in await self?.loadPurchaseRequests() }
             }
             .store(in: &cancellables)
 
@@ -360,7 +378,7 @@ final class ChatViewModel: ObservableObject {
     /// because `leaseRequests` is updated in place by every mutation path.
     var hasRequestsAttentionBadge: Bool {
         if selectedTab == .requests { return false }
-        return leaseRequests.contains { lr in
+        let leaseSignal = leaseRequests.contains { lr in
             if lr.ownerId == currentUserId, lr.status == .requested {
                 return true
             }
@@ -370,6 +388,28 @@ final class ChatViewModel: ObservableObject {
                 if lr.driverShouldReviewPrice { return true }
                 if lr.driverCanPay { return true }
                 if lr.isAwaitingPickupConfirmation { return true }
+            }
+            return false
+        }
+        if leaseSignal { return true }
+
+        // Purchase-side signals: seller with a fresh offer, buyer waiting to
+        // sign / pay / inspect.
+        return purchaseRequests.contains { pr in
+            if pr.sellerId == currentUserId, pr.status == .requested { return true }
+            if pr.buyerId == currentUserId {
+                switch pr.status {
+                case .bosPendingBuyer, .bosSigned, .awaitingInspection:
+                    return true
+                default: return false
+                }
+            }
+            if pr.sellerId == currentUserId {
+                switch pr.status {
+                case .bosPendingSeller, .paymentAuthorized, .handoverScheduled:
+                    return true
+                default: return false
+                }
             }
             return false
         }
@@ -762,6 +802,104 @@ final class ChatViewModel: ObservableObject {
             let msg = describeError(error)
             self.error = msg
             return msg
+        }
+    }
+
+    // MARK: - Purchase Requests
+
+    /// Fetches the chat-scoped purchase requests.  Silent-failure on 404 /
+    /// legacy backends that don't yet ship the endpoint, so older builds
+    /// don't light up an error banner.
+    func loadPurchaseRequests() async {
+        isLoadingPurchaseRequests = true
+        defer { isLoadingPurchaseRequests = false }
+        do {
+            let response = try await apiClient.fetchPurchaseRequestsForChat(chatId: chatId)
+            purchaseRequests = response.purchaseRequests.map { $0.toDomain() }
+        } catch {
+            #if DEBUG
+            print("[ChatViewModel] loadPurchaseRequests error: \(error)")
+            #endif
+        }
+    }
+
+    func acceptPurchaseRequest(id: UUID) async {
+        do {
+            let response = try await apiClient.acceptPurchaseRequest(id: id)
+            upsertPurchaseRequest(response.toDomain())
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    func declinePurchaseRequest(id: UUID, reason: String? = nil) async {
+        do {
+            let response = try await apiClient.declinePurchaseRequest(id: id, reason: reason)
+            upsertPurchaseRequest(response.toDomain())
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    func cancelPurchaseRequest(id: UUID) async {
+        do {
+            let response = try await apiClient.cancelPurchaseRequest(id: id)
+            upsertPurchaseRequest(response.toDomain())
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    func confirmKeysHandedOver(purchaseRequestId: UUID) async {
+        do {
+            let response = try await apiClient.confirmKeysHandedOver(
+                purchaseRequestId: purchaseRequestId
+            )
+            upsertPurchaseRequest(response.toDomain())
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    func scheduleHandover(
+        purchaseRequestId: UUID,
+        scheduledAt: Date,
+        location: String,
+        latitude: Double?,
+        longitude: Double?
+    ) async {
+        do {
+            let response = try await apiClient.scheduleHandover(
+                purchaseRequestId: purchaseRequestId,
+                scheduledAt: scheduledAt,
+                location: location,
+                latitude: latitude,
+                longitude: longitude
+            )
+            upsertPurchaseRequest(response.toDomain())
+        } catch {
+            self.error = describeError(error)
+        }
+    }
+
+    func refreshPurchase(id: UUID) async {
+        do {
+            let response = try await apiClient.fetchPurchaseRequest(id: id)
+            upsertPurchaseRequest(response.toDomain())
+        } catch {
+            #if DEBUG
+            print("[ChatViewModel] refreshPurchase error: \(error)")
+            #endif
+        }
+    }
+
+    /// Insert-or-replace a purchase request in the local cache and re-sort
+    /// by createdAt so the most recent one leads.
+    func upsertPurchaseRequest(_ purchase: PurchaseRequest) {
+        if let idx = purchaseRequests.firstIndex(where: { $0.id == purchase.id }) {
+            purchaseRequests[idx] = purchase
+        } else {
+            purchaseRequests.insert(purchase, at: 0)
         }
     }
 

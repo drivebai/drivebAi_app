@@ -21,6 +21,10 @@ const (
 	// offer from Chat → Requests; this card is the fast-access shortcut
 	// so they don't miss the update.
 	TodayActionLeasePriceReview TodayActionType = "lease_price_review"
+	// TodayActionPurchaseAction: buyer- or seller-side card for a
+	// non-terminal purchase_request. The status field carries the exact
+	// state so iOS can render the right CTA copy.
+	TodayActionPurchaseAction TodayActionType = "purchase_action"
 )
 
 // TodayAction is a single item in the owner/driver's Today feed.

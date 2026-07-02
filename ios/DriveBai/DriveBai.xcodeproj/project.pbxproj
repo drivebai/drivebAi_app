@@ -26,6 +26,20 @@
 		C0FECA0001000000000000A1 /* VehicleReturnModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000A1 /* VehicleReturnModels.swift */; };
 		C0FECA0001000000000000A2 /* VehicleReturnAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */; };
 		C0FECA0001000000000000A3 /* VehicleReturnCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000A3 /* VehicleReturnCard.swift */; };
+		C0FECA0001000000000000B1 /* PurchaseModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B1 /* PurchaseModels.swift */; };
+		C0FECA0001000000000000B2 /* BillOfSaleModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B2 /* BillOfSaleModels.swift */; };
+		C0FECA0001000000000000B3 /* PurchaseRejectionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B3 /* PurchaseRejectionModels.swift */; };
+		C0FECA0001000000000000B4 /* PurchaseAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B4 /* PurchaseAPIModels.swift */; };
+		C0FECA0001000000000000B5 /* APIClient+Purchase.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B5 /* APIClient+Purchase.swift */; };
+		C0FECA0001000000000000B6 /* PurchaseSignaturePadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B6 /* PurchaseSignaturePadView.swift */; };
+		C0FECA0001000000000000B7 /* BuyRequestSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B7 /* BuyRequestSheet.swift */; };
+		C0FECA0001000000000000B8 /* BillOfSaleFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B8 /* BillOfSaleFlowView.swift */; };
+		C0FECA0001000000000000B9 /* ChoosePaymentOptionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000B9 /* ChoosePaymentOptionView.swift */; };
+		C0FECA0001000000000000BA /* InspectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BA /* InspectionView.swift */; };
+		C0FECA0001000000000000BB /* RejectionEvidenceFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BB /* RejectionEvidenceFormView.swift */; };
+		C0FECA0001000000000000BC /* ScheduleHandoverSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BC /* ScheduleHandoverSheet.swift */; };
+		C0FECA0001000000000000BD /* PurchaseRequestCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BD /* PurchaseRequestCardView.swift */; };
+		C0FECA0001000000000000BE /* PurchaseTodayCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BE /* PurchaseTodayCard.swift */; };
 		E0000001000000000000001A /* DriveBaiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000A /* DriveBaiApp.swift */; };
 		E00000010000000000000502 /* PushNotificationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000501 /* PushNotificationCoordinator.swift */; };
 		E0000001000000000000001B /* User.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000B /* User.swift */; };
@@ -263,6 +277,20 @@
 		C0FECA0002000000000000A1 /* VehicleReturnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnModels.swift; sourceTree = SOURCE_ROOT; };
 		C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnAPIModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnAPIModels.swift; sourceTree = SOURCE_ROOT; };
 		C0FECA0002000000000000A3 /* VehicleReturnCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnCard.swift; path = DriveBai/Sources/Views/Today/Components/VehicleReturnCard.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B1 /* PurchaseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseModels.swift; path = DriveBai/Sources/Models/Purchase/PurchaseModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B2 /* BillOfSaleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BillOfSaleModels.swift; path = DriveBai/Sources/Models/Purchase/BillOfSaleModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B3 /* PurchaseRejectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseRejectionModels.swift; path = DriveBai/Sources/Models/Purchase/PurchaseRejectionModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B4 /* PurchaseAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseAPIModels.swift; path = DriveBai/Sources/API/PurchaseAPIModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B5 /* APIClient+Purchase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "APIClient+Purchase.swift"; path = "DriveBai/Sources/API/APIClient+Purchase.swift"; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B6 /* PurchaseSignaturePadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseSignaturePadView.swift; path = DriveBai/Sources/Views/Purchase/PurchaseSignaturePadView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B7 /* BuyRequestSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BuyRequestSheet.swift; path = DriveBai/Sources/Views/Purchase/BuyRequestSheet.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B8 /* BillOfSaleFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BillOfSaleFlowView.swift; path = DriveBai/Sources/Views/Purchase/BillOfSaleFlowView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B9 /* ChoosePaymentOptionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChoosePaymentOptionView.swift; path = DriveBai/Sources/Views/Purchase/ChoosePaymentOptionView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BA /* InspectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InspectionView.swift; path = DriveBai/Sources/Views/Purchase/InspectionView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BB /* RejectionEvidenceFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RejectionEvidenceFormView.swift; path = DriveBai/Sources/Views/Purchase/RejectionEvidenceFormView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BC /* ScheduleHandoverSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduleHandoverSheet.swift; path = DriveBai/Sources/Views/Purchase/ScheduleHandoverSheet.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BD /* PurchaseRequestCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseRequestCardView.swift; path = DriveBai/Sources/Views/Chat/Components/PurchaseRequestCardView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BE /* PurchaseTodayCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseTodayCard.swift; path = DriveBai/Sources/Views/Today/Components/PurchaseTodayCard.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -324,6 +352,20 @@
 				C0FECA0002000000000000A1 /* VehicleReturnModels.swift */,
 				C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */,
 				C0FECA0002000000000000A3 /* VehicleReturnCard.swift */,
+				C0FECA0002000000000000B1 /* PurchaseModels.swift */,
+				C0FECA0002000000000000B2 /* BillOfSaleModels.swift */,
+				C0FECA0002000000000000B3 /* PurchaseRejectionModels.swift */,
+				C0FECA0002000000000000B4 /* PurchaseAPIModels.swift */,
+				C0FECA0002000000000000B5 /* APIClient+Purchase.swift */,
+				C0FECA0002000000000000B6 /* PurchaseSignaturePadView.swift */,
+				C0FECA0002000000000000B7 /* BuyRequestSheet.swift */,
+				C0FECA0002000000000000B8 /* BillOfSaleFlowView.swift */,
+				C0FECA0002000000000000B9 /* ChoosePaymentOptionView.swift */,
+				C0FECA0002000000000000BA /* InspectionView.swift */,
+				C0FECA0002000000000000BB /* RejectionEvidenceFormView.swift */,
+				C0FECA0002000000000000BC /* ScheduleHandoverSheet.swift */,
+				C0FECA0002000000000000BD /* PurchaseRequestCardView.swift */,
+				C0FECA0002000000000000BE /* PurchaseTodayCard.swift */,
 				E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */,
 				CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */,
 				702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */,
@@ -881,6 +923,20 @@
 				C0FECA0001000000000000A1 /* VehicleReturnModels.swift in Sources */,
 				C0FECA0001000000000000A2 /* VehicleReturnAPIModels.swift in Sources */,
 				C0FECA0001000000000000A3 /* VehicleReturnCard.swift in Sources */,
+				C0FECA0001000000000000B1 /* PurchaseModels.swift in Sources */,
+				C0FECA0001000000000000B2 /* BillOfSaleModels.swift in Sources */,
+				C0FECA0001000000000000B3 /* PurchaseRejectionModels.swift in Sources */,
+				C0FECA0001000000000000B4 /* PurchaseAPIModels.swift in Sources */,
+				C0FECA0001000000000000B5 /* APIClient+Purchase.swift in Sources */,
+				C0FECA0001000000000000B6 /* PurchaseSignaturePadView.swift in Sources */,
+				C0FECA0001000000000000B7 /* BuyRequestSheet.swift in Sources */,
+				C0FECA0001000000000000B8 /* BillOfSaleFlowView.swift in Sources */,
+				C0FECA0001000000000000B9 /* ChoosePaymentOptionView.swift in Sources */,
+				C0FECA0001000000000000BA /* InspectionView.swift in Sources */,
+				C0FECA0001000000000000BB /* RejectionEvidenceFormView.swift in Sources */,
+				C0FECA0001000000000000BC /* ScheduleHandoverSheet.swift in Sources */,
+				C0FECA0001000000000000BD /* PurchaseRequestCardView.swift in Sources */,
+				C0FECA0001000000000000BE /* PurchaseTodayCard.swift in Sources */,
 				55D64DD7996CF8236139E437 /* ChatPlusMenuSheet.swift in Sources */,
 				EF0F482AB376D092D87C86B8 /* AttachmentDownloadService.swift in Sources */,
 				F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */,

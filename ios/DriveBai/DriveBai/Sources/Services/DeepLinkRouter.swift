@@ -58,6 +58,12 @@ final class DeepLinkRouter: ObservableObject {
     /// check would swallow it).
     @Published var pendingLeasePickupId: UUID?
 
+    /// Set when the user taps a `purchase_*` push. Consumer views observe
+    /// and navigate to Chat → Requests scrolled to the purchase-request
+    /// with this id.  Cleared once consumed via
+    /// `clearPendingPurchaseTap()`.
+    @Published var pendingPurchaseTap: UUID?
+
     private init() {}
 
     func handle(url: URL) {
@@ -104,11 +110,16 @@ final class DeepLinkRouter: ObservableObject {
         pendingLeasePickupId = nil
     }
 
+    func clearPendingPurchaseTap() {
+        pendingPurchaseTap = nil
+    }
+
     func clearPendingRoute() {
         pendingRoute = nil
         showResetPassword = false
         resetPasswordToken = nil
         pendingLeasePickupId = nil
+        pendingPurchaseTap = nil
     }
 
     func clearError() {
@@ -143,6 +154,22 @@ final class DeepLinkRouter: ObservableObject {
             }
             pendingChatTap = nil
         case "chat_message":
+            if let raw = userInfo["chat_id"] as? String,
+               let chatId = UUID(uuidString: raw) {
+                pendingChatTap = nil
+                pendingChatTap = chatId
+            }
+        case "purchase_request",
+             "purchase_payment",
+             "purchase_handover",
+             "purchase_rejection":
+            if let raw = userInfo["purchase_request_id"] as? String,
+               let purchaseId = UUID(uuidString: raw) {
+                pendingPurchaseTap = nil
+                pendingPurchaseTap = purchaseId
+            }
+            // Also unwrap the chat if the payload carries one so consumer
+            // views can push the chat first, then focus the card.
             if let raw = userInfo["chat_id"] as? String,
                let chatId = UUID(uuidString: raw) {
                 pendingChatTap = nil
