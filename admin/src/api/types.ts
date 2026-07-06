@@ -45,6 +45,21 @@ export interface AdminCar {
   address?: string | null
   cover_photo_url?: string | null
   created_at: string
+  /**
+   * Server-computed list of required document types this car is still
+   * missing. Required set: registration + inspection + insurance, plus
+   * 'title' when is_for_sale. Approval (is_approved false→true) is refused
+   * with 422 MISSING_REQUIRED_DOCUMENTS while this is non-empty. Optional
+   * so the UI degrades gracefully until the backend ships the field.
+   * Already-approved cars are grandfathered — the list is informational
+   * for them.
+   */
+  missing_required_documents?: string[] | null
+  /**
+   * Soft-archive timestamp. "Deleted" cars are archived (row kept for
+   * lease/chat/payment history) and hidden from all app-facing lists.
+   */
+  archived_at?: string | null
 }
 
 export interface AdminCarPhoto {

@@ -180,7 +180,12 @@ type AdminCarRow struct {
 	Currency        string     `json:"currency"`
 	Address         *string    `json:"address,omitempty"`
 	CoverPhotoURL   *string    `json:"cover_photo_url,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
+	// MissingRequiredDocuments is server-computed (QA pt-10): the required
+	// doc types (registration/inspection/insurance, +title when for sale)
+	// this car does NOT yet have on file. The admin UI badges rows with a
+	// non-empty list, and ApproveCar 422s on the same computation.
+	MissingRequiredDocuments []string  `json:"missing_required_documents"`
+	CreatedAt                time.Time `json:"created_at"`
 }
 
 type AdminCarsPage struct {
@@ -221,6 +226,7 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 		       c.is_for_rent, c.is_for_sale, c.weekly_rent_price, c.sale_price, c.currency,
 		       c.address,
 		       (SELECT p.file_url FROM car_photos p WHERE p.car_id = c.id AND p.slot_type = 'cover_front' LIMIT 1),
+		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id),
 		       c.created_at
 		FROM cars c
 		LEFT JOIN users u ON u.id = c.owner_id
@@ -238,15 +244,18 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 	out := []AdminCarRow{}
 	for rows.Next() {
 		var c AdminCarRow
+		var docTypes []string
 		if err := rows.Scan(&c.ID, &c.Title, &c.Make, &c.Model, &c.Year,
 			&c.OwnerID, &c.OwnerEmail, &c.OwnerName,
 			&c.Status, &c.IsPaused, &c.IsApproved,
 			&c.IsForRent, &c.IsForSale, &c.WeeklyRentPrice, &c.SalePrice, &c.Currency,
 			&c.Address,
 			&c.CoverPhotoURL,
+			&docTypes,
 			&c.CreatedAt); err != nil {
 			return nil, err
 		}
+		c.MissingRequiredDocuments = models.MissingRequiredCarDocuments(c.IsForSale, docTypes)
 		out = append(out, c)
 	}
 	return &AdminCarsPage{Items: out, Total: total, Page: page, Limit: limit}, nil
@@ -266,6 +275,7 @@ type AdminCarDetail struct {
 
 func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*AdminCarDetail, error) {
 	var c AdminCarDetail
+	var docTypes []string
 	err := r.db.Pool.QueryRow(ctx, `
 		SELECT c.id, c.title, c.make, c.model, c.year,
 		       c.owner_id, u.email, COALESCE(u.first_name || ' ' || u.last_name, ''),
@@ -273,6 +283,7 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		       c.is_for_rent, c.is_for_sale, c.weekly_rent_price, c.sale_price, c.currency,
 		       c.address,
 		       (SELECT p.file_url FROM car_photos p WHERE p.car_id = c.id AND p.slot_type = 'cover_front' LIMIT 1),
+		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id),
 		       c.created_at,
 		       c.description
 		FROM cars c
@@ -284,11 +295,13 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		&c.IsForRent, &c.IsForSale, &c.WeeklyRentPrice, &c.SalePrice, &c.Currency,
 		&c.Address,
 		&c.CoverPhotoURL,
+		&docTypes,
 		&c.CreatedAt,
 		&c.Description)
 	if err != nil {
 		return nil, err
 	}
+	c.MissingRequiredDocuments = models.MissingRequiredCarDocuments(c.IsForSale, docTypes)
 
 	rows, err := r.db.Pool.Query(ctx,
 		`SELECT id, slot_type::text, file_url FROM car_photos WHERE car_id = $1 ORDER BY slot_type`, id)
@@ -305,6 +318,31 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		c.Photos = append(c.Photos, p)
 	}
 	return &c, nil
+}
+
+// CarApprovalInfo is the minimal snapshot ApproveCar needs to enforce the
+// required-documents gate (QA pt-10 / D5).
+type CarApprovalInfo struct {
+	IsForSale  bool
+	IsApproved bool
+	// DocumentTypes are the distinct document_type values on file.
+	DocumentTypes []string
+}
+
+// GetCarApprovalInfo loads the approval-gate inputs for one car. Returns
+// pgx.ErrNoRows when the car doesn't exist.
+func (r *AdminRepository) GetCarApprovalInfo(ctx context.Context, id uuid.UUID) (*CarApprovalInfo, error) {
+	var info CarApprovalInfo
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT c.is_for_sale, c.is_approved,
+		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id)
+		FROM cars c
+		WHERE c.id = $1
+	`, id).Scan(&info.IsForSale, &info.IsApproved, &info.DocumentTypes)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
 }
 
 func (r *AdminRepository) SetCarApproved(ctx context.Context, id uuid.UUID, approved bool) error {
@@ -855,26 +893,26 @@ func (r *AdminRepository) GetRentDetail(ctx context.Context, id uuid.UUID) (*Adm
 
 // AdminAccidentRow is the shaped response for admin list + detail views.
 type AdminAccidentRow struct {
-	ID                  uuid.UUID              `json:"id"`
-	ReporterID          uuid.UUID              `json:"reporter_id"`
-	ReporterName        string                 `json:"reporter_name"`
-	ReporterEmail       string                 `json:"reporter_email"`
-	RelatedChatID       *uuid.UUID             `json:"related_chat_id,omitempty"`
-	RelatedCarID        *uuid.UUID             `json:"related_car_id,omitempty"`
-	CarTitle            *string                `json:"car_title,omitempty"`
-	Status              models.AccidentStatus  `json:"status"`
-	Driver1Info         *models.DriverInfo     `json:"driver1_info,omitempty"`
-	Driver2Info         *models.DriverInfo     `json:"driver2_info,omitempty"`
-	VehicleDamage       *models.VehicleDamage  `json:"vehicle_damage,omitempty"`
-	AccidentDescription string                 `json:"accident_description"`
-	InsuranceInfo       *models.InsuranceInfo  `json:"insurance_info,omitempty"`
-	OtherInfo           *models.OtherInfo      `json:"other_info,omitempty"`
-	SignatureURL        string                 `json:"signature_url"`
-	SignatureSignedAt   *time.Time             `json:"signature_signed_at,omitempty"`
-	SubmittedAt         *time.Time             `json:"submitted_at,omitempty"`
+	ID                  uuid.UUID                   `json:"id"`
+	ReporterID          uuid.UUID                   `json:"reporter_id"`
+	ReporterName        string                      `json:"reporter_name"`
+	ReporterEmail       string                      `json:"reporter_email"`
+	RelatedChatID       *uuid.UUID                  `json:"related_chat_id,omitempty"`
+	RelatedCarID        *uuid.UUID                  `json:"related_car_id,omitempty"`
+	CarTitle            *string                     `json:"car_title,omitempty"`
+	Status              models.AccidentStatus       `json:"status"`
+	Driver1Info         *models.DriverInfo          `json:"driver1_info,omitempty"`
+	Driver2Info         *models.DriverInfo          `json:"driver2_info,omitempty"`
+	VehicleDamage       *models.VehicleDamage       `json:"vehicle_damage,omitempty"`
+	AccidentDescription string                      `json:"accident_description"`
+	InsuranceInfo       *models.InsuranceInfo       `json:"insurance_info,omitempty"`
+	OtherInfo           *models.OtherInfo           `json:"other_info,omitempty"`
+	SignatureURL        string                      `json:"signature_url"`
+	SignatureSignedAt   *time.Time                  `json:"signature_signed_at,omitempty"`
+	SubmittedAt         *time.Time                  `json:"submitted_at,omitempty"`
 	Attachments         []models.AccidentAttachment `json:"attachments"`
-	CreatedAt           time.Time              `json:"created_at"`
-	UpdatedAt           time.Time              `json:"updated_at"`
+	CreatedAt           time.Time                   `json:"created_at"`
+	UpdatedAt           time.Time                   `json:"updated_at"`
 }
 
 type AdminAccidentsPage struct {

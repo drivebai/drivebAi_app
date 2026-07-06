@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/drivebai/backend/internal/auth"
+	"github.com/drivebai/backend/internal/email"
 	"github.com/drivebai/backend/internal/httputil"
 	"github.com/drivebai/backend/internal/models"
 	"github.com/drivebai/backend/internal/repository"
@@ -33,7 +36,12 @@ type AdminHandler struct {
 	// the affected user so they don't have to re-open the app to find out.
 	// Nil in tests that don't need push.
 	notifHandler *NotificationHandler
-	logger       *slog.Logger
+	// tokenRepo + emailSvc power the admin-triggered password reset (D7).
+	// Wired via SetPasswordResetDependencies; nil in tests that don't need
+	// the reset flow (the endpoint then 500s cleanly).
+	tokenRepo *repository.TokenRepository
+	emailSvc  email.Sender
+	logger    *slog.Logger
 }
 
 func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, logger *slog.Logger) *AdminHandler {
@@ -45,6 +53,14 @@ func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository
 // to avoid breaking existing tests that build AdminHandler directly.
 func (h *AdminHandler) SetNotificationHandler(n *NotificationHandler) {
 	h.notifHandler = n
+}
+
+// SetPasswordResetDependencies wires the token store + email sender used by
+// POST /admin/users/{id}/reset-password. Setter (same pattern as
+// SetNotificationHandler) so existing test constructors keep compiling.
+func (h *AdminHandler) SetPasswordResetDependencies(tokenRepo *repository.TokenRepository, emailSvc email.Sender) {
+	h.tokenRepo = tokenRepo
+	h.emailSvc = emailSvc
 }
 
 func parsePage(r *http.Request) (page, limit int) {
@@ -229,6 +245,73 @@ func (h *AdminHandler) UpdateUserProfile(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// ResetUserPassword — POST /admin/users/{id}/reset-password (D7).
+//
+// Passwords exist only as one-way bcrypt hashes, so there is nothing for an
+// admin to "view" — the supported remedy is triggering the EXACT same reset
+// flow ForgotPassword runs: invalidate outstanding reset tokens, mint a new
+// one (1h TTL, only the hash is stored), and email the user a reset link
+// via the configured sender. The admin NEVER sees the token; the response
+// is a bare 202. Unknown user → 404 (unlike the public endpoint, admin is
+// trusted so there is no enumeration concern).
+func (h *AdminHandler) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+
+	if h.tokenRepo == nil || h.emailSvc == nil {
+		h.logger.Error("admin reset password: dependencies not wired")
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	ctx := r.Context()
+	user, err := h.userRepo.GetByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "user not found"))
+			return
+		}
+		h.logger.Error("admin reset password: load user", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	// Invalidate any existing reset tokens, mirroring ForgotPassword.
+	h.tokenRepo.InvalidatePasswordResetTokensForUser(ctx, user.ID)
+
+	rawToken, hashedToken, expiresAt, err := auth.GeneratePasswordResetToken(time.Hour)
+	if err != nil {
+		h.logger.Error("admin reset password: generate token", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resetToken := &models.PasswordResetToken{
+		UserID:    user.ID,
+		TokenHash: hashedToken,
+		ExpiresAt: expiresAt,
+	}
+	if err := h.tokenRepo.CreatePasswordResetToken(ctx, resetToken); err != nil {
+		h.logger.Error("admin reset password: store token", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	if err := h.emailSvc.SendPasswordResetEmail(user.Email, user.FullName(), rawToken); err != nil {
+		// Same posture as ForgotPassword: log but don't fail — the token is
+		// valid and support can re-trigger.
+		h.logger.Error("admin reset password: send email", "error", err, "user_id", id)
+	}
+
+	h.logger.Info("admin triggered password reset", "user_id", id)
+	httputil.WriteJSON(w, http.StatusAccepted, map[string]string{
+		"message": "Password reset email sent",
+	})
+}
+
 // ===== CARS =====
 
 func (h *AdminHandler) ListCars(w http.ResponseWriter, r *http.Request) {
@@ -277,6 +360,31 @@ func (h *AdminHandler) ApproveCar(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid body"))
 		return
 	}
+
+	// Required-documents gate (QA pt-10 / D5). Enforced ONLY on the
+	// false→true transition: registration + inspection + insurance must be
+	// on file (+ title when the car is for sale). Already-approved legacy
+	// cars are grandfathered — un-approving or re-listing them is untouched.
+	if body.IsApproved {
+		info, err := h.adminRepo.GetCarApprovalInfo(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "car not found"))
+				return
+			}
+			h.logger.Error("admin approve car: load approval info", "error", err, "car_id", id)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if missing := models.MissingRequiredCarDocuments(info.IsForSale, info.DocumentTypes); len(missing) > 0 {
+			httputil.WriteError(w, http.StatusUnprocessableEntity,
+				models.NewAPIError(models.ErrCodeMissingRequiredDocuments,
+					"This listing is missing required documents").
+					WithDetails(map[string]interface{}{"missing": missing}))
+			return
+		}
+	}
+
 	if err := h.adminRepo.SetCarApproved(r.Context(), id, body.IsApproved); err != nil {
 		h.logger.Error("admin approve car", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)

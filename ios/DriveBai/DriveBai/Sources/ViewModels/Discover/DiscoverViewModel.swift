@@ -196,9 +196,7 @@ final class DiscoverViewModel: ObservableObject {
         if let fuel = filters.fuelType {
             result = result.filter { $0.specs.fuelType == fuel }
         }
-        if let maxDeposit = filters.maxDeposit {
-            result = result.filter { $0.requirements.depositAmount.amount <= maxDeposit }
-        }
+        // maxDeposit filter removed (QA pt 7): deposits no longer exist.
 
         #if DEBUG
         print("[DiscoverViewModel] applyFilters: output=\(result.count) listings")
@@ -240,7 +238,7 @@ extension DiscoverViewModel {
                 ),
                 requirements: CarRequirements(
                     minYearsLicensedDriving: 2,
-                    depositAmount: Money(amount: 500),
+                    depositAmount: Money(amount: 0),
                     insuranceCoverage: .fullCoverage
                 ),
                 location: CarLocation(
@@ -269,7 +267,7 @@ extension DiscoverViewModel {
                 ),
                 requirements: CarRequirements(
                     minYearsLicensedDriving: 1,
-                    depositAmount: Money(amount: 400),
+                    depositAmount: Money(amount: 0),
                     insuranceCoverage: .fullCoverage
                 ),
                 location: CarLocation(
@@ -298,7 +296,7 @@ extension DiscoverViewModel {
                 ),
                 requirements: CarRequirements(
                     minYearsLicensedDriving: 3,
-                    depositAmount: Money(amount: 1000),
+                    depositAmount: Money(amount: 0),
                     insuranceCoverage: .fullCoverage
                 ),
                 location: CarLocation(

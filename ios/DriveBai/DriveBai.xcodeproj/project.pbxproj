@@ -14,8 +14,6 @@
 		60C04585A9729812B968FB0F /* KeyHandoverAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */; };
 		7485489E8184FFB21A7BECB7 /* ImagePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F23642CA82731C1438425E6D /* ImagePipeline.swift */; };
 		78B045CEB9F2C8D9A9F3605E /* KeyHandoverCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */; };
-		C0FECA0001000000000000F1 /* HandoverLocationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000F1 /* HandoverLocationRow.swift */; };
-		C0FECA0001000000000000F2 /* DiscoverFilterSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000F2 /* DiscoverFilterSheet.swift */; };
 		84294759824B8DC261EF2FAE /* KeyHandoverDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */; };
 		871B607C2FEE764A0056B004 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 871B607B2FEE764A0056B004 /* WidgetKit.framework */; };
 		871B607E2FEE764A0056B004 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 871B607D2FEE764A0056B004 /* SwiftUI.framework */; };
@@ -42,8 +40,9 @@
 		C0FECA0001000000000000BC /* ScheduleHandoverSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BC /* ScheduleHandoverSheet.swift */; };
 		C0FECA0001000000000000BD /* PurchaseRequestCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BD /* PurchaseRequestCardView.swift */; };
 		C0FECA0001000000000000BE /* PurchaseTodayCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000BE /* PurchaseTodayCard.swift */; };
+		C0FECA0001000000000000F1 /* HandoverLocationRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000F1 /* HandoverLocationRow.swift */; };
+		C0FECA0001000000000000F2 /* DiscoverFilterSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FECA0002000000000000F2 /* DiscoverFilterSheet.swift */; };
 		E0000001000000000000001A /* DriveBaiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000A /* DriveBaiApp.swift */; };
-		E00000010000000000000502 /* PushNotificationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000501 /* PushNotificationCoordinator.swift */; };
 		E0000001000000000000001B /* User.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000B /* User.swift */; };
 		E0000001000000000000001C /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000C /* KeychainService.swift */; };
 		E0000001000000000000001D /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000D /* APIClient.swift */; };
@@ -120,6 +119,12 @@
 		E000000100000000000000FF /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000FE /* AppConfig.swift */; };
 		E00000010000000000000101 /* OTPLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000100 /* OTPLoginView.swift */; };
 		E00000010000000000000301 /* PriceEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000300 /* PriceEditorSheet.swift */; };
+		E00000010000000000000601 /* CarBusinessState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000600 /* CarBusinessState.swift */; };
+		E00000010000000000000603 /* CarStatusPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000602 /* CarStatusPill.swift */; };
+		E00000010000000000000605 /* CameraCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000604 /* CameraCaptureView.swift */; };
+		E00000010000000000000607 /* DocumentSourcePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000606 /* DocumentSourcePicker.swift */; };
+		E00000010000000000000609 /* DocumentPreviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000608 /* DocumentPreviewSheet.swift */; };
+		E0000001000000000000060B /* GuidedPhotoCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000060A /* GuidedPhotoCaptureView.swift */; };
 		E00000010000000000000311 /* ChatEligibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000310 /* ChatEligibility.swift */; };
 		E00000010000000000000321 /* DriverDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000320 /* DriverDocumentsSection.swift */; };
 		E00000010000000000000331 /* AdjustPriceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000330 /* AdjustPriceSheet.swift */; };
@@ -134,6 +139,7 @@
 		E00000010000000000000401 /* PickupCountdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000400 /* PickupCountdownView.swift */; };
 		E00000010000000000000411 /* EditProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000410 /* EditProfileView.swift */; };
 		E00000010000000000000421 /* VehicleDocumentsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000420 /* VehicleDocumentsSection.swift */; };
+		E00000010000000000000502 /* PushNotificationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000501 /* PushNotificationCoordinator.swift */; };
 		E7B54F0BB3AB2C0B9F1A7246 /* PhotoLibrarySaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87574F99870D075C2B08C53C /* PhotoLibrarySaver.swift */; };
 		EF0F482AB376D092D87C86B8 /* AttachmentDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */; };
 		F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */; };
@@ -173,10 +179,27 @@
 		A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PickupActivityAttributes.swift; path = DriveBai/Sources/LiveActivity/PickupActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
 		AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverAPIModels.swift; path = DriveBai/Sources/API/KeyHandoverAPIModels.swift; sourceTree = SOURCE_ROOT; };
 		B8D95AEE23D15F2F89B96C02 /* PickupLiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PickupLiveActivityManager.swift; path = DriveBai/Sources/LiveActivity/PickupLiveActivityManager.swift; sourceTree = SOURCE_ROOT; };
-		CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AttachmentDownloadService.swift; path = DriveBai/Sources/Services/AttachmentDownloadService.swift; sourceTree = SOURCE_ROOT; };
-		CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverCard.swift; path = DriveBai/Sources/Views/Today/Components/KeyHandoverCard.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000A1 /* VehicleReturnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnAPIModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnAPIModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000A3 /* VehicleReturnCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnCard.swift; path = DriveBai/Sources/Views/Today/Components/VehicleReturnCard.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B1 /* PurchaseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseModels.swift; path = DriveBai/Sources/Models/Purchase/PurchaseModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B2 /* BillOfSaleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BillOfSaleModels.swift; path = DriveBai/Sources/Models/Purchase/BillOfSaleModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B3 /* PurchaseRejectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseRejectionModels.swift; path = DriveBai/Sources/Models/Purchase/PurchaseRejectionModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B4 /* PurchaseAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseAPIModels.swift; path = DriveBai/Sources/API/PurchaseAPIModels.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B5 /* APIClient+Purchase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "APIClient+Purchase.swift"; path = "DriveBai/Sources/API/APIClient+Purchase.swift"; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B6 /* PurchaseSignaturePadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseSignaturePadView.swift; path = DriveBai/Sources/Views/Purchase/PurchaseSignaturePadView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B7 /* BuyRequestSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BuyRequestSheet.swift; path = DriveBai/Sources/Views/Purchase/BuyRequestSheet.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B8 /* BillOfSaleFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BillOfSaleFlowView.swift; path = DriveBai/Sources/Views/Purchase/BillOfSaleFlowView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000B9 /* ChoosePaymentOptionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChoosePaymentOptionView.swift; path = DriveBai/Sources/Views/Purchase/ChoosePaymentOptionView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BA /* InspectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InspectionView.swift; path = DriveBai/Sources/Views/Purchase/InspectionView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BB /* RejectionEvidenceFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RejectionEvidenceFormView.swift; path = DriveBai/Sources/Views/Purchase/RejectionEvidenceFormView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BC /* ScheduleHandoverSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduleHandoverSheet.swift; path = DriveBai/Sources/Views/Purchase/ScheduleHandoverSheet.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BD /* PurchaseRequestCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseRequestCardView.swift; path = DriveBai/Sources/Views/Chat/Components/PurchaseRequestCardView.swift; sourceTree = SOURCE_ROOT; };
+		C0FECA0002000000000000BE /* PurchaseTodayCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseTodayCard.swift; path = DriveBai/Sources/Views/Today/Components/PurchaseTodayCard.swift; sourceTree = SOURCE_ROOT; };
 		C0FECA0002000000000000F1 /* HandoverLocationRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = HandoverLocationRow.swift; path = DriveBai/Sources/Views/Today/Components/HandoverLocationRow.swift; sourceTree = SOURCE_ROOT; };
 		C0FECA0002000000000000F2 /* DiscoverFilterSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DiscoverFilterSheet.swift; path = DriveBai/Sources/Views/Main/DiscoverFilterSheet.swift; sourceTree = SOURCE_ROOT; };
+		CACD45CA969EB1DB542BBC5B /* AttachmentDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AttachmentDownloadService.swift; path = DriveBai/Sources/Services/AttachmentDownloadService.swift; sourceTree = SOURCE_ROOT; };
+		CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverCard.swift; path = DriveBai/Sources/Views/Today/Components/KeyHandoverCard.swift; sourceTree = SOURCE_ROOT; };
 		D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImageAttachmentViewerView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/ImageAttachmentViewerView.swift; sourceTree = SOURCE_ROOT; };
 		E00000010000000000000001 /* DriveBai.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DriveBai.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E0000001000000000000000A /* DriveBaiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveBaiApp.swift; sourceTree = "<group>"; };
@@ -192,8 +215,6 @@
 		E00000010000000000000017 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		E00000010000000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E00000010000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		E00000010000000000000500 /* DriveBai.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DriveBai.entitlements; sourceTree = "<group>"; };
-		E00000010000000000000501 /* PushNotificationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationCoordinator.swift; sourceTree = "<group>"; };
 		E0000001000000000000003F /* DriverTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriverTabView.swift; sourceTree = "<group>"; };
 		E00000010000000000000040 /* OwnerTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerTabView.swift; sourceTree = "<group>"; };
 		E00000010000000000000042 /* DocumentUploadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentUploadView.swift; sourceTree = "<group>"; };
@@ -259,6 +280,12 @@
 		E000000100000000000000FE /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		E00000010000000000000100 /* OTPLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTPLoginView.swift; sourceTree = "<group>"; };
 		E00000010000000000000300 /* PriceEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriceEditorSheet.swift; sourceTree = "<group>"; };
+		E00000010000000000000600 /* CarBusinessState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarBusinessState.swift; sourceTree = "<group>"; };
+		E00000010000000000000602 /* CarStatusPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStatusPill.swift; sourceTree = "<group>"; };
+		E00000010000000000000604 /* CameraCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCaptureView.swift; sourceTree = "<group>"; };
+		E00000010000000000000606 /* DocumentSourcePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSourcePicker.swift; sourceTree = "<group>"; };
+		E00000010000000000000608 /* DocumentPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPreviewSheet.swift; sourceTree = "<group>"; };
+		E0000001000000000000060A /* GuidedPhotoCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedPhotoCaptureView.swift; sourceTree = "<group>"; };
 		E00000010000000000000310 /* ChatEligibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatEligibility.swift; sourceTree = "<group>"; };
 		E00000010000000000000320 /* DriverDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriverDocumentsSection.swift; sourceTree = "<group>"; };
 		E00000010000000000000330 /* AdjustPriceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdjustPriceSheet.swift; sourceTree = "<group>"; };
@@ -273,28 +300,13 @@
 		E00000010000000000000400 /* PickupCountdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickupCountdownView.swift; sourceTree = "<group>"; };
 		E00000010000000000000410 /* EditProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditProfileView.swift; sourceTree = "<group>"; };
 		E00000010000000000000420 /* VehicleDocumentsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VehicleDocumentsSection.swift; sourceTree = "<group>"; };
+		E00000010000000000000500 /* DriveBai.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DriveBai.entitlements; sourceTree = "<group>"; };
+		E00000010000000000000501 /* PushNotificationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationCoordinator.swift; sourceTree = "<group>"; };
 		E3C542D28975E4AAF33E434E /* ChatPlusMenuSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatPlusMenuSheet.swift; path = DriveBai/Sources/Views/Chat/Components/ChatPlusMenuSheet.swift; sourceTree = SOURCE_ROOT; };
 		EFDD4815B08438F162E135F0 /* PDFViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PDFViewerView.swift; path = DriveBai/Sources/Views/Chat/AttachmentViewer/PDFViewerView.swift; sourceTree = SOURCE_ROOT; };
 		F23642CA82731C1438425E6D /* ImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImagePipeline.swift; path = DriveBai/Sources/Services/ImagePipeline.swift; sourceTree = SOURCE_ROOT; };
 		F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverModels.swift; path = DriveBai/Sources/Models/KeyHandover/KeyHandoverModels.swift; sourceTree = SOURCE_ROOT; };
 		F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailView.swift; path = DriveBai/Sources/Views/KeyHandover/KeyHandoverDetailView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000A1 /* VehicleReturnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnModels.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000A2 /* VehicleReturnAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnAPIModels.swift; path = DriveBai/Sources/Models/VehicleReturn/VehicleReturnAPIModels.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000A3 /* VehicleReturnCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VehicleReturnCard.swift; path = DriveBai/Sources/Views/Today/Components/VehicleReturnCard.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B1 /* PurchaseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseModels.swift; path = DriveBai/Sources/Models/Purchase/PurchaseModels.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B2 /* BillOfSaleModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BillOfSaleModels.swift; path = DriveBai/Sources/Models/Purchase/BillOfSaleModels.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B3 /* PurchaseRejectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseRejectionModels.swift; path = DriveBai/Sources/Models/Purchase/PurchaseRejectionModels.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B4 /* PurchaseAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseAPIModels.swift; path = DriveBai/Sources/API/PurchaseAPIModels.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B5 /* APIClient+Purchase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "APIClient+Purchase.swift"; path = "DriveBai/Sources/API/APIClient+Purchase.swift"; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B6 /* PurchaseSignaturePadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseSignaturePadView.swift; path = DriveBai/Sources/Views/Purchase/PurchaseSignaturePadView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B7 /* BuyRequestSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BuyRequestSheet.swift; path = DriveBai/Sources/Views/Purchase/BuyRequestSheet.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B8 /* BillOfSaleFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BillOfSaleFlowView.swift; path = DriveBai/Sources/Views/Purchase/BillOfSaleFlowView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000B9 /* ChoosePaymentOptionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChoosePaymentOptionView.swift; path = DriveBai/Sources/Views/Purchase/ChoosePaymentOptionView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000BA /* InspectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = InspectionView.swift; path = DriveBai/Sources/Views/Purchase/InspectionView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000BB /* RejectionEvidenceFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RejectionEvidenceFormView.swift; path = DriveBai/Sources/Views/Purchase/RejectionEvidenceFormView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000BC /* ScheduleHandoverSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ScheduleHandoverSheet.swift; path = DriveBai/Sources/Views/Purchase/ScheduleHandoverSheet.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000BD /* PurchaseRequestCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseRequestCardView.swift; path = DriveBai/Sources/Views/Chat/Components/PurchaseRequestCardView.swift; sourceTree = SOURCE_ROOT; };
-		C0FECA0002000000000000BE /* PurchaseTodayCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PurchaseTodayCard.swift; path = DriveBai/Sources/Views/Today/Components/PurchaseTodayCard.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -538,6 +550,11 @@
 				E00000010000000000000099 /* CarPhotoComponents.swift */,
 				E000000100000000000000A2 /* RemoteImage.swift */,
 				E00000010000000000000300 /* PriceEditorSheet.swift */,
+				E00000010000000000000602 /* CarStatusPill.swift */,
+				E00000010000000000000604 /* CameraCaptureView.swift */,
+				E00000010000000000000606 /* DocumentSourcePicker.swift */,
+				E00000010000000000000608 /* DocumentPreviewSheet.swift */,
+				E0000001000000000000060A /* GuidedPhotoCaptureView.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -588,6 +605,7 @@
 			isa = PBXGroup;
 			children = (
 				E0000001000000000000007D /* CarModels.swift */,
+				E00000010000000000000600 /* CarBusinessState.swift */,
 			);
 			path = Cars;
 			sourceTree = "<group>";
@@ -873,6 +891,12 @@
 				E00000010000000000000098 /* CarAPIModels.swift in Sources */,
 				E0000001000000000000009A /* CarPhotoComponents.swift in Sources */,
 				E00000010000000000000301 /* PriceEditorSheet.swift in Sources */,
+				E00000010000000000000601 /* CarBusinessState.swift in Sources */,
+				E00000010000000000000603 /* CarStatusPill.swift in Sources */,
+				E00000010000000000000605 /* CameraCaptureView.swift in Sources */,
+				E00000010000000000000607 /* DocumentSourcePicker.swift in Sources */,
+				E00000010000000000000609 /* DocumentPreviewSheet.swift in Sources */,
+				E0000001000000000000060B /* GuidedPhotoCaptureView.swift in Sources */,
 				E0000001000000000000009C /* DeepLinkRouter.swift in Sources */,
 				E0000001000000000000009E /* DiscoverViewModel.swift in Sources */,
 				E000000100000000000000A1 /* LikedListingsStore.swift in Sources */,
@@ -974,7 +998,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
@@ -1005,7 +1029,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
@@ -1157,7 +1181,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DriveBai/DriveBai.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
@@ -1192,7 +1216,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DriveBai/DriveBai.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 18;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;

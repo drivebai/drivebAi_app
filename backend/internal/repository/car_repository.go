@@ -57,16 +57,19 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 	return err
 }
 
-// ExistsByVIN reports whether any car already has the given VIN
+// ExistsByVIN reports whether any NON-ARCHIVED car already has the given VIN
 // (case-insensitive). Empty VINs always return false — the partial unique
-// index `cars_vin_unique_lower_idx` excludes NULL/'' as well, so the two
-// agree. Callers should normalize the VIN (trim + uppercase) before invoking
+// index `cars_vin_unique_lower_idx` excludes NULL/” and archived rows as
+// well (migration 000032), so the predicates agree in all three places:
+// this query, ExistsByVINExcludingID, and the index. Archiving a listing
+// deliberately frees its VIN so the physical car can be re-listed (D1).
+// Callers should normalize the VIN (trim + uppercase) before invoking
 // to stay aligned with what's written on insert.
 func (r *CarRepository) ExistsByVIN(ctx context.Context, vin string) (bool, error) {
 	if strings.TrimSpace(vin) == "" {
 		return false, nil
 	}
-	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '')`
+	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND archived_at IS NULL)`
 	var exists bool
 	if err := r.db.Pool.QueryRow(ctx, query, vin).Scan(&exists); err != nil {
 		return false, err
@@ -75,14 +78,14 @@ func (r *CarRepository) ExistsByVIN(ctx context.Context, vin string) (bool, erro
 }
 
 // ExistsByVINExcludingID is the UpdateCar-side companion to ExistsByVIN: it
-// checks for any OTHER car (id != excludeID) holding this VIN. Lets an owner
-// PATCH unrelated fields on their own listing without false-positive 409s when
-// the VIN field is round-tripped unchanged.
+// checks for any OTHER non-archived car (id != excludeID) holding this VIN.
+// Lets an owner PATCH unrelated fields on their own listing without
+// false-positive 409s when the VIN field is round-tripped unchanged.
 func (r *CarRepository) ExistsByVINExcludingID(ctx context.Context, vin string, excludeID uuid.UUID) (bool, error) {
 	if strings.TrimSpace(vin) == "" {
 		return false, nil
 	}
-	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND id <> $2)`
+	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND archived_at IS NULL AND id <> $2)`
 	var exists bool
 	if err := r.db.Pool.QueryRow(ctx, query, vin, excludeID).Scan(&exists); err != nil {
 		return false, err
@@ -97,7 +100,9 @@ func (r *CarRepository) SetApproved(ctx context.Context, id uuid.UUID, approved 
 	return err
 }
 
-// GetByID retrieves a car by its ID
+// GetByID retrieves a car by its ID. Archived cars ARE returned (with
+// ArchivedAt set) — internal flows like lease/purchase history still need
+// to resolve them; user-facing handlers decide how to treat archived rows.
 func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car, error) {
 	query := `
 		SELECT
@@ -107,7 +112,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
 			status, is_paused, rented_weeks, total_earned,
-			created_at, updated_at
+			archived_at, created_at, updated_at
 		FROM cars
 		WHERE id = $1
 	`
@@ -120,7 +125,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 		&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
 		&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
-		&car.CreatedAt, &car.UpdatedAt,
+		&car.ArchivedAt, &car.CreatedAt, &car.UpdatedAt,
 	)
 
 	if err != nil {
@@ -141,12 +146,15 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 // EffectiveWeeklyPriceCents mirrors LeaseRequest.TotalAmountCents: it
 // coalesces offered_weekly_price with weekly_price and converts dollars → cents.
 type OwnerCarActiveRental struct {
-	LeaseRequestID           uuid.UUID
-	DriverID                 uuid.UUID
-	DriverName               string
-	Weeks                    int
+	LeaseRequestID            uuid.UUID
+	DriverID                  uuid.UUID
+	DriverName                string
+	Weeks                     int
 	EffectiveWeeklyPriceCents int64
-	PickupConfirmedAt        time.Time
+	PickupConfirmedAt         time.Time
+	// ChatID is the driver↔owner chat for this car, when one exists.
+	// Deterministic single row via uq_chats_car_driver_owner.
+	ChatID *uuid.UUID
 }
 
 // GetByOwnerIDWithActiveRental is a cover over GetByOwnerID that additionally
@@ -159,28 +167,8 @@ type OwnerCarActiveRental struct {
 // derived Rented/Reserved status chip on the client. Discovery + admin
 // endpoints do NOT use this path; they take the plain GetByOwnerID above.
 func (r *CarRepository) GetByOwnerIDWithActiveRental(ctx context.Context, ownerID uuid.UUID) ([]*models.Car, []*OwnerCarActiveRental, error) {
-	query := `
-		SELECT
-			c.id, c.owner_id, c.title, c.description,
-			c.vin, c.make, c.model, c.year, c.body_type, c.fuel_type, c.mileage,
-			c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
-			c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
-			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
-			c.status, c.is_paused, c.rented_weeks, c.total_earned,
-			c.created_at, c.updated_at,
-			lr.id, lr.driver_id, lr.weeks,
-			COALESCE(lr.offered_weekly_price, lr.weekly_price),
-			lr.pickup_confirmed_at,
-			u.first_name, u.last_name
-		FROM cars c
-		LEFT JOIN lease_requests lr
-		       ON lr.id = c.reserved_by_lease_request_id
-		      AND lr.status = 'paid'
-		      AND lr.pickup_confirmed_at IS NOT NULL
-		      AND lr.vehicle_returned_at IS NULL
-		LEFT JOIN users u
-		       ON u.id = lr.driver_id
-		WHERE c.owner_id = $1
+	query := ownerCarWithActiveRentalSelect + `
+		WHERE c.owner_id = $1 AND c.archived_at IS NULL
 		ORDER BY c.created_at DESC
 	`
 
@@ -193,65 +181,132 @@ func (r *CarRepository) GetByOwnerIDWithActiveRental(ctx context.Context, ownerI
 	var cars []*models.Car
 	var rentals []*OwnerCarActiveRental
 	for rows.Next() {
-		var car models.Car
-		var (
-			leaseID           *uuid.UUID
-			driverID          *uuid.UUID
-			weeks             *int
-			weeklyPriceDollars *float64
-			pickupConfirmedAt *time.Time
-			firstName         *string
-			lastName          *string
-		)
-		if err := rows.Scan(
-			&car.ID, &car.OwnerID, &car.Title, &car.Description,
-			&car.VIN, &car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
-			&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
-			&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
-			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
-			&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
-			&car.CreatedAt, &car.UpdatedAt,
-			&leaseID, &driverID, &weeks,
-			&weeklyPriceDollars,
-			&pickupConfirmedAt,
-			&firstName, &lastName,
-		); err != nil {
+		car, rental, err := scanCarWithActiveRental(rows)
+		if err != nil {
 			return nil, nil, err
 		}
-		cars = append(cars, &car)
-
-		// A NULL lease id means the LEFT JOIN found no active rental for
-		// this car — all other rental fields will also be NULL.
-		if leaseID == nil || weeks == nil || weeklyPriceDollars == nil || pickupConfirmedAt == nil || driverID == nil {
-			rentals = append(rentals, nil)
-			continue
-		}
-
-		name := ""
-		if firstName != nil {
-			name = *firstName
-		}
-		if lastName != nil && *lastName != "" {
-			if name != "" {
-				name += " "
-			}
-			name += *lastName
-		}
-
-		rentals = append(rentals, &OwnerCarActiveRental{
-			LeaseRequestID:           *leaseID,
-			DriverID:                 *driverID,
-			DriverName:               name,
-			Weeks:                    *weeks,
-			EffectiveWeeklyPriceCents: int64(*weeklyPriceDollars * 100),
-			PickupConfirmedAt:        *pickupConfirmedAt,
-		})
+		cars = append(cars, car)
+		rentals = append(rentals, rental)
 	}
 
 	return cars, rentals, nil
 }
 
-// GetByOwnerID retrieves all cars for a specific owner
+// ownerCarWithActiveRentalSelect is the shared SELECT for the owner-facing
+// car(+active rental) queries: the My Cars list (GetByOwnerIDWithActiveRental)
+// and the single-car detail (GetByIDWithActiveRental). Keeping ONE join
+// definition is what guarantees list/detail status parity (QA pt-3 / D9).
+//
+// The chats LEFT JOIN resolves the driver↔owner conversation for the active
+// rental; uq_chats_car_driver_owner makes it deterministic (0 or 1 row).
+const ownerCarWithActiveRentalSelect = `
+	SELECT
+		c.id, c.owner_id, c.title, c.description,
+		c.vin, c.make, c.model, c.year, c.body_type, c.fuel_type, c.mileage,
+		c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
+		c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
+		c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
+		c.status, c.is_paused, c.rented_weeks, c.total_earned,
+		c.archived_at, c.created_at, c.updated_at,
+		lr.id, lr.driver_id, lr.weeks,
+		COALESCE(lr.offered_weekly_price, lr.weekly_price),
+		lr.pickup_confirmed_at,
+		u.first_name, u.last_name,
+		ch.id
+	FROM cars c
+	LEFT JOIN lease_requests lr
+	       ON lr.id = c.reserved_by_lease_request_id
+	      AND lr.status = 'paid'
+	      AND lr.pickup_confirmed_at IS NOT NULL
+	      AND lr.vehicle_returned_at IS NULL
+	LEFT JOIN users u
+	       ON u.id = lr.driver_id
+	LEFT JOIN chats ch
+	       ON ch.car_id = c.id
+	      AND ch.driver_id = lr.driver_id
+	      AND ch.owner_id = c.owner_id
+`
+
+// scanCarWithActiveRental scans one row of ownerCarWithActiveRentalSelect.
+// The rental pointer is nil when the LEFT JOIN found no active lease.
+func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, error) {
+	var car models.Car
+	var (
+		leaseID            *uuid.UUID
+		driverID           *uuid.UUID
+		weeks              *int
+		weeklyPriceDollars *float64
+		pickupConfirmedAt  *time.Time
+		firstName          *string
+		lastName           *string
+		chatID             *uuid.UUID
+	)
+	if err := row.Scan(
+		&car.ID, &car.OwnerID, &car.Title, &car.Description,
+		&car.VIN, &car.Make, &car.Model, &car.Year, &car.BodyType, &car.FuelType, &car.Mileage,
+		&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
+		&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
+		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
+		&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
+		&car.ArchivedAt, &car.CreatedAt, &car.UpdatedAt,
+		&leaseID, &driverID, &weeks,
+		&weeklyPriceDollars,
+		&pickupConfirmedAt,
+		&firstName, &lastName,
+		&chatID,
+	); err != nil {
+		return nil, nil, err
+	}
+
+	// A NULL lease id means the LEFT JOIN found no active rental for
+	// this car — all other rental fields will also be NULL.
+	if leaseID == nil || weeks == nil || weeklyPriceDollars == nil || pickupConfirmedAt == nil || driverID == nil {
+		return &car, nil, nil
+	}
+
+	name := ""
+	if firstName != nil {
+		name = *firstName
+	}
+	if lastName != nil && *lastName != "" {
+		if name != "" {
+			name += " "
+		}
+		name += *lastName
+	}
+
+	return &car, &OwnerCarActiveRental{
+		LeaseRequestID:            *leaseID,
+		DriverID:                  *driverID,
+		DriverName:                name,
+		Weeks:                     *weeks,
+		EffectiveWeeklyPriceCents: int64(*weeklyPriceDollars * 100),
+		PickupConfirmedAt:         *pickupConfirmedAt,
+		ChatID:                    chatID,
+	}, nil
+}
+
+// GetByIDWithActiveRental is the single-car companion to
+// GetByOwnerIDWithActiveRental — the exact same join/derivation scoped to
+// one car, so GET /cars/{id} shows the same rented state as the My Cars
+// list (QA pt-3: detail/list status parity). Returns (nil, nil, nil) when
+// the car does not exist. Archived cars ARE returned (ArchivedAt set) so
+// the handler can decide (GetCar 404s them).
+func (r *CarRepository) GetByIDWithActiveRental(ctx context.Context, carID uuid.UUID) (*models.Car, *OwnerCarActiveRental, error) {
+	query := ownerCarWithActiveRentalSelect + `
+		WHERE c.id = $1
+	`
+	car, rental, err := scanCarWithActiveRental(r.db.Pool.QueryRow(ctx, query, carID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	return car, rental, nil
+}
+
+// GetByOwnerID retrieves all non-archived cars for a specific owner
 func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]*models.Car, error) {
 	query := `
 		SELECT
@@ -263,7 +318,7 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 			status, is_paused, rented_weeks, total_earned,
 			created_at, updated_at
 		FROM cars
-		WHERE owner_id = $1
+		WHERE owner_id = $1 AND archived_at IS NULL
 		ORDER BY created_at DESC
 	`
 
@@ -331,7 +386,12 @@ func (r *CarRepository) Update(ctx context.Context, car *models.Car) error {
 	return nil
 }
 
-// Delete deletes a car listing
+// Delete deletes a car listing.
+//
+// DEPRECATED for user-facing flows (QA pt-9 / D3): hard DELETE either
+// CASCADE-destroys leases/chats/payments or 500s on purchase/accident
+// RESTRICT FKs. DeleteCar now soft-archives via ArchiveCar; this method is
+// retained only for tooling/tests.
 func (r *CarRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	query := `DELETE FROM cars WHERE id = $1`
 	result, err := r.db.Pool.Exec(ctx, query, id)
@@ -344,6 +404,93 @@ func (r *CarRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 
 	return nil
+}
+
+// ArchiveCar soft-archives a listing (D3): the row and its files survive
+// so historical chats/leases/payments keep resolving, but the car drops
+// out of Discover, the owner's list, and VIN uniqueness. Idempotent —
+// archiving an already-archived car is a no-op success.
+func (r *CarRepository) ArchiveCar(ctx context.Context, id uuid.UUID) error {
+	result, err := r.db.Pool.Exec(ctx,
+		`UPDATE cars SET archived_at = COALESCE(archived_at, NOW()) WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("car not found")
+	}
+	return nil
+}
+
+// Obligation kinds returned by GetActiveObligations. Also serialized into
+// the 409 CAR_HAS_ACTIVE_OBLIGATIONS details so clients can explain WHY the
+// delete is blocked.
+const (
+	ObligationActiveLease  = "active_lease"
+	ObligationOpenReturn   = "open_vehicle_return"
+	ObligationOpenHandover = "open_key_handover"
+	ObligationLivePurchase = "live_purchase_request"
+)
+
+// GetActiveObligations reports which live commitments currently block
+// archiving this car (D3):
+//   - a lease that is reserved or picked-up and not yet returned
+//     (accepted / payment_pending / paid without vehicle_returned_at);
+//   - an open vehicle return (initiated / owner-confirmed / disputed);
+//   - an open key handover (pending / owner_confirmed);
+//   - a purchase request in any non-terminal state (same set as the
+//     idx_purchase_requests_active_unique partial index).
+//
+// Returns an empty slice when the car is free of obligations.
+func (r *CarRepository) GetActiveObligations(ctx context.Context, carID uuid.UUID) ([]string, error) {
+	const query = `
+		SELECT
+			EXISTS (
+				SELECT 1 FROM lease_requests lr
+				WHERE lr.listing_id = $1
+				  AND lr.status IN ('accepted', 'payment_pending', 'paid')
+				  AND lr.vehicle_returned_at IS NULL
+			),
+			EXISTS (
+				SELECT 1 FROM vehicle_returns vr
+				WHERE vr.car_id = $1
+				  AND vr.status IN ('driver_initiated', 'owner_confirmed', 'disputed')
+			),
+			EXISTS (
+				SELECT 1 FROM key_handovers kh
+				WHERE kh.car_id = $1
+				  AND kh.status IN ('pending', 'owner_confirmed')
+			),
+			EXISTS (
+				SELECT 1 FROM purchase_requests pr
+				WHERE pr.car_id = $1
+				  AND pr.status IN (
+					'requested','accepted','bos_pending_seller','bos_pending_buyer','bos_signed',
+					'payment_authorized','handover_scheduled','awaiting_inspection',
+					'inspection_accepted','inspection_rejected'
+				  )
+			)
+	`
+
+	var hasLease, hasReturn, hasHandover, hasPurchase bool
+	if err := r.db.Pool.QueryRow(ctx, query, carID).Scan(&hasLease, &hasReturn, &hasHandover, &hasPurchase); err != nil {
+		return nil, err
+	}
+
+	obligations := []string{}
+	if hasLease {
+		obligations = append(obligations, ObligationActiveLease)
+	}
+	if hasReturn {
+		obligations = append(obligations, ObligationOpenReturn)
+	}
+	if hasHandover {
+		obligations = append(obligations, ObligationOpenHandover)
+	}
+	if hasPurchase {
+		obligations = append(obligations, ObligationLivePurchase)
+	}
+	return obligations, nil
 }
 
 // UpdateStatus updates only the status and is_paused fields
@@ -380,6 +527,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 		  AND c.reserved_by_lease_request_id IS NULL
 		  AND c.reserved_by_purchase_request_id IS NULL
 		  AND c.status <> 'sold'
+		  AND c.archived_at IS NULL
 	`
 
 	args := []interface{}{}

@@ -61,6 +61,11 @@ class CreateListingState: ObservableObject {
     @Published var vinDecodeError: String?
     @Published var vinDecodeWarning: String?
     @Published var vinDecodeSucceeded: Bool = false
+    /// Advisory duplicate-VIN signal from the decode endpoint (QA pt 12):
+    /// true only when the backend explicitly said `available == false`.
+    /// A nil/absent `available` is unknown-and-allowed — the create-time
+    /// 409 remains the authoritative backstop for races.
+    @Published var vinUnavailable: Bool = false
 
     // Car Details
     @Published var bodyType: CarBodyType = .sedan
@@ -74,8 +79,9 @@ class CreateListingState: ObservableObject {
     @Published var salePrice: Double = 25000
 
     // Requirements
+    // (Security deposit removed in the QA round — QA pt 7. The backend
+    // ignores client-sent deposits and always serves 0.)
     @Published var minYearsLicensed: Int = 2
-    @Published var depositAmount: Double = 500
     @Published var insuranceCoverage: InsuranceCoverage = .fullCoverage
 
     // Location
@@ -114,10 +120,15 @@ class CreateListingState: ObservableObject {
     // a Replace overwrites the entry, a Remove deletes it.
     @Published var pendingDocuments: [CarDocumentType: PendingCarDocument] = [:]
 
-    // Non-blocking warning shown after the listing is created if any of
-    // the document uploads failed. Photo of the car was created OK; we
-    // just couldn't attach the docs.
-    @Published var docUploadWarning: String?
+    // Set once the car row exists on the backend. Lets the retry path
+    // re-attempt document uploads without re-creating the car, and guards
+    // submit against accidental double-creation.
+    @Published var createdCarId: UUID?
+
+    // Document types whose post-create upload failed. Non-empty blocks the
+    // wizard from silently dismissing (QA pt 10): the user must either
+    // Retry the uploads or explicitly choose "Finish anyway".
+    @Published var failedDocUploads: [CarDocumentType] = []
 
     // Navigation
     @Published var currentStep: CreateListingStep = .basicInfo
@@ -159,11 +170,51 @@ class CreateListingState: ObservableObject {
     }
 
     var isRequirementsValid: Bool {
-        minYearsLicensed >= 0 && depositAmount >= 0
+        minYearsLicensed >= 0
     }
 
     var hasAtLeastOnePhoto: Bool {
         photoSlots.contains { $0.hasImage }
+    }
+
+    // MARK: - Required documents (QA pt 10)
+
+    /// Documents that must be staged before the wizard can continue past
+    /// the Documents step: registration + inspection + insurance always,
+    /// plus title when the car is listed for sale. Mirrors the server's
+    /// admin-approval rules (MISSING_REQUIRED_DOCUMENTS).
+    var requiredDocumentTypes: [CarDocumentType] {
+        var types: [CarDocumentType] = [.registration, .inspection, .insurance]
+        if isForSale { types.append(.title) }
+        return types
+    }
+
+    var missingRequiredDocuments: [CarDocumentType] {
+        requiredDocumentTypes.filter { pendingDocuments[$0] == nil }
+    }
+
+    var hasAllRequiredDocuments: Bool {
+        missingRequiredDocuments.isEmpty
+    }
+
+    // MARK: - Dirty tracking (QA pt 5)
+
+    /// True as soon as the user has meaningfully diverged from a fresh
+    /// wizard. Drives `interactiveDismissDisabled` (no accidental
+    /// swipe-to-lose-everything) and the "Discard this listing?"
+    /// confirmation on Cancel.
+    var isDirty: Bool {
+        if currentStep != .basicInfo { return true }
+        if !vin.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        if !make.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        if !model.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        if year != Calendar.current.component(.year, from: Date()) { return true }
+        if bodyType != .sedan || fuelType != .gas || mileage != 0 { return true }
+        if !isForRent || weeklyRentPrice != 350 || isForSale || salePrice != 25000 { return true }
+        if minYearsLicensed != 2 || insuranceCoverage != .fullCoverage { return true }
+        if hasSelectedLocation || !description.isEmpty { return true }
+        if hasAtLeastOnePhoto || !pendingDocuments.isEmpty { return true }
+        return false
     }
 
     var displayTitle: String {
@@ -225,6 +276,7 @@ class CreateListingState: ObservableObject {
         isDecodingVIN = true
         vinDecodeError = nil
         vinDecodeWarning = nil
+        vinUnavailable = false
         defer { isDecodingVIN = false }
 
         do {
@@ -246,6 +298,10 @@ class CreateListingState: ObservableObject {
             }
             vinDecodeSucceeded = true
             vinDecodeWarning = resp.warning?.isEmpty == false ? resp.warning : nil
+            // Early availability check (QA pt 12). Only an explicit `false`
+            // blocks the step — the backend omits the field when it couldn't
+            // check, and the create-time 409 stays the race backstop.
+            vinUnavailable = resp.available == false
         } catch let APIError.serverError(_, message) {
             vinDecodeError = message
             vinDecodeSucceeded = false
@@ -270,7 +326,10 @@ class CreateListingState: ObservableObject {
 
         let requirements = CarRequirements(
             minYearsLicensedDriving: minYearsLicensed,
-            depositAmount: Money(amount: depositAmount),
+            // Deposits are retired (QA pt 7) — the backend ignores the value
+            // and always stores/serves 0; the create request no longer
+            // encodes it at all.
+            depositAmount: Money(amount: 0),
             insuranceCoverage: insuranceCoverage
         )
 
@@ -312,6 +371,19 @@ class CreateListingState: ObservableObject {
     }
 }
 
+// MARK: - Wizard Focus Targets
+
+/// Every focusable text input across the wizard steps — one shared focus
+/// target so the keyboard "Done" toolbar and programmatic dismissal (e.g.
+/// when VIN Search is tapped) work from any step (QA pt 5).
+enum ListingWizardField: Hashable {
+    case vin
+    case make
+    case model
+    case mileage
+    case description
+}
+
 // MARK: - Create Listing Flow View
 
 struct CreateListingFlowView: View {
@@ -319,6 +391,9 @@ struct CreateListingFlowView: View {
     @StateObject private var state = CreateListingState()
     @StateObject private var store = OwnerCarsStore.shared
     @StateObject private var authStore = AuthStore.shared
+    @FocusState private var focusedField: ListingWizardField?
+    @State private var showDiscardDialog = false
+    @State private var showDocUploadFailure = false
 
     private var stepTransition: AnyTransition {
         .asymmetric(
@@ -333,10 +408,10 @@ struct CreateListingFlowView: View {
                 Group {
                     switch state.currentStep {
                     case .basicInfo:
-                        CreateListingBasicInfoStep()
+                        CreateListingBasicInfoStep(focus: $focusedField)
                             .transition(stepTransition)
                     case .details:
-                        CreateListingDetailsStep()
+                        CreateListingDetailsStep(focus: $focusedField)
                             .transition(stepTransition)
                     case .pricing:
                         CreateListingPricingStep()
@@ -361,30 +436,62 @@ struct CreateListingFlowView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        // Anything typed? Confirm before throwing it away
+                        // (QA pt 5). A pristine wizard just closes.
+                        if state.isDirty {
+                            showDiscardDialog = true
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .disabled(state.isLoading)
                 }
+                // Number pads have no Return key — give every text input an
+                // explicit way to drop the keyboard (QA pt 5).
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .fontWeight(.semibold)
+                }
+            }
+            .confirmationDialog(
+                "Discard this listing?",
+                isPresented: $showDiscardDialog,
+                titleVisibility: .visible
+            ) {
+                Button("Discard", role: .destructive) { dismiss() }
+                Button("Keep Editing", role: .cancel) {}
+            } message: {
+                Text("Your progress won't be saved.")
             }
         }
         .environmentObject(state)
-        .interactiveDismissDisabled(state.isLoading)
+        // Swipe-to-dismiss is blocked while submitting AND once the user
+        // has entered anything — dismissal then goes through the explicit
+        // Cancel → Discard confirmation instead (QA pt 5).
+        .interactiveDismissDisabled(state.isLoading || state.isDirty)
         .alert(
-            "Listing created",
-            isPresented: Binding(
-                get: { state.docUploadWarning != nil },
-                set: { newValue in
-                    if !newValue {
-                        state.docUploadWarning = nil
-                        dismiss()
-                    }
-                }
-            ),
+            "Some documents didn't upload",
+            isPresented: $showDocUploadFailure,
             actions: {
-                Button("OK", role: .cancel) {}
+                Button("Retry") {
+                    Task { await retryDocumentUploadsAsync() }
+                }
+                Button("Finish anyway", role: .cancel) {
+                    state.failedDocUploads = []
+                    dismiss()
+                }
             },
             message: {
-                Text(state.docUploadWarning ?? "")
+                Text(docUploadFailureMessage)
             }
         )
+    }
+
+    private var docUploadFailureMessage: String {
+        let names = state.failedDocUploads.map { $0.displayText }.joined(separator: ", ")
+        return "Couldn't attach: \(names). Your listing can't be approved until documents are added from car details."
     }
 
     private func submitListing() {
@@ -394,6 +501,21 @@ struct CreateListingFlowView: View {
     }
 
     private func submitListingAsync() async {
+        // Re-entrancy guard FIRST: two quick taps on "Create Listing" spawn
+        // two concurrent Tasks, and the createdCarId check below only helps
+        // after the first POST /cars returns — both Tasks would pass it and
+        // create two cars. isLoading is flipped synchronously on the
+        // MainActor before any await, so the second Task bails here.
+        guard !state.isLoading else { return }
+
+        // Retry path: the car row already exists on the backend — only
+        // re-attempt the failed document uploads instead of creating a
+        // duplicate listing.
+        if state.createdCarId != nil {
+            await retryDocumentUploadsAsync()
+            return
+        }
+
         state.isLoading = true
         state.clearError()
 
@@ -427,6 +549,7 @@ struct CreateListingFlowView: View {
         }
 
         print("[CreateListingFlow] Car created on backend with ID: \(createdCar.id)")
+        state.createdCarId = createdCar.id
 
         // Upload photos for slots that have local image data
         let photosToUpload = state.photoSlots.filter { $0.localImageData != nil }
@@ -448,10 +571,10 @@ struct CreateListingFlowView: View {
             }
         }
 
-        // Upload any documents the user staged in the Documents step. Each
-        // failure is non-fatal — the car is already created; we collect
-        // them and surface a single warning toast at the end so the user
-        // can retry uploads from the car detail screen.
+        // Upload the documents staged in the Documents step. Required docs
+        // gate that step, so failures here are BLOCKING (QA pt 10): the
+        // user gets a Retry / "Finish anyway" alert instead of a silent
+        // warning — an unapprovable listing must never be created quietly.
         let docsToUpload = Array(state.pendingDocuments.values)
         if !docsToUpload.isEmpty {
             print("[CreateListingFlow] Found \(docsToUpload.count) documents to upload")
@@ -472,10 +595,7 @@ struct CreateListingFlowView: View {
                     failedDocs.append(doc.type)
                 }
             }
-            if !failedDocs.isEmpty {
-                let names = failedDocs.map { $0.displayText }.joined(separator: ", ")
-                state.docUploadWarning = "Couldn't attach: \(names). You can add them later from your car detail."
-            }
+            state.failedDocUploads = failedDocs
         }
 
         // Refresh the car from backend to get the updated status and photo URLs
@@ -505,12 +625,48 @@ struct CreateListingFlowView: View {
         print("[CreateListingFlow] Listing submission complete!")
         state.isLoading = false
 
-        // If any docs failed to upload, hold the flow open with a warning
-        // so the user knows the car was created but the docs didn't stick.
-        // Tapping "OK" dismisses; the warning is non-blocking — the listing
-        // is already on the server.
-        if state.docUploadWarning == nil {
+        // If any docs failed to upload, hold the flow open with a blocking
+        // Retry / "Finish anyway" alert (QA pt 10) — the car exists on the
+        // server but can't be approved until its documents are attached.
+        if state.failedDocUploads.isEmpty {
             dismiss()
+        } else {
+            showDocUploadFailure = true
+        }
+    }
+
+    /// Re-attempts just the failed document uploads against the
+    /// already-created car (QA pt 10 Retry path). Dismisses on full
+    /// success, re-raises the alert while anything is still failing.
+    private func retryDocumentUploadsAsync() async {
+        guard let carId = state.createdCarId else { return }
+        state.isLoading = true
+
+        var stillFailed: [CarDocumentType] = []
+        for type in state.failedDocUploads {
+            guard let doc = state.pendingDocuments[type] else { continue }
+            print("[CreateListingFlow] Retrying document upload: \(doc.type.rawValue)")
+            let response = await store.uploadDocument(
+                carId: carId,
+                documentType: doc.type,
+                data: doc.data,
+                filename: doc.filename,
+                mimeType: doc.mimeType
+            )
+            if response == nil {
+                print("[CreateListingFlow] Retry FAILED for document: \(doc.type.rawValue): \(store.error ?? "nil")")
+                stillFailed.append(type)
+            }
+        }
+
+        state.failedDocUploads = stillFailed
+        state.isLoading = false
+
+        if stillFailed.isEmpty {
+            await store.refreshCar(id: carId)
+            dismiss()
+        } else {
+            showDocUploadFailure = true
         }
     }
 }
@@ -589,6 +745,9 @@ struct CreateListingStepContainer<Content: View>: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 24)
             }
+            // Dragging the step content pulls the keyboard down with the
+            // scroll gesture (QA pt 5).
+            .scrollDismissesKeyboard(.interactively)
 
             // Bottom buttons
             VStack(spacing: 12) {
@@ -621,7 +780,7 @@ struct CreateListingStepContainer<Content: View>: View {
 
 struct CreateListingBasicInfoStep: View {
     @EnvironmentObject private var state: CreateListingState
-    @Environment(\.dismiss) private var dismiss
+    var focus: FocusState<ListingWizardField?>.Binding
 
     var body: some View {
         CreateListingStepContainer(
@@ -629,16 +788,20 @@ struct CreateListingBasicInfoStep: View {
             subtitle: "Enter the basic information about your vehicle",
             currentStep: state.currentStepIndex,
             totalSteps: state.totalSteps,
-            canContinue: state.isBasicInfoValid,
-            showBack: true,
-            onBack: { dismiss() },
+            // A VIN the backend flagged as already listed blocks Continue
+            // until the user changes it (QA pt 12).
+            canContinue: state.isBasicInfoValid && !state.vinUnavailable,
+            // No Back on step 1: leaving the wizard goes through Cancel and
+            // its Discard confirmation — a bare dismiss here would bypass
+            // the data-loss guard (QA pt 5).
+            showBack: false,
             onContinue: { state.goToNextStep() }
         ) {
             VStack(spacing: 20) {
                 // VIN + Search — optional shortcut. If lookup succeeds we
                 // autofill Make / Model / Year (and later steps pre-fill
                 // Body / Fuel). User can still edit any of them afterwards.
-                VINAutofillSection()
+                VINAutofillSection(focus: focus)
 
                 // VIN-conflict surface: if addCar() bubbled a 409 about a
                 // duplicate VIN, show it right under the VIN row so the
@@ -662,6 +825,7 @@ struct CreateListingBasicInfoStep: View {
 
                     TextField("e.g. Toyota, Honda, BMW", text: $state.make)
                         .textFieldStyle(.roundedBorder)
+                        .focused(focus, equals: .make)
                 }
 
                 // Model
@@ -672,6 +836,7 @@ struct CreateListingBasicInfoStep: View {
 
                     TextField("e.g. Camry, Accord, X5", text: $state.model)
                         .textFieldStyle(.roundedBorder)
+                        .focused(focus, equals: .model)
                 }
 
                 // Year
@@ -701,6 +866,7 @@ struct CreateListingBasicInfoStep: View {
 /// everything from scratch.
 private struct VINAutofillSection: View {
     @EnvironmentObject private var state: CreateListingState
+    var focus: FocusState<ListingWizardField?>.Binding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -712,7 +878,7 @@ private struct VINAutofillSection: View {
                     .font(.caption)
                     .foregroundColor(.secondary.opacity(0.7))
                 Spacer()
-                if state.vinDecodeSucceeded && state.vinDecodeError == nil {
+                if state.vinDecodeSucceeded && state.vinDecodeError == nil && !state.vinUnavailable {
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
                         Text("Autofilled")
@@ -727,12 +893,16 @@ private struct VINAutofillSection: View {
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled(true)
+                    .focused(focus, equals: .vin)
                     .onChange(of: state.vin) { _, _ in
                         // Any keystroke invalidates a prior decode result so
                         // the "Autofilled" pill doesn't lie about a stale VIN.
                         state.vinDecodeSucceeded = false
                         state.vinDecodeError = nil
                         state.vinDecodeWarning = nil
+                        // The availability verdict belongs to the decoded
+                        // VIN — editing the field resets it (QA pt 12).
+                        state.vinUnavailable = false
                         // Clear a stale "VIN already in use" conflict so the
                         // inline banner disappears as soon as the user starts
                         // typing a different value.
@@ -742,6 +912,9 @@ private struct VINAutofillSection: View {
                     }
 
                 Button {
+                    // Drop the keyboard so the decode results (autofilled
+                    // fields, warnings) are visible immediately (QA pt 5).
+                    focus.wrappedValue = nil
                     Task { await state.decodeVIN() }
                 } label: {
                     Group {
@@ -769,6 +942,18 @@ private struct VINAutofillSection: View {
                 Text(error)
                     .font(.caption)
                     .foregroundColor(.red)
+            } else if state.vinUnavailable {
+                // Early duplicate-VIN verdict from the decode endpoint
+                // (QA pt 12) — blocks Continue on this step until the VIN
+                // changes. Advisory only: the create-time 409 remains the
+                // authoritative backstop for races.
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text("This VIN is already listed on DrivaBai.")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
             } else if let warning = state.vinDecodeWarning {
                 Text(warning)
                     .font(.caption)
@@ -786,6 +971,7 @@ private struct VINAutofillSection: View {
 
 struct CreateListingDetailsStep: View {
     @EnvironmentObject private var state: CreateListingState
+    var focus: FocusState<ListingWizardField?>.Binding
 
     var body: some View {
         CreateListingStepContainer(
@@ -824,6 +1010,7 @@ struct CreateListingDetailsStep: View {
                         TextField("Mileage", value: $state.mileage, format: .number)
                             .keyboardType(.numberPad)
                             .textFieldStyle(.roundedBorder)
+                            .focused(focus, equals: .mileage)
 
                         Text("miles")
                             .foregroundColor(.secondary)
@@ -841,6 +1028,7 @@ struct CreateListingDetailsStep: View {
                         .padding(8)
                         .background(Color(.systemGray6))
                         .cornerRadius(8)
+                        .focused(focus, equals: .description)
                 }
             }
         }
@@ -1010,15 +1198,6 @@ struct CreateListingRequirementsStep: View {
                     .cornerRadius(8)
                 }
 
-                // Deposit amount
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Security Deposit")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-
-                    CurrencyTextField(value: $state.depositAmount, placeholder: "0")
-                }
-
                 // Insurance coverage
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Minimum driver insurance")
@@ -1101,6 +1280,9 @@ struct CreateListingRequirementsStep: View {
 struct CreateListingPhotosStep: View {
     @EnvironmentObject private var state: CreateListingState
 
+    // Guided capture flow (QA pt 4)
+    @State private var showGuidedCapture = false
+
     // Multi-select picker state
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var isLoadingBatch: Bool = false
@@ -1130,6 +1312,25 @@ struct CreateListingPhotosStep: View {
             onContinue: { state.goToNextStep() }
         ) {
             VStack(spacing: 16) {
+                // Primary CTA — guided capture walks the owner through all
+                // 8 shots with silhouette overlays (QA pt 4). Batch library
+                // pick and per-slot pickers below remain as fallbacks.
+                Button {
+                    showGuidedCapture = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "camera.viewfinder")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("Guided capture")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.driveBaiPrimary)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                }
+
                 // Multi-select picker button
                 if emptySlotCount > 0 {
                     PhotosPicker(
@@ -1140,7 +1341,7 @@ struct CreateListingPhotosStep: View {
                         HStack(spacing: 8) {
                             if isLoadingBatch {
                                 ProgressView()
-                                    .tint(.white)
+                                    .tint(Color.driveBaiPrimary)
                             } else {
                                 Image(systemName: "photo.on.rectangle.angled")
                                     .font(.system(size: 16, weight: .semibold))
@@ -1150,8 +1351,8 @@ struct CreateListingPhotosStep: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(Color.driveBaiPrimary)
-                        .foregroundColor(.white)
+                        .background(Color.driveBaiPrimary.opacity(0.12))
+                        .foregroundColor(Color.driveBaiPrimary)
                         .cornerRadius(12)
                     }
                     .disabled(isLoadingBatch)
@@ -1201,6 +1402,35 @@ struct CreateListingPhotosStep: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $showGuidedCapture) {
+            GuidedPhotoCaptureView(
+                initialCaptures: currentLocalCaptures,
+                onComplete: { captures in
+                    applyGuidedCaptures(captures)
+                }
+            )
+        }
+    }
+
+    /// Shots already staged locally, keyed by slot — re-entering the guided
+    /// flow shows them as done instead of restarting from zero.
+    private var currentLocalCaptures: [PhotoSlotType: Data] {
+        Dictionary(uniqueKeysWithValues: state.photoSlots.compactMap { slot in
+            slot.localImageData.map { (slot.slotType, $0) }
+        })
+    }
+
+    /// Writes each guided shot into the matching wizard slot. Partial
+    /// completion is fine — untouched slots keep whatever they had.
+    private func applyGuidedCaptures(_ captures: [PhotoSlotType: Data]) {
+        for (slotType, data) in captures {
+            if let index = state.photoSlots.firstIndex(where: { $0.slotType == slotType }) {
+                state.photoSlots[index].localImageData = data
+            }
+        }
+        #if DEBUG
+        print("[CreateListingPhotosStep] Guided capture returned \(captures.count) shots")
+        #endif
     }
 
     private func handleBatchSelection(_ items: [PhotosPickerItem]) {
@@ -1401,49 +1631,80 @@ struct IndependentPhotoSlotPicker: View {
 
 // MARK: - Step 6: Vehicle Documents
 
-/// Optional documents step. Users can stage up to one of each
-/// CarDocumentType (registration, insurance, inspection, permit). All
-/// uploads are deferred until after the car is created in the final
-/// submit step; failures there are non-fatal.
+/// Required-documents step (QA pt 10). Registration, inspection and
+/// insurance must be staged before the wizard can continue — plus title
+/// when the car is listed for sale (mirrors the server's admin-approval
+/// and sale-readiness rules). Permit stays optional. Uploads are deferred
+/// until after the car is created; failures there are blocking (Retry /
+/// Finish anyway).
 struct CreateListingDocumentsStep: View {
     @EnvironmentObject private var state: CreateListingState
+
+    private var subtitle: String {
+        state.isForSale
+            ? "Registration, inspection, insurance and title are required for approval."
+            : "Registration, inspection and insurance are required for approval."
+    }
+
+    /// Required types first (in requirement order), optional ones after —
+    /// the user sees what gates Continue at the top.
+    private var orderedTypes: [CarDocumentType] {
+        let required = state.requiredDocumentTypes
+        return required + CarDocumentType.allCases.filter { !required.contains($0) }
+    }
 
     var body: some View {
         CreateListingStepContainer(
             title: "Vehicle Documents",
-            subtitle: "Optional — speeds up admin review.",
+            subtitle: subtitle,
             currentStep: state.currentStepIndex,
             totalSteps: state.totalSteps,
-            canContinue: true, // Documents are always optional
-            continueTitle: state.pendingDocuments.isEmpty ? "Skip for now" : "Continue",
+            canContinue: state.hasAllRequiredDocuments,
+            continueTitle: "Continue",
             onBack: { state.goToPreviousStep() },
             onContinue: { state.goToNextStep() }
         ) {
             VStack(alignment: .leading, spacing: 16) {
-                ForEach(CarDocumentType.allCases) { type in
-                    PendingDocumentSlotCard(type: type)
+                ForEach(orderedTypes) { type in
+                    PendingDocumentSlotCard(
+                        type: type,
+                        isRequired: state.requiredDocumentTypes.contains(type)
+                    )
                 }
 
-                Text("Documents help admin review faster — you can also add them later from your car detail.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if !state.hasAllRequiredDocuments {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Text("Still needed: \(state.missingRequiredDocuments.map { $0.displayText }.joined(separator: ", ")). Your listing can't be approved without them.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     .padding(.top, 4)
+                } else {
+                    Text("Tap a document to preview it before submitting.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.top, 4)
+                }
             }
         }
     }
 }
 
 /// One row per document type. Shows an Upload control when nothing is
-/// staged, switches to a filename + Replace/Remove menu after the user
-/// picks a file (photo or PDF).
+/// staged (camera / library / files via the shared DocumentSourcePicker —
+/// QA pt 1), switches to a filename + Preview/Replace/Remove menu after
+/// the user picks a file. Tapping a staged row previews the local bytes
+/// with the shared DocumentPreviewSheet (QA pt 11).
 private struct PendingDocumentSlotCard: View {
     let type: CarDocumentType
+    let isRequired: Bool
     @EnvironmentObject private var state: CreateListingState
 
-    @State private var pickerItem: PhotosPickerItem?
     @State private var showingSourceChooser = false
-    @State private var showingPhotoPicker = false
-    @State private var showingFilePicker = false
+    @State private var previewDocument: PendingCarDocument?
 
     private var pending: PendingCarDocument? {
         state.pendingDocuments[type]
@@ -1451,9 +1712,9 @@ private struct PendingDocumentSlotCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: type.iconName)
+            Image(systemName: pending == nil ? type.iconName : "checkmark.circle.fill")
                 .font(.title3)
-                .foregroundColor(Color.driveBaiPrimary)
+                .foregroundColor(pending == nil ? Color.driveBaiPrimary : .green)
                 .frame(width: 32)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1468,6 +1729,10 @@ private struct PendingDocumentSlotCard: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                } else if isRequired {
+                    Text("Required")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.orange)
                 } else {
                     Text("Optional")
                         .font(.caption)
@@ -1493,6 +1758,11 @@ private struct PendingDocumentSlotCard: View {
             } else {
                 Menu {
                     Button {
+                        previewDocument = pending
+                    } label: {
+                        Label("Preview", systemImage: "eye")
+                    }
+                    Button {
                         showingSourceChooser = true
                     } label: {
                         Label("Replace", systemImage: "arrow.triangle.2.circlepath")
@@ -1512,76 +1782,37 @@ private struct PendingDocumentSlotCard: View {
         .padding(12)
         .background(Color(.systemGray6))
         .cornerRadius(10)
-        .confirmationDialog("Upload Document", isPresented: $showingSourceChooser, titleVisibility: .visible) {
-            Button("Photo Library") { showingPhotoPicker = true }
-            Button("Files") { showingFilePicker = true }
-            Button("Cancel", role: .cancel) {}
-        }
-        .photosPicker(isPresented: $showingPhotoPicker, selection: $pickerItem, matching: .images)
-        .onChange(of: pickerItem) { _, newItem in
-            guard let item = newItem else { return }
-            pickerItem = nil
-            Task {
-                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-                let ext: String
-                let mimeType: String
-                if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
-                    ext = "png"
-                    mimeType = "image/png"
-                } else {
-                    ext = "jpg"
-                    mimeType = "image/jpeg"
-                }
-                let filename = "\(type.rawValue).\(ext)"
-                await MainActor.run {
-                    state.pendingDocuments[type] = PendingCarDocument(
-                        type: type,
-                        filename: filename,
-                        fileSize: data.count,
-                        data: data,
-                        mimeType: mimeType
-                    )
-                }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Tap-to-preview for staged picks (QA pt 11); an empty slot
+            // opens the source chooser instead.
+            if let pending = pending {
+                previewDocument = pending
+            } else {
+                showingSourceChooser = true
             }
         }
-        .fileImporter(
-            isPresented: $showingFilePicker,
-            allowedContentTypes: [.pdf, .jpeg, .png, .image],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                guard url.startAccessingSecurityScopedResource() else { return }
-                defer { url.stopAccessingSecurityScopedResource() }
-                guard let data = try? Data(contentsOf: url) else { return }
-                let filename = url.lastPathComponent
-                let mimeType = mimeTypeForExtension(url.pathExtension.lowercased())
-                state.pendingDocuments[type] = PendingCarDocument(
-                    type: type,
-                    filename: filename,
-                    fileSize: data.count,
-                    data: data,
-                    mimeType: mimeType
-                )
-            case .failure:
-                break
-            }
+        .documentSourcePicker(
+            isPresented: $showingSourceChooser,
+            filenameBase: type.rawValue
+        ) { picked in
+            state.pendingDocuments[type] = PendingCarDocument(
+                type: type,
+                filename: picked.filename,
+                fileSize: picked.data.count,
+                data: picked.data,
+                mimeType: picked.mimeType
+            )
+        }
+        .sheet(item: $previewDocument) { doc in
+            DocumentPreviewSheet(
+                source: .localData(doc.data, filename: doc.filename, mimeType: doc.mimeType)
+            )
         }
     }
 
     private func byteCountFormatted(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-
-    private func mimeTypeForExtension(_ ext: String) -> String {
-        switch ext {
-        case "pdf": return "application/pdf"
-        case "jpg", "jpeg": return "image/jpeg"
-        case "png": return "image/png"
-        case "heic": return "image/heic"
-        default: return "application/octet-stream"
-        }
     }
 }
 
@@ -1597,7 +1828,10 @@ struct CreateListingReviewStep: View {
             subtitle: "Make sure everything looks good",
             currentStep: state.currentStepIndex,
             totalSteps: state.totalSteps,
-            canContinue: true,
+            // Disable the CTA while the submit round-trip is in flight —
+            // pairs with the re-entrancy guard in submitListingAsync so a
+            // double-tap can't create two cars.
+            canContinue: !state.isLoading,
             continueTitle: state.isLoading ? "Creating..." : "Create Listing",
             onBack: { state.goToPreviousStep() },
             onContinue: onSubmit
@@ -1625,10 +1859,9 @@ struct CreateListingReviewStep: View {
                     }
                 }
 
-                // Requirements card
+                // Requirements card (deposit removed — QA pt 7)
                 ReviewSection(title: "Requirements") {
                     ReviewRow(label: "Min. Years Licensed", value: "\(state.minYearsLicensed) years")
-                    ReviewRow(label: "Deposit", value: Money(amount: state.depositAmount).formatted)
                     ReviewRow(label: "Insurance", value: state.insuranceCoverage.displayText)
                 }
 
@@ -1657,6 +1890,19 @@ struct CreateListingReviewStep: View {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Documents card — required docs gate the Documents step,
+                // so this always has content by the time Review renders.
+                if !state.pendingDocuments.isEmpty {
+                    ReviewSection(title: "Documents") {
+                        ForEach(
+                            Array(state.pendingDocuments.values)
+                                .sorted { $0.type.rawValue < $1.type.rawValue }
+                        ) { doc in
+                            ReviewRow(label: doc.type.displayText, value: doc.filename)
                         }
                     }
                 }
@@ -1704,47 +1950,6 @@ struct ReviewRow: View {
             Text(value)
                 .font(.subheadline)
                 .fontWeight(.medium)
-        }
-    }
-}
-
-// MARK: - Currency Text Field
-
-/// A text field that binds to a Double and accepts only numeric input.
-private struct CurrencyTextField: View {
-    @Binding var value: Double
-    let placeholder: String
-
-    @State private var text: String = ""
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("$")
-                .font(.body)
-                .foregroundColor(.secondary)
-            TextField(placeholder, text: $text)
-                .keyboardType(.numberPad)
-                .focused($isFocused)
-                .onChange(of: text) { _, newValue in
-                    let filtered = newValue.filter { $0.isNumber }
-                    if filtered != newValue { text = filtered }
-                    if let parsed = Double(filtered) {
-                        value = parsed
-                    } else if filtered.isEmpty {
-                        value = 0
-                    }
-                }
-        }
-        .padding()
-        .background(Color(.systemBackground))
-        .cornerRadius(10)
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isFocused ? Color.driveBaiPrimary : Color.gray.opacity(0.3), lineWidth: 1)
-        )
-        .onAppear {
-            text = value > 0 ? String(Int(value)) : ""
         }
     }
 }

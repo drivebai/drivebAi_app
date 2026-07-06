@@ -497,14 +497,12 @@ struct DiscoverListingCard: View {
                 }
 
                 // Requirements row
+                // Deposit pill removed (QA pt 7): deposits are gone from
+                // the product; the backend now always serves 0.
                 HStack(spacing: 16) {
                     RequirementPill(
                         icon: "calendar",
                         text: "\(car.requirements.minYearsLicensedDriving)+ years licensed"
-                    )
-                    RequirementPill(
-                        icon: "banknote",
-                        text: "\(car.requirements.depositAmount.formatted) deposit"
                     )
                 }
             }
@@ -995,13 +993,8 @@ struct ListingDetailView: View {
                     value: "\(car.requirements.minYearsLicensedDriving)+",
                     caption: "years licensed"
                 )
-
-                // Deposit requirement
-                RequirementCard(
-                    icon: "creditcard",
-                    value: car.requirements.depositAmount.formatted,
-                    caption: "deposit"
-                )
+                // Deposit card removed (QA pt 7) — deposits no longer exist
+                // in the product.
             }
         }
     }

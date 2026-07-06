@@ -162,7 +162,10 @@ func main() {
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
-	vinDecodeHandler := handlers.NewVINDecodeHandler(logger)
+	// VIN decode gets ExistsByVIN so the wizard's Search step can show the
+	// early "already listed on DrivaBai" signal (same definition of "in use"
+	// as the create/update preflights).
+	vinDecodeHandler := handlers.NewVINDecodeHandler(logger, carRepo.ExistsByVIN)
 	likesHandler := handlers.NewLikesHandler(likesRepo, carRepo)
 	chatHandler := handlers.NewChatHandler(chatRepo, uploadDir, wsHub, jwtSvc, privateURLSigner, logger)
 	notifHandler := handlers.NewNotificationHandler(notifRepo, deviceTokenRepo, wsHub, pushSvc, logger)
@@ -180,6 +183,9 @@ func main() {
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, logger)
 	adminHandler.SetNotificationHandler(notifHandler)
+	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
+	// internals: reset-token store + the transactional email sender.
+	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	accidentHandler.SetNotificationHandler(notifHandler)
@@ -445,6 +451,9 @@ func main() {
 				r.Get("/users/{id}", adminHandler.GetUser)
 				r.Patch("/users/{id}/block", adminHandler.BlockUser)
 				r.Patch("/users/{id}/profile", adminHandler.UpdateUserProfile)
+				// Admin-triggered password reset (D7): 202, never returns
+				// the token — the user gets the standard reset email.
+				r.Post("/users/{id}/reset-password", adminHandler.ResetUserPassword)
 
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)

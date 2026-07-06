@@ -50,10 +50,18 @@ export function setToken(token: string | null) {
 export class ApiError extends Error {
   status: number
   code?: string
-  constructor(message: string, status: number, code?: string) {
+  /**
+   * Structured payload from the backend's APIError.Details, e.g.
+   * `{ missing: ['registration','insurance'] }` on a 422
+   * MISSING_REQUIRED_DOCUMENTS approve refusal. Optional — most errors
+   * carry only code + message.
+   */
+  details?: Record<string, unknown>
+  constructor(message: string, status: number, code?: string, details?: Record<string, unknown>) {
     super(message)
     this.status = status
     this.code = code
+    this.details = details
   }
 }
 
@@ -82,6 +90,8 @@ async function request<T>(method: Method, path: string, body?: unknown): Promise
     const apiErr = data?.error
     const msg = apiErr?.message || res.statusText || 'Request failed'
     const code = apiErr?.code
+    const details =
+      apiErr?.details && typeof apiErr.details === 'object' ? apiErr.details : undefined
 
     if (res.status === 401) {
       setToken(null)
@@ -94,7 +104,7 @@ async function request<T>(method: Method, path: string, body?: unknown): Promise
       useToastStore().error(msg)
     }
 
-    throw new ApiError(msg, res.status, code)
+    throw new ApiError(msg, res.status, code, details)
   }
 
   return data as T

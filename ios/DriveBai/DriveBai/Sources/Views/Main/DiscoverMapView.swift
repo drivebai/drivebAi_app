@@ -177,14 +177,12 @@ struct MapPreviewCard: View {
                     }
 
                     // Requirements pills
+                    // Deposit pill removed (QA pt 7): deposits are gone from
+                    // the product; the backend now always serves 0.
                     HStack(spacing: 12) {
                         RequirementPill(
                             icon: "calendar",
                             text: "\(car.requirements.minYearsLicensedDriving) years"
-                        )
-                        RequirementPill(
-                            icon: "banknote",
-                            text: car.requirements.depositAmount.formatted
                         )
                     }
                 }

@@ -69,6 +69,29 @@ async function confirmBlock() {
   }
 }
 
+// --- password reset ---
+// Passwords are stored as one-way bcrypt hashes: there is nothing to view or
+// hand out, by design. The only admin remedy for "can't log in" is emailing
+// the user a reset link. Confirm first — this invalidates any previously
+// issued reset tokens for the account.
+const pendingReset = ref<AdminUser | null>(null)
+const sendingReset = ref(false)
+function askReset(u: AdminUser) { pendingReset.value = u }
+async function confirmReset() {
+  const u = pendingReset.value
+  if (!u || sendingReset.value) return
+  sendingReset.value = true
+  try {
+    await adminApi.resetUserPassword(u.id)
+    toast.success(`Reset email sent to ${u.email}`)
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to send reset email')
+  } finally {
+    sendingReset.value = false
+    pendingReset.value = null
+  }
+}
+
 // --- edit profile ---
 // Modal-style form bound to a snapshot of the drawer user. Backend only
 // accepts first_name / last_name / phone — see adminApi.updateUserProfile.
@@ -173,6 +196,7 @@ function roleLabel(r: string) {
       <td>{{ fmtDate(row.created_at) }}</td>
       <td class="actions" @click.stop>
         <button class="ghost" @click="openDetails(row)">Details</button>
+        <button class="ghost" @click="askReset(row)">Reset password</button>
         <button :class="row.is_blocked ? 'primary' : 'danger'" @click="askBlock(row)">
           {{ row.is_blocked ? 'Unblock' : 'Block' }}
         </button>
@@ -214,8 +238,15 @@ function roleLabel(r: string) {
       </template>
     </dl>
 
+    <p class="password-note">
+      Passwords are stored as one-way hashes and can never be viewed — by
+      anyone, including admins. If a user can't log in, send them a password
+      reset email instead.
+    </p>
+
     <div class="drawer-actions">
       <button class="secondary" @click="startEdit(drawerUser)">Edit profile</button>
+      <button class="secondary" @click="askReset(drawerUser)">Send password reset</button>
       <button :class="drawerUser.is_blocked ? 'primary' : 'danger'" @click="askBlock(drawerUser)">
         {{ drawerUser.is_blocked ? 'Unblock user' : 'Block user' }}
       </button>
@@ -254,6 +285,15 @@ function roleLabel(r: string) {
   </div>
 
   <ConfirmDialog
+    :open="!!pendingReset"
+    title="Send password reset email?"
+    :message="`${pendingReset?.email} will receive an email with a link to choose a new password. Any previously sent reset links stop working. Their current password stays valid until they complete the reset.`"
+    :confirm-label="sendingReset ? 'Sending…' : 'Send reset email'"
+    @confirm="confirmReset"
+    @cancel="pendingReset = null"
+  />
+
+  <ConfirmDialog
     :open="!!pendingBlock"
     :title="pendingBlock?.is_blocked ? 'Unblock user?' : 'Block user?'"
     :message="pendingBlock?.is_blocked
@@ -279,7 +319,17 @@ select { width: 160px; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; margin: 0; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; }
-.drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+.password-note {
+  margin: 20px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4);

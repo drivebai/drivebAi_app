@@ -220,6 +220,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Trim whitespace from the email only — parity with the OTP login path
+	// (otp_auth normalizes identically) so " user@x.com " logs in. The
+	// PASSWORD is deliberately NOT trimmed: trailing spaces are legal
+	// password characters.
+	req.Email = strings.TrimSpace(req.Email)
+
 	if req.Email == "" || req.Password == "" {
 		WriteError(w, http.StatusBadRequest, models.NewValidationError("Email and password are required"))
 		return
