@@ -34,12 +34,19 @@ struct CarDetailEditView: View {
     @State private var editedCar: Car
     @State private var showPhotosEditor: Bool = false
     @State private var showDeleteConfirmation: Bool = false
+    @State private var showEditLocation: Bool = false
 
     // Loading and error state
     @State private var isSaving: Bool = false
     @State private var isDeleting: Bool = false
+    @State private var isTogglingPause: Bool = false
     @State private var errorMessage: String?
     @State private var showErrorAlert: Bool = false
+
+    /// Verbatim server message from a SALE_REQUIREMENTS_NOT_MET 400 (QA
+    /// pt 8) — rendered inline under the For-sale toggle alongside the
+    /// client-side checklist. Cleared on the next successful save.
+    @State private var saleRequirementsMessage: String?
 
     // --- Autosave state ---
     //
@@ -90,7 +97,10 @@ struct CarDetailEditView: View {
                             title: "General information",
                             isExpanded: $isGeneralExpanded
                         ) {
-                            GeneralInformationContent(car: $editedCar)
+                            GeneralInformationContent(
+                                car: $editedCar,
+                                saleRequirementsMessage: saleRequirementsMessage
+                            )
                         }
 
                         Divider()
@@ -120,22 +130,23 @@ struct CarDetailEditView: View {
                             title: "Documents",
                             isExpanded: $isDocumentsExpanded
                         ) {
-                            DocumentsContent(documents: $editedCar.documents)
+                            DocumentsContent(carId: car.id, documents: $editedCar.documents)
                         }
                     }
                     .padding(.horizontal, 16)
 
                     // Action buttons
                     ActionButtonsSection(
-                        onResetLocation: resetLocation,
-                        onSetUnavailableDates: setUnavailableDates
+                        onEditLocation: { showEditLocation = true }
                     )
                     .padding(16)
 
                     // Danger zone
                     DangerZoneSection(
                         isPaused: editedCar.isPaused,
-                        onTogglePause: togglePause,
+                        isRented: isCurrentlyRented,
+                        isBusy: isTogglingPause,
+                        onTogglePause: { Task { await togglePause() } },
                         onDelete: { showDeleteConfirmation = true }
                     )
                     .padding(.horizontal, 16)
@@ -192,6 +203,16 @@ struct CarDetailEditView: View {
         .sheet(isPresented: $showPhotosEditor) {
             CarPhotosEditView(photoSlots: $editedCar.photoSlots)
         }
+        .fullScreenCover(isPresented: $showEditLocation, onDismiss: {
+            // OwnerEditCarLocationView persists through PUT /cars/{id}/location
+            // and refreshes the store — sync the local edit copy so this
+            // screen shows the fresh location without re-entering (QA pt 9).
+            if let updated = store.getCar(id: car.id) {
+                editedCar.location = updated.location
+            }
+        }) {
+            OwnerEditCarLocationView(car: editedCar)
+        }
         .confirmationDialog(
             "Delete this car?",
             isPresented: $showDeleteConfirmation,
@@ -202,7 +223,7 @@ struct CarDetailEditView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This action cannot be undone.")
+            Text("This removes the listing from DrivaBai. Your rental history and chats are kept.")
         }
         .alert("Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) {
@@ -324,36 +345,10 @@ struct CarDetailEditView: View {
         // network round-trip" and trigger a follow-up save.
         let snapshotBefore = editedCar
 
-        // 1. Persist car attributes (PATCH). Idempotent, so a repeated save
-        // with the same values is harmless.
-        guard let _ = await store.updateCar(editedCar) else {
-            let reason = store.error ?? "Couldn't save"
-            saveState = .failed(reason)
-            if triggeredByUser {
-                errorMessage = reason
-                showErrorAlert = true
-            }
-            return
-        }
-
-        // 2. Push any freshly-picked photos. We mutate editedCar in place
-        // to clear localImageData on success — this keeps the next autosave
-        // a no-op for that slot (filter checks localImageData != nil).
-        for idx in editedCar.photoSlots.indices {
-            guard let data = editedCar.photoSlots[idx].localImageData else { continue }
-            let slotType = editedCar.photoSlots[idx].slotType
-            let ok = await store.uploadPhoto(data: data, carId: car.id, slotType: slotType)
-            if ok {
-                editedCar.photoSlots[idx].localImageData = nil
-            } else {
-                #if DEBUG
-                print("[CarDetailEditView] Photo upload failed for slot \(slotType.rawValue)")
-                #endif
-            }
-        }
-
-        // 3. Push any freshly-picked car documents. Same clear-on-success
-        // pattern so the next autosave doesn't re-upload identical bytes.
+        // 1. Push any freshly-picked car documents FIRST — before the PATCH.
+        // Sale-readiness validation on the attribute save requires a title
+        // document to already be on file (QA pt 8), so "toggle for-sale +
+        // stage a title" in one debounce window must upload the doc first.
         for idx in editedCar.documents.indices {
             guard editedCar.documents[idx].needsUpload,
                   let data = editedCar.documents[idx].localData
@@ -367,12 +362,57 @@ struct CarDetailEditView: View {
                 filename: doc.filename,
                 mimeType: mime
             )
-            if resp != nil {
-                editedCar.documents[idx].localData = nil
-                editedCar.documents[idx].localMimeType = nil
+            if let resp {
+                // Adopt the server's identity for the uploaded row so later
+                // View/Replace/Delete target the real document id and the
+                // preview has a signed URL.
+                editedCar.documents[idx] = CarDocument(
+                    id: resp.id,
+                    documentType: doc.documentType,
+                    filename: resp.fileName,
+                    fileSize: resp.fileSize,
+                    uploadedAt: resp.createdAt,
+                    fileURL: resp.fileUrl
+                )
             } else {
                 #if DEBUG
                 print("[CarDetailEditView] Document upload failed: \(doc.documentType.rawValue) — \(store.error ?? "no error")")
+                #endif
+            }
+        }
+
+        // 2. Persist car attributes (PATCH). Idempotent, so a repeated save
+        // with the same values is harmless. The backend ignores status /
+        // is_paused / deposit here (QA pts 7/9) and may reject with
+        // SALE_REQUIREMENTS_NOT_MET when for-sale requirements aren't met.
+        guard let _ = await store.updateCar(editedCar) else {
+            let reason = store.error ?? "Couldn't save"
+            saveState = .failed(reason)
+            if store.errorCode == "SALE_REQUIREMENTS_NOT_MET" {
+                // Surface the backend validation message verbatim, inline
+                // next to the For-sale checklist (QA pt 8).
+                saleRequirementsMessage = reason
+            }
+            if triggeredByUser {
+                errorMessage = reason
+                showErrorAlert = true
+            }
+            return
+        }
+        saleRequirementsMessage = nil
+
+        // 3. Push any freshly-picked photos. We mutate editedCar in place
+        // to clear localImageData on success — this keeps the next autosave
+        // a no-op for that slot (filter checks localImageData != nil).
+        for idx in editedCar.photoSlots.indices {
+            guard let data = editedCar.photoSlots[idx].localImageData else { continue }
+            let slotType = editedCar.photoSlots[idx].slotType
+            let ok = await store.uploadPhoto(data: data, carId: car.id, slotType: slotType)
+            if ok {
+                editedCar.photoSlots[idx].localImageData = nil
+            } else {
+                #if DEBUG
+                print("[CarDetailEditView] Photo upload failed for slot \(slotType.rawValue)")
                 #endif
             }
         }
@@ -393,17 +433,41 @@ struct CarDetailEditView: View {
         }
     }
 
-    private func resetLocation() {
-        // Would open location picker
+    /// True while the car is held by a driver — pause is blocked (D2).
+    private var isCurrentlyRented: Bool {
+        editedCar.activeRental != nil || editedCar.status == .rented
     }
 
-    private func setUnavailableDates() {
-        // Would open date picker
-    }
+    /// Pause/resume through the dedicated POST /cars/{id}/pause endpoint
+    /// (QA pt 9). The autosave PATCH no longer carries status/is_paused, so
+    /// this is the only path that flips pause state — and the backend 409s
+    /// with CAR_CURRENTLY_RENTED when a rental is running.
+    private func togglePause() async {
+        if isTogglingPause { return }
 
-    private func togglePause() {
-        editedCar.isPaused.toggle()
-        editedCar.status = editedCar.isPaused ? .paused : .available
+        // Client fast-path for the same rule the server enforces — skips a
+        // round-trip that would 409 anyway.
+        if isCurrentlyRented {
+            errorMessage = "You can't pause a car during an active rental."
+            showErrorAlert = true
+            return
+        }
+
+        isTogglingPause = true
+        defer { isTogglingPause = false }
+
+        let ok = await store.togglePaused(id: car.id)
+        if ok, let updated = store.getCar(id: car.id) {
+            editedCar.isPaused = updated.isPaused
+            editedCar.status = updated.status
+        } else if !ok {
+            if store.errorCode == "CAR_CURRENTLY_RENTED" {
+                errorMessage = "You can't pause a car during an active rental."
+            } else {
+                errorMessage = store.error ?? "Couldn't update the listing."
+            }
+            showErrorAlert = true
+        }
     }
 
     private func deleteCar() async {
@@ -414,10 +478,16 @@ struct CarDetailEditView: View {
         isDeleting = false
 
         if success {
-            // Success - dismiss back to list
+            // Success — the car is archived server-side and dropped from
+            // the local list; pop back to My Cars.
             dismiss()
+        } else if store.errorCode == "CAR_HAS_ACTIVE_OBLIGATIONS" {
+            // Backend guard (QA pt 9 / D3): the car still has an active
+            // rental, an open vehicle return / key handover, or a purchase
+            // in progress.
+            errorMessage = "This car can't be deleted yet — it has an active rental, an open vehicle return or key handover, or a purchase in progress. Wrap those up first, then try again."
+            showErrorAlert = true
         } else {
-            // Show error
             errorMessage = store.error ?? "Failed to delete car"
             showErrorAlert = true
         }
@@ -464,9 +534,21 @@ struct CollapsibleSection<Content: View>: View {
 
 private struct GeneralInformationContent: View {
     @Binding var car: Car
+    /// Verbatim SALE_REQUIREMENTS_NOT_MET message from the last rejected
+    /// save, shown inline with the checklist (QA pt 8). Nil when the last
+    /// save succeeded.
+    let saleRequirementsMessage: String?
 
     var body: some View {
         VStack(spacing: 16) {
+            // List for rent
+            Toggle(isOn: $car.isForRent) {
+                Text("List for rent")
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+            }
+            .tint(Color.driveBaiPrimary)
+
             // Weekly rent price
             if car.isForRent {
                 PriceEditorRow(
@@ -482,7 +564,17 @@ private struct GeneralInformationContent: View {
                 )
             }
 
-            // Sale price
+            // List for sale (QA pt 8) — owners can enable this any time;
+            // the backend requires a sale price >= $1,000 and a Title
+            // document before the save is accepted.
+            Toggle(isOn: $car.isForSale) {
+                Text("List for sale")
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+            }
+            .tint(Color.driveBaiPrimary)
+
+            // Sale price + readiness checklist
             if car.isForSale {
                 PriceEditorRow(
                     label: "Sale price",
@@ -494,6 +586,11 @@ private struct GeneralInformationContent: View {
                     minValue: 1000,
                     step: 10,
                     sheetTitle: "Sale price"
+                )
+
+                SaleReadinessChecklist(
+                    car: car,
+                    serverMessage: saleRequirementsMessage
                 )
             }
 
@@ -513,38 +610,54 @@ private struct GeneralInformationContent: View {
     }
 }
 
-private struct PriceSliderField: View {
-    let label: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let suffix: String?
+// MARK: - Sale Readiness Checklist (QA pt 8)
+
+/// Client-side mirror of the backend's SALE_REQUIREMENTS_NOT_MET rules:
+/// a sale price of at least $1,000 and a Title document on file. Shown
+/// only while something is missing (or when the server just rejected a
+/// save), so a fully-ready listing renders no noise.
+private struct SaleReadinessChecklist: View {
+    let car: Car
+    let serverMessage: String?
+
+    private var priceOK: Bool { (car.salePrice?.amount ?? 0) >= 1000 }
+    private var titleOK: Bool {
+        car.documents.contains { $0.documentType == .title }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(label)
-                    .font(.subheadline)
+        if !priceOK || !titleOK || serverMessage != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                if let serverMessage {
+                    // Backend validation error, verbatim.
+                    Text(serverMessage)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.red)
+                }
+
+                Text("Required before this car can be listed for sale:")
+                    .font(.caption)
                     .foregroundColor(.secondary)
 
-                Spacer()
-
-                HStack(spacing: 2) {
-                    Text(Money(amount: value).formatted)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-
-                    if let suffix = suffix {
-                        Text(suffix)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
+                requirementRow(done: priceOK, text: "A sale price of at least $1,000")
+                requirementRow(done: titleOK, text: "A Title document — add it in the Documents section below")
             }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.08))
+            .cornerRadius(8)
+        }
+    }
 
-            Slider(value: $value, in: range, step: step)
-                .tint(Color.driveBaiPrimary)
+    private func requirementRow(done: Bool, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .font(.caption)
+                .foregroundColor(done ? .green : .secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundColor(.primary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -634,17 +747,9 @@ private struct RequirementsContent: View {
                 .cornerRadius(8)
             }
 
-            // Deposit amount
-            PriceSliderField(
-                label: "Deposit amount",
-                value: Binding(
-                    get: { requirements.depositAmount.amount },
-                    set: { requirements.depositAmount = Money(amount: $0) }
-                ),
-                range: 100...5000,
-                step: 50,
-                suffix: nil
-            )
+            // Deposit field removed (QA pt 7) — deposits never entered any
+            // payment formula and are no longer part of the product; the
+            // backend ignores the value and serves 0.
 
             // Insurance coverage
             VStack(alignment: .leading, spacing: 8) {
@@ -665,28 +770,46 @@ private struct RequirementsContent: View {
 
 // MARK: - Documents Content
 
+/// Server-backed documents section (QA pts 8/11): lists the car's documents
+/// with type/filename, tap-to-preview via `DocumentPreviewSheet` (signed
+/// URLs, refreshed on section expand), Replace via the shared
+/// `DocumentSourcePicker` (camera / library / files — QA pt 1) and a real
+/// backend Delete for uploaded rows.
 private struct DocumentsContent: View {
+    let carId: UUID
     @Binding var documents: [CarDocument]
 
-    @State private var showingSourceChooser = false
-    @State private var showingFilePicker = false
-    @State private var showingPhotoPicker = false
+    @ObservedObject private var store = OwnerCarsStore.shared
+
+    @State private var showingSourcePicker = false
     @State private var showingAddDocumentSheet = false
     @State private var selectedDocumentType: CarDocumentType?
     @State private var documentToReplace: CarDocument?
     @State private var showDeleteConfirmation = false
     @State private var documentToDelete: CarDocument?
-    @State private var pickerItem: PhotosPickerItem?
+    @State private var previewDocument: CarDocument?
+    @State private var deleteErrorMessage: String?
+    @State private var isDeletingDocument = false
+
+    /// Fresh signed URLs fetched when the section expands. The URLs embedded
+    /// in the car payload are signed per-response and may have gone stale by
+    /// the time the user opens this section; GET /cars/{id}/documents
+    /// re-signs them. Keyed by document id and used only for previews, so
+    /// the refetch never dirties `documents` (which would trigger a
+    /// pointless autosave round).
+    @State private var freshFileURLs: [UUID: String] = [:]
 
     var body: some View {
         VStack(spacing: 12) {
             ForEach(documents) { doc in
                 DocumentRow(
                     document: doc,
+                    canPreview: previewSource(for: doc) != nil,
+                    onView: { previewDocument = doc },
                     onReplace: {
                         documentToReplace = doc
                         selectedDocumentType = doc.documentType
-                        showingSourceChooser = true
+                        showingSourcePicker = true
                     },
                     onDelete: {
                         documentToDelete = doc
@@ -707,6 +830,8 @@ private struct DocumentsContent: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 8)
         }
+        .disabled(isDeletingDocument)
+        .task { await refreshSignedURLs() }
         .sheet(isPresented: $showingAddDocumentSheet) {
             AddDocumentTypeSheet(
                 existingTypes: Set(documents.map { $0.documentType }),
@@ -714,49 +839,20 @@ private struct DocumentsContent: View {
                     selectedDocumentType = type
                     documentToReplace = nil
                     showingAddDocumentSheet = false
-                    showingSourceChooser = true
+                    showingSourcePicker = true
                 }
             )
         }
-        .confirmationDialog("Upload Document", isPresented: $showingSourceChooser, titleVisibility: .visible) {
-            Button("Photo Library") { showingPhotoPicker = true }
-            Button("Files") { showingFilePicker = true }
-            Button("Cancel", role: .cancel) {}
+        .documentSourcePicker(
+            isPresented: $showingSourcePicker,
+            filenameBase: selectedDocumentType?.rawValue ?? "document"
+        ) { picked in
+            addOrReplaceDocument(picked)
         }
-        .photosPicker(isPresented: $showingPhotoPicker, selection: $pickerItem, matching: .images)
-        .onChange(of: pickerItem) { _, newItem in
-            guard let item = newItem else { return }
-            pickerItem = nil
-            Task {
-                guard let type = selectedDocumentType else { return }
-                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-                let ext: String
-                let mimeType: String
-                if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
-                    ext = "png"
-                    mimeType = "image/png"
-                } else {
-                    ext = "jpg"
-                    mimeType = "image/jpeg"
-                }
-                let filename = "\(type.rawValue).\(ext)"
-                await MainActor.run {
-                    addOrReplaceDocument(
-                        type: type,
-                        filename: filename,
-                        fileSize: data.count,
-                        data: data,
-                        mimeType: mimeType
-                    )
-                }
+        .sheet(item: $previewDocument) { doc in
+            if let source = previewSource(for: doc) {
+                DocumentPreviewSheet(source: source)
             }
-        }
-        .fileImporter(
-            isPresented: $showingFilePicker,
-            allowedContentTypes: [.pdf, .jpeg, .png, .image],
-            allowsMultipleSelection: false
-        ) { result in
-            handleDocumentImport(result: result)
         }
         .confirmationDialog(
             "Delete document?",
@@ -774,76 +870,59 @@ private struct DocumentsContent: View {
         } message: {
             Text("This will remove the document from your listing.")
         }
+        .alert("Couldn't delete document", isPresented: Binding(
+            get: { deleteErrorMessage != nil },
+            set: { if !$0 { deleteErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteErrorMessage ?? "")
+        }
     }
 
-    private func handleDocumentImport(result: Result<[URL], Error>) {
-        guard let type = selectedDocumentType else { return }
+    // MARK: Preview
 
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            guard url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
+    /// Best available preview source: staged local bytes first, then the
+    /// freshest signed URL we know about. Nil → nothing to preview yet.
+    private func previewSource(for doc: CarDocument) -> DocumentPreviewSheet.Source? {
+        if let data = doc.localData {
+            return .localData(data, filename: doc.filename, mimeType: doc.localMimeType)
+        }
+        if let url = freshFileURLs[doc.id] ?? doc.fileURL {
+            return .remoteURL(url, filename: doc.filename)
+        }
+        return nil
+    }
 
-            // Actually read the file bytes — the previous code only read the
-            // filename + size and threw the contents away, which silently
-            // turned every car-document upload into a local-only no-op.
-            let data: Data
-            do {
-                data = try Data(contentsOf: url)
-            } catch {
-                #if DEBUG
-                print("[DocumentsContent] Read failed: \(error)")
-                #endif
-                return
+    @MainActor
+    private func refreshSignedURLs() async {
+        do {
+            let docs = try await APIClient.shared.fetchCarDocuments(carId: carId)
+            var map: [UUID: String] = [:]
+            for doc in docs {
+                map[doc.id] = doc.fileUrl
             }
-
-            let filename = url.lastPathComponent
-            let mimeType = mimeTypeForExtension(url.pathExtension.lowercased())
-
-            addOrReplaceDocument(
-                type: type,
-                filename: filename,
-                fileSize: data.count,
-                data: data,
-                mimeType: mimeType
-            )
-
-        case .failure(let error):
+            freshFileURLs = map
+        } catch {
+            // Non-fatal: previews fall back to the payload-embedded URL.
             #if DEBUG
-            print("[DocumentsContent] Document import failed: \(error)")
+            print("[DocumentsContent] fetchCarDocuments failed: \(error)")
             #endif
         }
     }
 
-    /// Maps a file extension to a Content-Type the backend whitelists.
-    /// Falls back to application/octet-stream for unknown types — the
-    /// server's CarDocumentType is what actually determines categorization,
-    /// the MIME is just for the HTTP request shape.
-    private func mimeTypeForExtension(_ ext: String) -> String {
-        switch ext {
-        case "pdf": return "application/pdf"
-        case "jpg", "jpeg": return "image/jpeg"
-        case "png": return "image/png"
-        case "heic": return "image/heic"
-        default: return "application/octet-stream"
-        }
-    }
+    // MARK: Add / Replace / Delete
 
-    private func addOrReplaceDocument(
-        type: CarDocumentType,
-        filename: String,
-        fileSize: Int,
-        data: Data,
-        mimeType: String
-    ) {
+    private func addOrReplaceDocument(_ picked: PickedDocument) {
+        guard let type = selectedDocumentType else { return }
+
         let newDocument = CarDocument(
             documentType: type,
-            filename: filename,
-            fileSize: fileSize,
+            filename: picked.filename,
+            fileSize: picked.data.count,
             uploadedAt: Date(),
-            localData: data,
-            localMimeType: mimeType
+            localData: picked.data,
+            localMimeType: picked.mimeType
         )
 
         if let replaceDoc = documentToReplace,
@@ -858,9 +937,28 @@ private struct DocumentsContent: View {
         documentToReplace = nil
     }
 
+    /// Staged-only docs are dropped locally; uploaded docs are deleted on
+    /// the backend first and only removed from the list when the server
+    /// allowed it (QA pt 8 "delete-if-allowed").
     private func deleteDocument(_ document: CarDocument) {
-        documents.removeAll { $0.id == document.id }
-        documentToDelete = nil
+        if document.needsUpload && document.fileURL == nil {
+            documents.removeAll { $0.id == document.id }
+            documentToDelete = nil
+            return
+        }
+
+        isDeletingDocument = true
+        Task { @MainActor in
+            let ok = await store.deleteDocument(carId: carId, documentId: document.id)
+            if ok {
+                documents.removeAll { $0.id == document.id }
+                freshFileURLs[document.id] = nil
+            } else {
+                deleteErrorMessage = store.error ?? "The document couldn't be deleted. Please try again."
+            }
+            documentToDelete = nil
+            isDeletingDocument = false
+        }
     }
 }
 
@@ -868,10 +966,10 @@ private struct DocumentsContent: View {
 
 private struct DocumentRow: View {
     let document: CarDocument
+    let canPreview: Bool
+    let onView: () -> Void
     let onReplace: () -> Void
     let onDelete: () -> Void
-
-    @State private var showingMenu = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -886,14 +984,19 @@ private struct DocumentRow: View {
                     .fontWeight(.medium)
                     .foregroundColor(.primary)
 
-                Text("\(document.filename) · \(document.fileSizeFormatted)")
+                Text(subtitleText)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer()
 
             Menu {
+                Button(action: onView) {
+                    Label("View", systemImage: "eye")
+                }
+                .disabled(!canPreview)
                 Button(action: onReplace) {
                     Label("Replace", systemImage: "arrow.triangle.2.circlepath")
                 }
@@ -909,6 +1012,20 @@ private struct DocumentRow: View {
         .padding(12)
         .background(Color(.systemGray6))
         .cornerRadius(8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Row tap = preview (QA pt 11). No-op when there's nothing to
+            // show yet (e.g. legacy rows without a URL).
+            if canPreview { onView() }
+        }
+    }
+
+    private var subtitleText: String {
+        var text = "\(document.filename) · \(document.fileSizeFormatted)"
+        if document.needsUpload {
+            text += " · not uploaded yet"
+        }
+        return text
     }
 }
 
@@ -966,22 +1083,20 @@ private struct AddDocumentTypeSheet: View {
 // MARK: - Action Buttons Section
 
 private struct ActionButtonsSection: View {
-    let onResetLocation: () -> Void
-    let onSetUnavailableDates: () -> Void
+    let onEditLocation: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
+            // QA pt 9c: opens the real 3-step location flow
+            // (OwnerEditCarLocationView), persisted via PUT /cars/{id}/location.
             ActionButton(
-                title: "Reset car location",
+                title: "Edit car location",
                 iconName: "location.fill",
-                action: onResetLocation
+                action: onEditLocation
             )
 
-            ActionButton(
-                title: "Manage unavailable dates",
-                iconName: "calendar",
-                action: onSetUnavailableDates
-            )
+            // "Manage unavailable dates" removed (QA pt 9d / D6): there is
+            // no availability backend this round; the dead row was the bug.
         }
     }
 }
@@ -1018,6 +1133,12 @@ private struct ActionButton: View {
 
 private struct DangerZoneSection: View {
     let isPaused: Bool
+    /// True while a rental is running — pausing is blocked (server 409
+    /// CAR_CURRENTLY_RENTED; QA pt 9a / D2). The button stays tappable so
+    /// the user gets an explanation instead of a dead control.
+    let isRented: Bool
+    /// True while the POST /pause round-trip is in flight.
+    let isBusy: Bool
     let onTogglePause: () -> Void
     let onDelete: () -> Void
 
@@ -1026,7 +1147,11 @@ private struct DangerZoneSection: View {
             // Pause/Resume button
             Button(action: onTogglePause) {
                 HStack {
-                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                    if isBusy {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                    }
                     Text(isPaused ? "Resume listing" : "Pause listing")
                 }
                 .font(.subheadline)
@@ -1038,6 +1163,14 @@ private struct DangerZoneSection: View {
                 .cornerRadius(12)
             }
             .buttonStyle(PlainButtonStyle())
+            .disabled(isBusy)
+
+            if isRented {
+                Text("Pausing is unavailable while this car is on an active rental.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             // Delete button
             Button(action: onDelete) {

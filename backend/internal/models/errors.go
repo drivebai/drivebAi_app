@@ -7,23 +7,29 @@ import (
 
 // Error codes for API responses
 const (
-	ErrCodeEmailTaken            = "EMAIL_TAKEN"
-	ErrCodeInvalidCredentials    = "INVALID_CREDENTIALS"
-	ErrCodeOTPInvalid            = "OTP_INVALID"
-	ErrCodeOTPExpired            = "OTP_EXPIRED"
-	ErrCodeOTPAttemptsExceeded   = "OTP_ATTEMPTS_EXCEEDED"
-	ErrCodeEmailNotVerified      = "EMAIL_NOT_VERIFIED"
-	ErrCodeRateLimited           = "RATE_LIMITED"
-	ErrCodeUserNotFound          = "USER_NOT_FOUND"
-	ErrCodeInvalidRole           = "INVALID_ROLE"
-	ErrCodeInvalidInput          = "INVALID_INPUT"
-	ErrCodeUnauthorized          = "UNAUTHORIZED"
-	ErrCodeTokenExpired          = "TOKEN_EXPIRED"
-	ErrCodeTokenInvalid          = "TOKEN_INVALID"
-	ErrCodeInternalError         = "INTERNAL_ERROR"
+	ErrCodeEmailTaken                = "EMAIL_TAKEN"
+	ErrCodeInvalidCredentials        = "INVALID_CREDENTIALS"
+	ErrCodeOTPInvalid                = "OTP_INVALID"
+	ErrCodeOTPExpired                = "OTP_EXPIRED"
+	ErrCodeOTPAttemptsExceeded       = "OTP_ATTEMPTS_EXCEEDED"
+	ErrCodeEmailNotVerified          = "EMAIL_NOT_VERIFIED"
+	ErrCodeRateLimited               = "RATE_LIMITED"
+	ErrCodeUserNotFound              = "USER_NOT_FOUND"
+	ErrCodeInvalidRole               = "INVALID_ROLE"
+	ErrCodeInvalidInput              = "INVALID_INPUT"
+	ErrCodeUnauthorized              = "UNAUTHORIZED"
+	ErrCodeTokenExpired              = "TOKEN_EXPIRED"
+	ErrCodeTokenInvalid              = "TOKEN_INVALID"
+	ErrCodeInternalError             = "INTERNAL_ERROR"
 	ErrCodeRegistrationTokenRequired = "REGISTRATION_TOKEN_REQUIRED"
-	ErrCodeDriverDocsRequired    = "DRIVER_DOCS_REQUIRED"
-	ErrCodeProfileNotFound       = "PROFILE_NOT_FOUND"
+	ErrCodeDriverDocsRequired        = "DRIVER_DOCS_REQUIRED"
+	ErrCodeProfileNotFound           = "PROFILE_NOT_FOUND"
+
+	// QA round (migration 000032) — car lifecycle guards.
+	ErrCodeCarCurrentlyRented       = "CAR_CURRENTLY_RENTED"
+	ErrCodeCarHasActiveObligations  = "CAR_HAS_ACTIVE_OBLIGATIONS"
+	ErrCodeSaleRequirementsNotMet   = "SALE_REQUIREMENTS_NOT_MET"
+	ErrCodeMissingRequiredDocuments = "MISSING_REQUIRED_DOCUMENTS"
 )
 
 // APIError represents a structured API error

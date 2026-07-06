@@ -5,18 +5,40 @@ import UniformTypeIdentifiers
 // MARK: - Document Upload Card
 
 /// Reusable card for uploading a document with status display.
-/// Supports both Photo Library and Files as upload sources.
+/// Sources: Take Photo (when a camera exists), Photo Library, Files — via
+/// the shared `DocumentSourcePicker` (QA pt 1). Every screen that renders
+/// this card (onboarding, signup, ProfileView's driver-docs sheet) gets the
+/// camera path automatically.
+///
+/// Preview (QA pt 11): tapping the uploaded-file row opens a
+/// `DocumentPreviewSheet`. The sheet shows, in order of preference:
+///   1. `remoteFileURL` — a signed URL for the stored document, when the
+///      caller has one (the user-documents list API doesn't return URLs
+///      yet, so existing call sites simply don't pass it), else
+///   2. the locally staged bytes from the most recent pick this session.
 struct DocumentUploadCard: View {
     let type: DocumentType
     let document: Document?
     let isUploading: Bool
     let onFileSelected: (Data, String, String) -> Void // (data, filename, mimeType)
     let onDelete: () -> Void
+    /// Optional signed URL for the already-uploaded document, used for
+    /// tap-to-preview. Defaults to nil so existing call sites are unchanged.
+    var remoteFileURL: String? = nil
 
     @State private var showSourceChooser = false
-    @State private var showPhotoPicker = false
-    @State private var showFilePicker = false
-    @State private var pickerItem: PhotosPickerItem?
+    @State private var showPreview = false
+    @State private var lastPicked: PickedDocument?
+
+    private var previewSource: DocumentPreviewSheet.Source? {
+        if let remoteFileURL, let doc = document {
+            return .remoteURL(remoteFileURL, filename: doc.fileName)
+        }
+        if let picked = lastPicked {
+            return .localData(picked.data, filename: picked.filename, mimeType: picked.mimeType)
+        }
+        return nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -71,20 +93,32 @@ struct DocumentUploadCard: View {
             } else if let doc = document {
                 // Show uploaded document info
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "doc.fill")
-                            .foregroundColor(.driveBaiPrimary)
-                        Text(doc.fileName)
-                            .font(.subheadline)
-                            .lineLimit(1)
-                        Spacer()
-                        Text(formatFileSize(doc.fileSize))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                    Button {
+                        if previewSource != nil { showPreview = true }
+                    } label: {
+                        HStack {
+                            Image(systemName: "doc.fill")
+                                .foregroundColor(.driveBaiPrimary)
+                            Text(doc.fileName)
+                                .font(.subheadline)
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Spacer()
+                            Text(formatFileSize(doc.fileSize))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            if previewSource != nil {
+                                Image(systemName: "eye")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(12)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(8)
                     }
-                    .padding(12)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(8)
+                    .buttonStyle(.plain)
+                    .disabled(previewSource == nil)
 
                     // Action buttons
                     HStack(spacing: 12) {
@@ -115,7 +149,9 @@ struct DocumentUploadCard: View {
                             Text("Tap to upload")
                                 .font(.subheadline)
                                 .foregroundColor(.driveBaiPrimary)
-                            Text("Photo Library or Files")
+                            Text(CameraCaptureView.isCameraAvailable
+                                 ? "Camera, Photo Library or Files"
+                                 : "Photo Library or Files")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -134,42 +170,14 @@ struct DocumentUploadCard: View {
         .background(Color(.systemBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
-        .confirmationDialog("Upload Document", isPresented: $showSourceChooser, titleVisibility: .visible) {
-            Button("Photo Library") { showPhotoPicker = true }
-            Button("Files") { showFilePicker = true }
-            Button("Cancel", role: .cancel) {}
+        .documentSourcePicker(isPresented: $showSourceChooser, filenameBase: type.rawValue) { picked in
+            lastPicked = picked
+            onFileSelected(picked.data, picked.filename, picked.mimeType)
         }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItem, matching: .images)
-        .onChange(of: pickerItem) { _, newItem in
-            guard let item = newItem else { return }
-            pickerItem = nil
-            Task {
-                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-                let mimeType: String
-                let ext: String
-                if let contentType = item.supportedContentTypes.first, contentType.conforms(to: .png) {
-                    mimeType = "image/png"
-                    ext = "png"
-                } else {
-                    mimeType = "image/jpeg"
-                    ext = "jpg"
-                }
-                let filename = "\(type.rawValue).\(ext)"
-                await MainActor.run { onFileSelected(data, filename, mimeType) }
+        .sheet(isPresented: $showPreview) {
+            if let source = previewSource {
+                DocumentPreviewSheet(source: source)
             }
-        }
-        .fileImporter(
-            isPresented: $showFilePicker,
-            allowedContentTypes: [.pdf, .jpeg, .png, .image],
-            allowsMultipleSelection: false
-        ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            guard url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
-            guard let data = try? Data(contentsOf: url) else { return }
-            let filename = url.lastPathComponent
-            let mimeType = mimeTypeForURL(url)
-            onFileSelected(data, filename, mimeType)
         }
     }
 
@@ -185,15 +193,6 @@ struct DocumentUploadCard: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
-    }
-
-    private func mimeTypeForURL(_ url: URL) -> String {
-        switch url.pathExtension.lowercased() {
-        case "pdf": return "application/pdf"
-        case "png": return "image/png"
-        case "jpg", "jpeg": return "image/jpeg"
-        default: return "application/octet-stream"
-        }
     }
 }
 

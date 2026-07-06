@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -21,11 +22,11 @@ import (
 )
 
 type CarHandler struct {
-	carRepo            *repository.CarRepository
-	photoRepo          *repository.CarPhotoRepository
-	docRepo            *repository.CarDocumentRepository
-	userRepo           *repository.UserRepository
-	uploadDir          string
+	carRepo   *repository.CarRepository
+	photoRepo *repository.CarPhotoRepository
+	docRepo   *repository.CarDocumentRepository
+	userRepo  *repository.UserRepository
+	uploadDir string
 	// urlSigner signs car-document URLs (insurance, registration). Car
 	// PHOTO URLs are not signed — they're publicly readable for Discovery.
 	urlSigner          *PrivateURLSigner
@@ -101,6 +102,28 @@ func (h *CarHandler) ListCars(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ownerCarResponse rebuilds the full owner-facing CarResponse for a car:
+// photos, documents, owner info, AND the active_rental sub-object. Every
+// owner-scoped WRITE endpoint (update / pause / location) responds through
+// this so the client's canonical store copy never loses activeRental on an
+// autosave round-trip — the QA pt-3 status parity applies to mutations,
+// not just ListCars/GetCar reads.
+func (h *CarHandler) ownerCarResponse(ctx context.Context, carID, ownerID uuid.UUID) *models.CarResponse {
+	car, rental, err := h.carRepo.GetByIDWithActiveRental(ctx, carID)
+	if err != nil || car == nil {
+		slog.Error("ownerCarResponse refetch failed", "error", err, "car_id", carID)
+		return nil
+	}
+	photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
+	documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
+	owner, _ := h.userRepo.GetByID(ctx, ownerID)
+	resp := car.ToResponse(photos, documents, owner, true)
+	if rental != nil {
+		resp.ActiveRental = buildActiveRentalSummary(rental)
+	}
+	return resp
+}
+
 // buildActiveRentalSummary derives the owner-card "active rental" snapshot
 // from the repository row. planned_end_at is pickup_confirmed_at + weeks*7d.
 // current_earned_cents pro-rates based on how many full weeks of the rental
@@ -126,6 +149,7 @@ func buildActiveRentalSummary(row *repository.OwnerCarActiveRental) *models.Acti
 		PickupConfirmedAt:  models.RFC3339Time(row.PickupConfirmedAt),
 		PlannedEndAt:       models.RFC3339Time(plannedEnd),
 		CurrentEarnedCents: row.EffectiveWeeklyPriceCents * int64(billableWeeks),
+		ChatID:             row.ChatID,
 	}
 }
 
@@ -145,14 +169,17 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	car, err := h.carRepo.GetByID(ctx, carID)
+	// Detail/list status parity (QA pt-3 / D9): the same join the My Cars
+	// list uses, scoped to one car, so refreshing a single car can never
+	// clobber the rented state the list showed.
+	car, rental, err := h.carRepo.GetByIDWithActiveRental(ctx, carID)
 	if err != nil {
 		slog.Error("failed to get car", "error", err, "car_id", carID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
 
-	if car == nil {
+	if car == nil || car.IsArchived() {
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "Car not found"))
 		return
 	}
@@ -169,7 +196,13 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 	owner, _ := h.userRepo.GetByID(ctx, userID)
 
 	// GetCar 403s above unless the caller is the owner — VIN is safe here.
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
+	resp := car.ToResponse(photos, documents, owner, true)
+	// active_rental carries driver name/earnings; the ownership 403 above
+	// already guarantees the requester is the owner, so it is safe to attach.
+	if rental != nil {
+		resp.ActiveRental = buildActiveRentalSummary(rental)
+	}
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 // CreateCar creates a new car listing
@@ -291,11 +324,10 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	} else {
 		car.MinYearsLicensed = 2
 	}
-	if req.DepositAmount != nil {
-		car.DepositAmount = *req.DepositAmount
-	} else {
-		car.DepositAmount = 500
-	}
+	// Deposits are removed (QA pt-7 / D8): client-sent values are ignored
+	// and every car stores 0. The column + JSON key survive because shipped
+	// iOS builds decode deposit_amount as a non-optional Double.
+	car.DepositAmount = 0
 	if req.InsuranceCoverage != nil {
 		car.InsuranceCoverage = *req.InsuranceCoverage
 	} else {
@@ -359,7 +391,7 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 
 	// Get existing car
 	car, err := h.carRepo.GetByID(ctx, carID)
-	if err != nil || car == nil {
+	if err != nil || car == nil || car.IsArchived() {
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "Car not found"))
 		return
 	}
@@ -376,7 +408,104 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply updates
+	// Snapshot the pre-update sale flag so the sale-readiness gate below
+	// fires only on the off→on TRANSITION, not on every steady-state PATCH.
+	wasForSale := car.IsForSale
+
+	// Apply updates. Status / is_paused / deposit_amount in the payload are
+	// deliberately IGNORED — see applyCarUpdateRequest.
+	applyCarUpdateRequest(car, &req)
+
+	// Validate pricing
+	if car.IsForRent && car.WeeklyRentPrice.Valid && car.WeeklyRentPrice.Float64 < h.minWeeklyRentPrice {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
+			fmt.Sprintf("Weekly rent price must be at least %.0f", h.minWeeklyRentPrice),
+		))
+		return
+	}
+
+	// Sale-readiness validation (QA pt-8 / D4): enabling For Sale requires
+	// a sale price of at least $1,000 and a 'title' document on file. The
+	// client mirrors these rules as a checklist; details.missing carries
+	// machine-readable reasons.
+	//
+	// LEGACY GRANDFATHERING: the gate fires only on the off→on TRANSITION
+	// (or when the sale price itself is being changed on an already-for-sale
+	// car). The 'title' doc type was introduced by migration 000032, so every
+	// pre-existing for-sale listing lacks it by definition — gating on the
+	// steady state would 422 every unrelated autosave PATCH (description,
+	// mileage, …) on those cars and effectively brick their edit screen.
+	saleTransition := car.IsForSale && !wasForSale
+	salePriceTouched := car.IsForSale && req.SalePrice != nil
+	if saleTransition || salePriceTouched {
+		documents, docErr := h.docRepo.GetByCarID(ctx, car.ID)
+		if docErr != nil {
+			slog.Error("failed to load documents for sale-readiness check", "error", docErr, "car_id", car.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if missing := saleRequirementsMissing(car, documents); len(missing) > 0 {
+			httputil.WriteError(w, http.StatusBadRequest,
+				models.NewAPIError(models.ErrCodeSaleRequirementsNotMet,
+					"This car can't be listed for sale yet").
+					WithDetails(map[string]interface{}{"missing": missing}))
+			return
+		}
+	}
+
+	// Pre-flight VIN uniqueness check, excluding this car so a no-op VIN
+	// round-trip on PATCH doesn't false-positive. Mirrors the CreateCar 409
+	// contract so the iOS client can render the same "VIN already in use"
+	// inline error.
+	if req.VIN != nil && car.VIN.Valid && car.VIN.String != "" {
+		exists, vinErr := h.carRepo.ExistsByVINExcludingID(ctx, car.VIN.String, car.ID)
+		if vinErr != nil {
+			slog.Error("ExistsByVINExcludingID failed", "error", vinErr, "car_id", car.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if exists {
+			writeVINConflict(w)
+			return
+		}
+	}
+
+	// Save to database
+	if err := h.carRepo.Update(ctx, car); err != nil {
+		// Race fallback: a concurrent insert could have claimed the same VIN
+		// between our pre-flight check and this UPDATE. The partial unique
+		// index will raise 23505 — surface it as the same 409 the create
+		// path uses.
+		if isVINUniqueViolation(err) {
+			writeVINConflict(w)
+			return
+		}
+		slog.Error("failed to update car", "error", err, "car_id", carID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	slog.Info("car updated", "car_id", car.ID, "user_id", userID)
+	// UpdateCar 403s above unless the caller is the owner. Respond via the
+	// active-rental-aware builder so an autosave PATCH can't strip the
+	// Rented state from the client's store copy.
+	if resp := h.ownerCarResponse(ctx, car.ID, userID); resp != nil {
+		httputil.WriteJSON(w, http.StatusOK, resp)
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+}
+
+// applyCarUpdateRequest copies the non-nil fields of an UpdateCarRequest
+// onto the car. Pure — no I/O — so the ignore rules below are unit-testable.
+//
+// Deliberately IGNORED payload fields:
+//   - status / is_paused (QA pt-9 / D2): pause flows ONLY through
+//     POST /cars/{carId}/pause, so a full-car autosave PATCH can never
+//     clobber a rented status or silently unpause a listing;
+//   - deposit_amount (QA pt-7 / D8): deposits are removed; the field is
+//     accepted on the wire for old builds but never persisted (stays 0).
+func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
 	if req.Title != nil {
 		car.Title = *req.Title
 	}
@@ -448,75 +577,90 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 	if req.MinYearsLicensed != nil {
 		car.MinYearsLicensed = *req.MinYearsLicensed
 	}
-	if req.DepositAmount != nil {
-		car.DepositAmount = *req.DepositAmount
-	}
 	if req.InsuranceCoverage != nil {
 		car.InsuranceCoverage = *req.InsuranceCoverage
 	}
-	if req.Status != nil {
-		car.Status = *req.Status
-	}
-	if req.IsPaused != nil {
-		car.IsPaused = *req.IsPaused
-		if *req.IsPaused {
-			car.Status = models.CarStatusPaused
-		} else if car.Status == models.CarStatusPaused {
-			car.Status = models.CarStatusAvailable
-		}
-	}
-
-	// Validate pricing
-	if car.IsForRent && car.WeeklyRentPrice.Valid && car.WeeklyRentPrice.Float64 < h.minWeeklyRentPrice {
-		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
-			fmt.Sprintf("Weekly rent price must be at least %.0f", h.minWeeklyRentPrice),
-		))
-		return
-	}
-
-	// Pre-flight VIN uniqueness check, excluding this car so a no-op VIN
-	// round-trip on PATCH doesn't false-positive. Mirrors the CreateCar 409
-	// contract so the iOS client can render the same "VIN already in use"
-	// inline error.
-	if req.VIN != nil && car.VIN.Valid && car.VIN.String != "" {
-		exists, vinErr := h.carRepo.ExistsByVINExcludingID(ctx, car.VIN.String, car.ID)
-		if vinErr != nil {
-			slog.Error("ExistsByVINExcludingID failed", "error", vinErr, "car_id", car.ID)
-			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
-			return
-		}
-		if exists {
-			writeVINConflict(w)
-			return
-		}
-	}
-
-	// Save to database
-	if err := h.carRepo.Update(ctx, car); err != nil {
-		// Race fallback: a concurrent insert could have claimed the same VIN
-		// between our pre-flight check and this UPDATE. The partial unique
-		// index will raise 23505 — surface it as the same 409 the create
-		// path uses.
-		if isVINUniqueViolation(err) {
-			writeVINConflict(w)
-			return
-		}
-		slog.Error("failed to update car", "error", err, "car_id", carID)
-		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
-		return
-	}
-
-	// Get photos, documents, and owner info for response
-	photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
-	documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
-	owner, _ := h.userRepo.GetByID(ctx, userID)
-
-	slog.Info("car updated", "car_id", car.ID, "user_id", userID)
-	// UpdateCar 403s above unless the caller is the owner.
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
+	// req.Status, req.IsPaused, req.DepositAmount: intentionally not applied.
 }
 
-// DeleteCar deletes a car listing
+// minSalePriceDollars is the floor for listing a car for sale (D4). Kept in
+// sync with models.PurchaseOfferMinCents (100000 cents = $1,000), the
+// minimum offer the purchase flow accepts.
+const minSalePriceDollars = 1000
+
+// Machine-readable reasons in SALE_REQUIREMENTS_NOT_MET details.missing.
+const (
+	saleMissingPriceMin      = "sale_price_min"
+	saleMissingTitleDocument = "title_document"
+)
+
+// validPhotoSlots is the accepted set for POST /cars/{id}/photos. Kept in
+// lockstep with the car_photos_slot_type_check CHECK constraint (migration
+// 000032): the original five slots plus the three guided-capture additions.
+var validPhotoSlots = map[models.PhotoSlotType]bool{
+	models.PhotoSlotCoverFront:  true,
+	models.PhotoSlotRight:       true,
+	models.PhotoSlotLeft:        true,
+	models.PhotoSlotBack:        true,
+	models.PhotoSlotDashboard:   true,
+	models.PhotoSlotFrontLeft34: true,
+	models.PhotoSlotRearRight34: true,
+	models.PhotoSlotInterior:    true,
+}
+
+// validCarDocumentTypes is the accepted set for POST /cars/{id}/documents.
+// Kept in lockstep with car_documents_document_type_check (migration
+// 000032); 'title' is required to enable for-sale (D4).
+var validCarDocumentTypes = map[models.CarDocumentType]bool{
+	models.CarDocInspection:   true,
+	models.CarDocRegistration: true,
+	models.CarDocPermit:       true,
+	models.CarDocInsurance:    true,
+	models.CarDocTitle:        true,
+}
+
+// pauseConflictError returns the 409 payload when the car can't be
+// paused/unpaused because a rental is in flight (D2), nil otherwise.
+// Pure — unit-testable without a repository.
+func pauseConflictError(car *models.Car) *models.APIError {
+	if car.Status == models.CarStatusRented {
+		return models.NewAPIError(models.ErrCodeCarCurrentlyRented,
+			"You can't pause a car during an active rental")
+	}
+	return nil
+}
+
+// saleRequirementsMissing returns the unmet sale-readiness requirements for
+// a car that would end up listed for sale: a sale price of at least
+// $1,000 and a 'title' document on file. Empty slice = ready.
+func saleRequirementsMissing(car *models.Car, documents []models.CarDocument) []string {
+	missing := []string{}
+	if !car.SalePrice.Valid || car.SalePrice.Float64 < minSalePriceDollars {
+		missing = append(missing, saleMissingPriceMin)
+	}
+	hasTitle := false
+	for _, d := range documents {
+		if d.DocumentType == models.CarDocTitle {
+			hasTitle = true
+			break
+		}
+	}
+	if !hasTitle {
+		missing = append(missing, saleMissingTitleDocument)
+	}
+	return missing
+}
+
+// DeleteCar soft-archives a car listing (QA pt-9 / D3).
+//
+// Hard DELETE is gone: it either CASCADE-destroyed chats/messages/leases/
+// payments (migration 000007 CASCADE) — even mid-active-rental — or 500'd
+// on the purchase/accident RESTRICT FKs, after already removing photo
+// files from disk. Instead we:
+//  1. return 409 CAR_HAS_ACTIVE_OBLIGATIONS while any live commitment
+//     exists (active lease, open return, open handover, live purchase);
+//  2. otherwise SET archived_at = now(). No rows and NO FILES are deleted —
+//     history in chats/leases still references those images.
 func (h *CarHandler) DeleteCar(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	userID, ok := httputil.GetUserID(ctx)
@@ -545,26 +689,34 @@ func (h *CarHandler) DeleteCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete photos from disk
-	photos, _ := h.photoRepo.GetByCarID(ctx, carID)
-	for _, photo := range photos {
-		os.Remove(photo.FilePath)
+	// Already archived → idempotent success (double-tap / retry safe).
+	if car.IsArchived() {
+		httputil.WriteSuccess(w, http.StatusOK, "Car deleted successfully", nil)
+		return
 	}
 
-	// Delete documents from disk
-	documents, _ := h.docRepo.GetByCarID(ctx, carID)
-	for _, doc := range documents {
-		os.Remove(doc.FilePath)
+	// Block while live commitments reference this car.
+	obligations, err := h.carRepo.GetActiveObligations(ctx, carID)
+	if err != nil {
+		slog.Error("failed to check car obligations", "error", err, "car_id", carID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if len(obligations) > 0 {
+		httputil.WriteError(w, http.StatusConflict,
+			models.NewAPIError(models.ErrCodeCarHasActiveObligations,
+				"This car has an active rental, return, handover or purchase in progress and can't be deleted yet").
+				WithDetails(map[string]interface{}{"obligations": obligations}))
+		return
 	}
 
-	// Delete car (cascades to photos and documents)
-	if err := h.carRepo.Delete(ctx, carID); err != nil {
-		slog.Error("failed to delete car", "error", err, "car_id", carID)
+	if err := h.carRepo.ArchiveCar(ctx, carID); err != nil {
+		slog.Error("failed to archive car", "error", err, "car_id", carID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
 
-	slog.Info("car deleted", "car_id", carID, "user_id", userID)
+	slog.Info("car archived", "car_id", carID, "user_id", userID)
 	httputil.WriteSuccess(w, http.StatusOK, "Car deleted successfully", nil)
 }
 
@@ -586,7 +738,7 @@ func (h *CarHandler) PauseCar(w http.ResponseWriter, r *http.Request) {
 
 	// Get existing car
 	car, err := h.carRepo.GetByID(ctx, carID)
-	if err != nil || car == nil {
+	if err != nil || car == nil || car.IsArchived() {
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "Car not found"))
 		return
 	}
@@ -594,6 +746,15 @@ func (h *CarHandler) PauseCar(w http.ResponseWriter, r *http.Request) {
 	// Verify ownership
 	if car.OwnerID != userID {
 		httputil.WriteError(w, http.StatusForbidden, models.NewAPIError("FORBIDDEN", "You do not own this car"))
+		return
+	}
+
+	// D2: pausing a rented car would hide an active rental and — on
+	// unpause — re-list a car another driver physically holds. Since
+	// rented cars can never become paused, unpausing safely restores
+	// 'available'.
+	if apiErr := pauseConflictError(car); apiErr != nil {
+		httputil.WriteError(w, http.StatusConflict, apiErr)
 		return
 	}
 
@@ -610,15 +771,14 @@ func (h *CarHandler) PauseCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get updated car
-	car, _ = h.carRepo.GetByID(ctx, carID)
-	photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
-	documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
-	owner, _ := h.userRepo.GetByID(ctx, userID)
-
 	slog.Info("car paused toggled", "car_id", carID, "is_paused", newIsPaused)
-	// PauseCar 403s above unless the caller is the owner.
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
+	// PauseCar 403s above unless the caller is the owner. Active-rental-
+	// aware response — see ownerCarResponse.
+	if resp := h.ownerCarResponse(ctx, carID, userID); resp != nil {
+		httputil.WriteJSON(w, http.StatusOK, resp)
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 }
 
 // ListCarPhotos returns all photos for a car
@@ -713,14 +873,7 @@ func (h *CarHandler) UploadCarPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slotType := models.PhotoSlotType(slotTypeStr)
-	validSlots := map[models.PhotoSlotType]bool{
-		models.PhotoSlotCoverFront: true,
-		models.PhotoSlotRight:      true,
-		models.PhotoSlotLeft:       true,
-		models.PhotoSlotBack:       true,
-		models.PhotoSlotDashboard:  true,
-	}
-	if !validSlots[slotType] {
+	if !validPhotoSlots[slotType] {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid slot_type"))
 		return
 	}
@@ -945,10 +1098,10 @@ func (h *CarHandler) ListCarDocuments(w http.ResponseWriter, r *http.Request) {
 			DocumentType: d.DocumentType,
 			FileName:     d.FileName,
 			// Sign per response — DB stores raw `/uploads/cars/.../documents/...`.
-			FileURL:      h.urlSigner.Sign(d.FileURL),
-			FileSize:     d.FileSize,
-			CreatedAt:    models.RFC3339Time(d.CreatedAt),
-			UpdatedAt:    models.RFC3339Time(d.UpdatedAt),
+			FileURL:   h.urlSigner.Sign(d.FileURL),
+			FileSize:  d.FileSize,
+			CreatedAt: models.RFC3339Time(d.CreatedAt),
+			UpdatedAt: models.RFC3339Time(d.UpdatedAt),
 		})
 	}
 
@@ -998,13 +1151,7 @@ func (h *CarHandler) UploadCarDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	docType := models.CarDocumentType(docTypeStr)
-	validTypes := map[models.CarDocumentType]bool{
-		models.CarDocInspection:   true,
-		models.CarDocRegistration: true,
-		models.CarDocPermit:       true,
-		models.CarDocInsurance:    true,
-	}
-	if !validTypes[docType] {
+	if !validCarDocumentTypes[docType] {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid document_type"))
 		return
 	}
@@ -1218,15 +1365,14 @@ func (h *CarHandler) UpdateCarLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch updated car for response
-	car, _ = h.carRepo.GetByID(ctx, carID)
-	photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
-	documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
-	owner, _ := h.userRepo.GetByID(ctx, userID)
-
 	slog.Info("car location updated", "car_id", carID, "user_id", userID)
-	// UpdateCarLocation 403s above unless the caller is the owner.
-	httputil.WriteJSON(w, http.StatusOK, car.ToResponse(photos, documents, owner, true))
+	// UpdateCarLocation 403s above unless the caller is the owner. Active-
+	// rental-aware response — see ownerCarResponse.
+	if resp := h.ownerCarResponse(ctx, carID, userID); resp != nil {
+		httputil.WriteJSON(w, http.StatusOK, resp)
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 }
 
 // DeleteCarDocument deletes a car document

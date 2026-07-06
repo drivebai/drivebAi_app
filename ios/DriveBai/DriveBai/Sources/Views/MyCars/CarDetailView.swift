@@ -180,15 +180,11 @@ private struct CarHeroImage: View {
         }
     }
 
+    /// Hero status badge — THE canonical pill (QA pt 3). Derivation goes
+    /// through CarBusinessState so this can never disagree with the My Cars
+    /// card (no more "Available now!" while a rental is running).
     private var statusBadge: some View {
-        Text(car.status.displayText)
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundColor(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(statusColor(for: car.status))
-            .cornerRadius(16)
+        CarStatusPill(state: .forCar(car), style: .hero)
     }
 
     private var pageIndicator: some View {
@@ -203,15 +199,6 @@ private struct CarHeroImage: View {
         .padding(.vertical, 6)
         .background(Color.black.opacity(0.3))
         .cornerRadius(12)
-    }
-
-    private func statusColor(for status: CarListingStatus) -> Color {
-        switch status {
-        case .available: return .green
-        case .rented: return .blue
-        case .pending: return .orange
-        case .paused: return .gray
-        }
     }
 }
 
@@ -342,6 +329,8 @@ private struct CarRequirementsRow: View {
                 .font(.headline)
                 .foregroundColor(.primary)
 
+            // Deposit requirement removed (QA pt 7) — deposits are no longer
+            // part of the product; only the licensing requirement remains.
             LazyVGrid(columns: [
                 GridItem(.flexible()),
                 GridItem(.flexible())
@@ -349,11 +338,6 @@ private struct CarRequirementsRow: View {
                 RequirementItem(
                     icon: "person.text.rectangle",
                     text: requirements.licensingText
-                )
-
-                RequirementItem(
-                    icon: "creditcard",
-                    text: requirements.depositText
                 )
             }
         }

@@ -210,12 +210,12 @@ func (h *PurchaseRequestHandler) buildResponse(ctx context.Context, p *models.Pu
 
 func (h *PurchaseRequestHandler) broadcast(eventType string, p *models.PurchaseRequest, extras map[string]any) {
 	payload := map[string]any{
-		"id":                p.ID,
-		"car_id":            p.CarID,
-		"seller_id":         p.SellerID,
-		"buyer_id":          p.BuyerID,
-		"status":            p.Status,
-		"chat_id":           p.ChatID,
+		"id":                 p.ID,
+		"car_id":             p.CarID,
+		"seller_id":          p.SellerID,
+		"buyer_id":           p.BuyerID,
+		"status":             p.Status,
+		"chat_id":            p.ChatID,
 		"offer_amount_cents": p.OfferAmountCents,
 	}
 	for k, v := range extras {
@@ -339,7 +339,7 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 	}
 
 	car, err := h.carRepo.GetByID(r.Context(), carID)
-	if err != nil || car == nil {
+	if err != nil || car == nil || car.IsArchived() {
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("CAR_NOT_FOUND", "Car not found"))
 		return
 	}
@@ -353,6 +353,16 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 	}
 	if car.Status == models.CarStatusSold || car.IsPaused {
 		httputil.WriteError(w, http.StatusConflict, models.ErrCarSold)
+		return
+	}
+	// D4: owners may configure is_for_sale anytime (even mid-rental), but a
+	// purchase can't START while a driver physically holds the car. This is
+	// the single choke point — blocking the toggle client-side would race
+	// with rental start anyway. Reliable after the migration-000032 status
+	// backfill.
+	if car.Status == models.CarStatusRented {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError(
+			models.ErrCodeCarCurrentlyRented, "This car is currently rented and can't be purchased right now"))
 		return
 	}
 	// Friendly duplicate check before the unique-index blows.

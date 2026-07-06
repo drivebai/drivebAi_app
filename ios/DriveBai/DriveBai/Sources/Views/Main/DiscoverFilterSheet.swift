@@ -11,7 +11,7 @@ struct DiscoverFilters: Equatable {
     var minYear: Int? = nil
     var bodyType: CarBodyType? = nil
     var fuelType: FuelType? = nil
-    var maxDeposit: Double? = nil         // in dollars
+    // maxDeposit removed (QA pt 7): deposits no longer exist in the product.
 
     /// Number of active filters — drives the badge next to the toolbar button.
     var activeCount: Int {
@@ -20,7 +20,6 @@ struct DiscoverFilters: Equatable {
         if minYear != nil { n += 1 }
         if bodyType != nil { n += 1 }
         if fuelType != nil { n += 1 }
-        if maxDeposit != nil { n += 1 }
         return n
     }
 
@@ -42,11 +41,8 @@ struct DiscoverFilterSheet: View {
     @State private var priceMax: Double
     @State private var yearEnabled: Bool
     @State private var minYear: Double
-    @State private var depositEnabled: Bool
-    @State private var depositMax: Double
 
     private let priceRange: ClosedRange<Double> = 50...2000
-    private let depositRange: ClosedRange<Double> = 0...5000
     private let yearRange: ClosedRange<Double> = 2000...Double(Calendar.current.component(.year, from: Date()))
 
     init(viewModel: DiscoverViewModel) {
@@ -57,8 +53,6 @@ struct DiscoverFilterSheet: View {
         _priceMax = State(initialValue: current.priceMaxWeekly ?? 500)
         _yearEnabled = State(initialValue: current.minYear != nil)
         _minYear = State(initialValue: Double(current.minYear ?? 2018))
-        _depositEnabled = State(initialValue: current.maxDeposit != nil)
-        _depositMax = State(initialValue: current.maxDeposit ?? 1000)
     }
 
     var body: some View {
@@ -68,7 +62,6 @@ struct DiscoverFilterSheet: View {
                 yearSection
                 bodyTypeSection
                 fuelTypeSection
-                depositSection
             }
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
@@ -148,30 +141,11 @@ struct DiscoverFilterSheet: View {
         }
     }
 
-    private var depositSection: some View {
-        Section {
-            Toggle("Max deposit", isOn: $depositEnabled)
-            if depositEnabled {
-                HStack {
-                    Text("Up to")
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text("$\(Int(depositMax))")
-                        .fontWeight(.semibold)
-                }
-                Slider(value: $depositMax, in: depositRange, step: 50)
-            }
-        } header: {
-            Text("Deposit")
-        }
-    }
-
     // MARK: - Actions
 
     private func resetFilters() {
         priceEnabled = false
         yearEnabled = false
-        depositEnabled = false
         draft = .empty
         viewModel.filters = .empty
         Task { await viewModel.fetchListings() }
@@ -181,7 +155,6 @@ struct DiscoverFilterSheet: View {
     private func applyFilters() {
         draft.priceMaxWeekly = priceEnabled ? priceMax : nil
         draft.minYear = yearEnabled ? Int(minYear) : nil
-        draft.maxDeposit = depositEnabled ? depositMax : nil
         viewModel.filters = draft
         Task { await viewModel.fetchListings() }
         dismiss()

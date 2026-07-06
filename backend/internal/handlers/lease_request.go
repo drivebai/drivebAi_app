@@ -121,6 +121,16 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Archived listings are dead to the marketplace. GetByID deliberately
+	// returns them (history flows need to resolve them), so every write
+	// entry point must gate explicitly — purchase Create already does.
+	// Without this mirror, a driver holding a stale car id (likes list,
+	// old deep link) could open a lease against a "deleted" listing.
+	if car == nil || car.IsArchived() {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("CAR_NOT_FOUND", "Car listing not found"))
+		return
+	}
+
 	// Validate: car must be for rent
 	if !car.IsForRent || !car.WeeklyRentPrice.Valid {
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrCarNotForRent)

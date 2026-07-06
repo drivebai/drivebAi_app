@@ -64,6 +64,13 @@ const (
 	PhotoSlotLeft       PhotoSlotType = "left"
 	PhotoSlotBack       PhotoSlotType = "back"
 	PhotoSlotDashboard  PhotoSlotType = "dashboard"
+	// Guided-capture slots added by migration 000032. Raw values are the
+	// canonical storage strings; the original five stay unchanged so
+	// cover_front auto-publish and every cover-photo subquery keep working
+	// with zero row rewrites.
+	PhotoSlotFrontLeft34 PhotoSlotType = "front_left_34"
+	PhotoSlotRearRight34 PhotoSlotType = "rear_right_34"
+	PhotoSlotInterior    PhotoSlotType = "interior"
 )
 
 // CarDocumentType represents the type of car document
@@ -74,14 +81,49 @@ const (
 	CarDocRegistration CarDocumentType = "registration"
 	CarDocPermit       CarDocumentType = "permit"
 	CarDocInsurance    CarDocumentType = "insurance"
+	// CarDocTitle (migration 000032) is required before a listing can be
+	// enabled for sale (D4) and before admin approval of a for-sale car (D5).
+	CarDocTitle CarDocumentType = "title"
 )
+
+// RequiredCarDocumentTypes returns the document types a car must have on
+// file before it can be approved (admin ApproveCar) — registration,
+// inspection and insurance always; title additionally when the car is
+// listed for sale. Single definition shared by the admin approve guard,
+// the admin list/detail "missing docs" badge, and UpdateCar's
+// sale-readiness check.
+func RequiredCarDocumentTypes(isForSale bool) []CarDocumentType {
+	required := []CarDocumentType{CarDocRegistration, CarDocInspection, CarDocInsurance}
+	if isForSale {
+		required = append(required, CarDocTitle)
+	}
+	return required
+}
+
+// MissingRequiredCarDocuments computes which required document types are
+// absent from the given on-file set (raw document_type strings). Returns an
+// empty (non-nil) slice when nothing is missing so JSON encodes `[]` rather
+// than `null`.
+func MissingRequiredCarDocuments(isForSale bool, onFile []string) []string {
+	have := make(map[CarDocumentType]bool, len(onFile))
+	for _, t := range onFile {
+		have[CarDocumentType(t)] = true
+	}
+	missing := []string{}
+	for _, t := range RequiredCarDocumentTypes(isForSale) {
+		if !have[t] {
+			missing = append(missing, string(t))
+		}
+	}
+	return missing
+}
 
 // Car represents a car listing in the system
 type Car struct {
-	ID          uuid.UUID        `json:"id"`
-	OwnerID     uuid.UUID        `json:"owner_id"`
-	Title       string           `json:"title"`
-	Description sql.NullString   `json:"-"`
+	ID          uuid.UUID      `json:"id"`
+	OwnerID     uuid.UUID      `json:"owner_id"`
+	Title       string         `json:"title"`
+	Description sql.NullString `json:"-"`
 
 	// Specs
 	VIN      sql.NullString `json:"-"`
@@ -122,9 +164,20 @@ type Car struct {
 	RentedWeeks int     `json:"rented_weeks"`
 	TotalEarned float64 `json:"total_earned"`
 
+	// Soft-archive marker (migration 000032). Non-NULL means the owner
+	// "deleted" the listing: it is excluded from Discover, owner lists and
+	// VIN uniqueness, but the row (and its files) survive so historical
+	// chats/leases/payments keep resolving.
+	ArchivedAt sql.NullTime `json:"-"`
+
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// IsArchived reports whether the listing has been soft-archived.
+func (c *Car) IsArchived() bool {
+	return c.ArchivedAt.Valid
 }
 
 // CarPhoto represents a photo of a car
@@ -172,14 +225,19 @@ type ActiveRentalSummary struct {
 	PickupConfirmedAt  RFC3339Time `json:"pickup_confirmed_at"`
 	PlannedEndAt       RFC3339Time `json:"planned_end_at"`
 	CurrentEarnedCents int64       `json:"current_earned_cents"`
+	// ChatID is the driver↔owner chat for this rental, when one exists
+	// (deterministic via uq_chats_car_driver_owner). Lets the owner's My
+	// Cars row deep-link straight into the conversation. Omitted when no
+	// chat has been created for the pair.
+	ChatID *uuid.UUID `json:"chat_id,omitempty"`
 }
 
 // CarResponse is the API response format for a car
 type CarResponse struct {
-	ID          uuid.UUID        `json:"id"`
-	OwnerID     uuid.UUID        `json:"owner_id"`
-	Title       string           `json:"title"`
-	Description string           `json:"description"`
+	ID          uuid.UUID `json:"id"`
+	OwnerID     uuid.UUID `json:"owner_id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
 
 	// Specs
 	Specs CarSpecsResponse `json:"specs"`
@@ -443,7 +501,10 @@ type CreateCarRequest struct {
 	SalePrice       *float64 `json:"sale_price,omitempty"`
 
 	// Requirements
-	MinYearsLicensed  *int               `json:"min_years_licensed,omitempty"`
+	MinYearsLicensed *int `json:"min_years_licensed,omitempty"`
+	// DepositAmount is DEPRECATED (QA round pt-7): accepted for old-build
+	// wire compatibility but ignored — deposits never entered any payment
+	// formula and are being removed. CreateCar always stores 0.
 	DepositAmount     *float64           `json:"deposit_amount,omitempty"`
 	InsuranceCoverage *InsuranceCoverage `json:"insurance_coverage,omitempty"`
 }
@@ -479,11 +540,15 @@ type UpdateCarRequest struct {
 	SalePrice       *float64 `json:"sale_price,omitempty"`
 
 	// Requirements
-	MinYearsLicensed  *int               `json:"min_years_licensed,omitempty"`
+	MinYearsLicensed *int `json:"min_years_licensed,omitempty"`
+	// DepositAmount is DEPRECATED (QA round pt-7): accepted but ignored.
 	DepositAmount     *float64           `json:"deposit_amount,omitempty"`
 	InsuranceCoverage *InsuranceCoverage `json:"insurance_coverage,omitempty"`
 
-	// Status
+	// Status / IsPaused are DEPRECATED (QA round pt-9, decision D2):
+	// accepted for old-build wire compatibility but IGNORED by UpdateCar.
+	// Pause state flows exclusively through POST /cars/{carId}/pause so a
+	// full-car autosave PATCH can never clobber a rented/paused status.
 	Status   *CarListingStatus `json:"status,omitempty"`
 	IsPaused *bool             `json:"is_paused,omitempty"`
 }

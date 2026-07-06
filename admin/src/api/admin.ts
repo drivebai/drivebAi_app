@@ -31,6 +31,16 @@ export const adminApi = {
     body: { first_name?: string; last_name?: string; phone?: string },
   ) => api.patch<AdminUser>(`${BASE}/users/${id}/profile`, body),
 
+  /**
+   * Admin-triggered password reset. Passwords are one-way bcrypt hashes —
+   * there is nothing to "view" or "set" here by design. The backend reuses
+   * the ForgotPassword internals: invalidates old tokens, stores a hashed
+   * one-time token, and emails the user a reset link. Responds 202; the
+   * token is never returned to the admin.
+   */
+  resetUserPassword: (id: string) =>
+    api.post<{ message?: string }>(`${BASE}/users/${id}/reset-password`, {}),
+
   // ---- Cars ----
   listCars: (q: { query?: string; page?: number; limit?: number }) =>
     api.get<Page<AdminCar>>(`${BASE}/cars${qs(q)}`),

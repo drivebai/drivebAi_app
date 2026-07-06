@@ -7,6 +7,7 @@ import Toggle from '../components/Toggle.vue'
 import Drawer from '../components/Drawer.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { adminApi } from '../api/admin'
+import { ApiError } from '../api/client'
 import type { AdminCar, AdminCarDetail } from '../api/types'
 import { useToastStore } from '../stores/toast'
 import { fmtDate, fmtMoney, imgUrl } from '../utils/format'
@@ -73,7 +74,29 @@ async function apply(car: AdminCar, next: boolean) {
     if (detail.value?.id === car.id) detail.value = { ...detail.value, is_approved: next }
     toast.success(next ? 'Vehicle approved — visible in Discover' : 'Vehicle hidden from Discover')
   } catch (e: any) {
-    toast.error(e?.message || 'Action failed')
+    // Approval is refused (422 MISSING_REQUIRED_DOCUMENTS) while the owner
+    // hasn't uploaded registration + inspection + insurance (+ title when
+    // for-sale). Tell the admin exactly which documents are missing instead
+    // of a generic failure, and sync the row badge with the server's answer.
+    if (e instanceof ApiError && e.code === 'MISSING_REQUIRED_DOCUMENTS') {
+      const missing = Array.isArray(e.details?.missing)
+        ? (e.details!.missing as string[])
+        : []
+      if (missing.length) {
+        car.missing_required_documents = missing
+        if (detail.value?.id === car.id) {
+          detail.value = { ...detail.value, missing_required_documents: missing }
+        }
+      }
+      const list = missing.map(docLabel).join(', ')
+      toast.error(
+        list
+          ? `Can't approve — missing required documents: ${list}. The owner must upload them from the app first.`
+          : e.message || "Can't approve — required documents are missing.",
+      )
+    } else {
+      toast.error(e?.message || 'Action failed')
+    }
   } finally {
     pending.value = null
   }
@@ -83,6 +106,30 @@ function statusTone(s: string): 'success' | 'warning' | 'neutral' {
   if (s === 'available') return 'success'
   if (s === 'pending')   return 'warning'
   return 'neutral'
+}
+
+// ---- Required documents (Point 10) ----
+// The backend computes missing_required_documents per car (registration +
+// inspection + insurance, plus title when is_for_sale). Approved cars are
+// grandfathered, so the warning badge only matters for not-yet-approved cars.
+const DOC_LABELS: Record<string, string> = {
+  registration: 'Registration',
+  inspection: 'Inspection',
+  insurance: 'Insurance',
+  title: 'Title',
+}
+function docLabel(t: string): string {
+  return DOC_LABELS[t] || t
+}
+function missingDocs(car: AdminCar): string[] {
+  return car.missing_required_documents ?? []
+}
+function missingDocsLabel(car: AdminCar): string {
+  return missingDocs(car).map(docLabel).join(', ')
+}
+/** Warn only where it blocks something: unapproved cars with missing docs. */
+function showMissingDocsWarning(car: AdminCar): boolean {
+  return !car.is_approved && missingDocs(car).length > 0
 }
 
 function pageCount(t: number, l: number) {
@@ -108,6 +155,7 @@ function pageCount(t: number, l: number) {
         <th>Year</th>
         <th>Owner</th>
         <th>Status</th>
+        <th>Docs</th>
         <th>Approved</th>
         <th></th>
       </template>
@@ -122,6 +170,15 @@ function pageCount(t: number, l: number) {
         <td>{{ row.year }}</td>
         <td>{{ row.owner_email || '—' }}</td>
         <td><StatusBadge :label="row.status" :tone="statusTone(row.status)" /></td>
+        <td>
+          <StatusBadge
+            v-if="showMissingDocsWarning(row)"
+            label="Missing docs"
+            tone="warning"
+            :title="`Missing: ${missingDocsLabel(row)} — approval will be refused`"
+          />
+          <span v-else class="muted">—</span>
+        </td>
         <td @click.stop>
           <Toggle
             :model-value="row.is_approved"
@@ -154,6 +211,11 @@ function pageCount(t: number, l: number) {
             <StatusBadge
               :label="row.is_approved ? 'Approved' : 'Not approved'"
               :tone="row.is_approved ? 'success' : 'warning'"
+            />
+            <StatusBadge
+              v-if="showMissingDocsWarning(row)"
+              :label="`Missing: ${missingDocsLabel(row)}`"
+              tone="warning"
             />
           </div>
         </div>
@@ -196,6 +258,25 @@ function pageCount(t: number, l: number) {
         <dt>Year</dt><dd>{{ detail.year }}</dd>
         <dt>Owner</dt><dd>{{ detail.owner_email || '—' }}</dd>
         <dt>Status</dt><dd><StatusBadge :label="detail.status" :tone="statusTone(detail.status)" /></dd>
+        <dt>Required docs</dt>
+        <dd>
+          <template v-if="missingDocs(detail).length">
+            <StatusBadge :label="`Missing: ${missingDocsLabel(detail)}`" tone="warning" />
+            <p v-if="!detail.is_approved" class="docs-hint">
+              Approval will be refused until the owner uploads these from the app.
+            </p>
+            <p v-else class="docs-hint">
+              Grandfathered — approved before documents became required.
+            </p>
+          </template>
+          <StatusBadge
+            v-else-if="detail.missing_required_documents"
+            label="All uploaded"
+            tone="success"
+          />
+          <!-- Field absent = backend not reporting doc status yet. -->
+          <span v-else class="muted">—</span>
+        </dd>
         <dt>Weekly rent</dt><dd>{{ fmtMoney(detail.weekly_rent_price ?? null, detail.currency) }}</dd>
         <dt>Sale price</dt><dd>{{ fmtMoney(detail.sale_price ?? null, detail.currency) }}</dd>
         <dt>Address</dt><dd>{{ detail.address || '—' }}</dd>
@@ -252,6 +333,7 @@ function pageCount(t: number, l: number) {
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; margin: 0; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; }
+.docs-hint { margin: 6px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.4; }
 .loading { color: var(--text-muted); padding: 32px; text-align: center; }
 
 /* ---- Responsive split: cards on phones, table everywhere else ---- */

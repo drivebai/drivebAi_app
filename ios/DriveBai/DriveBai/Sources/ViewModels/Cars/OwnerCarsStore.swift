@@ -9,6 +9,12 @@ final class OwnerCarsStore: ObservableObject {
     @Published var cars: [Car] = []
     @Published var isLoading: Bool = false
     @Published var error: String?
+    /// Machine-readable code of the last API failure (e.g.
+    /// "CAR_CURRENTLY_RENTED", "CAR_HAS_ACTIVE_OBLIGATIONS",
+    /// "SALE_REQUIREMENTS_NOT_MET"). Set alongside `error` so views can
+    /// branch on the code instead of string-matching the human message
+    /// (QA pts 8/9). Nil for non-server failures.
+    @Published var errorCode: String?
 
     private let apiClient: APIClient
 
@@ -119,6 +125,7 @@ final class OwnerCarsStore: ObservableObject {
 
     func updateCar(_ car: Car) async -> Car? {
         error = nil
+        errorCode = nil
 
         do {
             let request = car.toUpdateRequest()
@@ -129,6 +136,7 @@ final class OwnerCarsStore: ObservableObject {
             return updatedCar
         } catch let apiError as APIError {
             error = apiError.errorDescription
+            errorCode = apiError.errorCode
             print("[OwnerCarsStore] Failed to update car: \(apiError)")
         } catch {
             self.error = error.localizedDescription
@@ -164,6 +172,7 @@ final class OwnerCarsStore: ObservableObject {
 
     func deleteCar(id: UUID) async -> Bool {
         error = nil
+        errorCode = nil
 
         do {
             _ = try await apiClient.deleteCar(id: id)
@@ -173,6 +182,7 @@ final class OwnerCarsStore: ObservableObject {
             return true
         } catch let apiError as APIError {
             error = apiError.errorDescription
+            errorCode = apiError.errorCode
             print("[OwnerCarsStore] Failed to delete car: \(apiError)")
         } catch {
             self.error = error.localizedDescription
@@ -184,6 +194,7 @@ final class OwnerCarsStore: ObservableObject {
 
     func togglePaused(id: UUID) async -> Bool {
         error = nil
+        errorCode = nil
 
         do {
             let updatedCar = try await apiClient.togglePauseCar(id: id)
@@ -193,6 +204,7 @@ final class OwnerCarsStore: ObservableObject {
             return true
         } catch let apiError as APIError {
             error = apiError.errorDescription
+            errorCode = apiError.errorCode
             print("[OwnerCarsStore] Failed to toggle pause: \(apiError)")
         } catch {
             self.error = error.localizedDescription
@@ -323,6 +335,7 @@ final class OwnerCarsStore: ObservableObject {
     /// Delete document from backend
     func deleteDocument(carId: UUID, documentId: UUID) async -> Bool {
         error = nil
+        errorCode = nil
 
         do {
             _ = try await apiClient.deleteCarDocument(carId: carId, documentId: documentId)
@@ -336,6 +349,7 @@ final class OwnerCarsStore: ObservableObject {
             return true
         } catch let apiError as APIError {
             error = apiError.errorDescription
+            errorCode = apiError.errorCode
             print("[OwnerCarsStore] Failed to delete document: \(apiError)")
         } catch {
             self.error = error.localizedDescription
@@ -357,6 +371,7 @@ final class OwnerCarsStore: ObservableObject {
     func clearAll() {
         cars = []
         error = nil
+        errorCode = nil
         isLoading = false
     }
 

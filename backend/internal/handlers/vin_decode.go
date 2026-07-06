@@ -39,12 +39,21 @@ const vinDecodeTimeout = 8 * time.Second
 type VINDecodeHandler struct {
 	client *http.Client
 	logger *slog.Logger
+	// existsByVIN reports whether a non-archived listing already holds this
+	// VIN (CarRepository.ExistsByVIN in production — the SAME definition of
+	// "in use" the create/update preflights rely on). Injected as a func so
+	// tests can stub it without a DB. May be nil (availability omitted).
+	existsByVIN func(ctx context.Context, vin string) (bool, error)
 }
 
-func NewVINDecodeHandler(logger *slog.Logger) *VINDecodeHandler {
+// NewVINDecodeHandler builds the decode handler. existsByVIN powers the
+// early "VIN already listed" signal on the wizard's Search step (QA pt-12);
+// pass nil to disable availability checking (response field omitted).
+func NewVINDecodeHandler(logger *slog.Logger, existsByVIN func(ctx context.Context, vin string) (bool, error)) *VINDecodeHandler {
 	return &VINDecodeHandler{
-		client: &http.Client{Timeout: vinDecodeTimeout},
-		logger: logger,
+		client:      &http.Client{Timeout: vinDecodeTimeout},
+		logger:      logger,
+		existsByVIN: existsByVIN,
 	}
 }
 
@@ -66,6 +75,12 @@ type VINDecodeResponse struct {
 	// non-zero ErrorCode. Empty when ErrorCode == "0". iOS surfaces this as
 	// a subtle hint without blocking the form — the user can still edit.
 	Warning string `json:"warning,omitempty"`
+	// Available is the early "is this VIN free to list?" signal (QA pt-12):
+	// false when a non-archived listing already holds this VIN, true when
+	// it doesn't. OMITTED (nil) when the check could not run — clients must
+	// treat absent as unknown, never as unavailable. Advisory only (TOCTOU):
+	// the CreateCar preflight + partial unique index remain authoritative.
+	Available *bool `json:"available,omitempty"`
 }
 
 // vpicResponse is just enough of NHTSA's payload for us to extract what we
@@ -196,6 +211,19 @@ func (h *VINDecodeHandler) DecodeVIN(w http.ResponseWriter, r *http.Request) {
 			"VIN_NOT_FOUND", "We couldn't find any details for this VIN.",
 		))
 		return
+	}
+
+	// Availability (QA pt-12): one definition of "in use" — the same
+	// ExistsByVIN the create/update preflights call. Graceful degradation:
+	// a DB error must never fail a good NHTSA decode, so we log and omit
+	// the field (client treats absent as unknown).
+	if h.existsByVIN != nil {
+		if exists, err := h.existsByVIN(r.Context(), vin); err != nil {
+			h.logger.Error("vin decode: availability check failed", "error", err, "vin", vin)
+		} else {
+			available := !exists
+			out.Available = &available
+		}
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, out)

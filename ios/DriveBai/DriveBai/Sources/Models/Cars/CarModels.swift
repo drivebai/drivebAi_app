@@ -115,6 +115,9 @@ enum CarDocumentType: String, CaseIterable, Identifiable {
     case registration = "registration"
     case permit = "permit"
     case insurance = "insurance"
+    /// Proof-of-ownership title. Required server-side before a car can be
+    /// listed for sale (SALE_REQUIREMENTS_NOT_MET) — QA round pt 8.
+    case title = "title"
 
     var id: String { rawValue }
 
@@ -124,6 +127,7 @@ enum CarDocumentType: String, CaseIterable, Identifiable {
         case .registration: return "Registration"
         case .permit: return "Parking Permit"
         case .insurance: return "Insurance Certificate"
+        case .title: return "Title"
         }
     }
 
@@ -133,36 +137,85 @@ enum CarDocumentType: String, CaseIterable, Identifiable {
         case .registration: return "doc.badge.ellipsis"
         case .permit: return "parkingsign.circle"
         case .insurance: return "shield.checkered"
+        case .title: return "doc.text.fill"
         }
     }
 }
 
 enum PhotoSlotType: String, CaseIterable, Identifiable {
+    // Raw values are the canonical storage strings on `car_photos.slot_type`.
+    // The original five are unchanged (preserves cover_front auto-publish and
+    // every cover-photo subquery); the three ¾/interior slots are new in the
+    // guided-capture QA round and accepted by the backend's extended
+    // validSlots map.
     case coverFront = "cover_front"
-    case right = "right"
+    case frontLeft34 = "front_left_34"
     case left = "left"
     case back = "back"
+    case rearRight34 = "rear_right_34"
+    case right = "right"
     case dashboard = "dashboard"
+    case interior = "interior"
 
     var id: String { rawValue }
 
+    /// Guided-capture label. Ordering and labels live entirely client-side —
+    /// the backend only knows the raw slot strings.
     var displayLabel: String {
         switch self {
-        case .coverFront: return "Cover - Front"
-        case .right: return "Right"
-        case .left: return "Left"
-        case .back: return "Back"
+        case .coverFront: return "Front"
+        case .frontLeft34: return "Front-left ¾"
+        case .left: return "Driver side"
+        case .back: return "Rear"
+        case .rearRight34: return "Rear-right ¾"
+        case .right: return "Passenger side"
         case .dashboard: return "Dashboard"
+        case .interior: return "Interior"
         }
     }
 
+    /// Guided capture sequence (spec Section 5): front → front-left ¾ →
+    /// driver side → rear → rear-right ¾ → passenger side → dashboard →
+    /// interior.
     var sortOrder: Int {
         switch self {
         case .coverFront: return 0
-        case .right: return 1
+        case .frontLeft34: return 1
         case .left: return 2
         case .back: return 3
-        case .dashboard: return 4
+        case .rearRight34: return 4
+        case .right: return 5
+        case .dashboard: return 6
+        case .interior: return 7
+        }
+    }
+
+    /// SF Symbol used as the translucent silhouette overlay in the guided
+    /// capture flow. Simple shapes only — no hand-authored assets.
+    var overlayAssetName: String {
+        switch self {
+        case .coverFront: return "car.front.waves.up"
+        case .frontLeft34: return "car.fill"
+        case .left: return "car.side"
+        case .back: return "car.rear"
+        case .rearRight34: return "car.fill"
+        case .right: return "car.side.fill"
+        case .dashboard: return "steeringwheel"
+        case .interior: return "carseat.left.fill"
+        }
+    }
+
+    /// One-line hint under the guided-capture caption.
+    var guidedHint: String {
+        switch self {
+        case .coverFront: return "Stand in front of the car, centered"
+        case .frontLeft34: return "Angle shot from the front-left corner"
+        case .left: return "Full side profile, driver side"
+        case .back: return "Stand directly behind the car"
+        case .rearRight34: return "Angle shot from the rear-right corner"
+        case .right: return "Full side profile, passenger side"
+        case .dashboard: return "Capture the dashboard and odometer"
+        case .interior: return "Capture the cabin and seats"
         }
     }
 }
@@ -253,6 +306,16 @@ struct CarDocument: Identifiable, Equatable {
     let fileSize: Int
     let uploadedAt: Date
 
+    /// Signed download URL as returned by the backend (`file_url`). Relative
+    /// or absolute — resolve through `ImageURLHelper.fullURL(for:)` before
+    /// fetching. Nil for locally-staged docs that haven't been uploaded yet.
+    var fileURL: String?
+
+    /// Convenience: resolved absolute URL for previewing/downloading.
+    var resolvedFileURL: URL? {
+        ImageURLHelper.fullURL(for: fileURL)
+    }
+
     /// Raw bytes from the file picker, kept ONLY for docs not yet pushed
     /// to the backend. `CarDetailEditView.saveCar()` walks docs with
     /// non-nil `localData` and uploads them via OwnerCarsStore. Server-
@@ -286,6 +349,7 @@ struct CarDocument: Identifiable, Equatable {
         filename: String,
         fileSize: Int,
         uploadedAt: Date = Date(),
+        fileURL: String? = nil,
         localData: Data? = nil,
         localMimeType: String? = nil
     ) {
@@ -294,6 +358,7 @@ struct CarDocument: Identifiable, Equatable {
         self.filename = filename
         self.fileSize = fileSize
         self.uploadedAt = uploadedAt
+        self.fileURL = fileURL
         self.localData = localData
         self.localMimeType = localMimeType
     }
@@ -401,6 +466,10 @@ struct ActiveRentalSummary: Equatable, Hashable {
     let pickupConfirmedAt: Date
     let plannedEndAt: Date
     let currentEarnedCents: Int64
+    /// Owner↔driver chat for this rental (`chat_id`). Nil when the backend
+    /// hasn't shipped the field yet or no chat row exists for the pair.
+    /// Drives the chat shortcut on the owner's car card (QA pt 6).
+    var chatId: UUID? = nil
 }
 
 // MARK: - Main Car Model
@@ -447,6 +516,14 @@ struct Car: Identifiable, Equatable, Hashable {
     /// decode it optionally so iOS runs against both).
     var activeRental: ActiveRentalSummary? = nil
 
+    /// True when the backend reports `status == "sold"`. Kept as a separate
+    /// flag because `CarListingStatus` has no `.sold` case (adding one would
+    /// break exhaustive switches owned by wave-2 screens); a sold car's
+    /// typed `status` falls back to `.pending`. `CarBusinessState.forCar`
+    /// checks this flag before the pending fallback, so sold cars render
+    /// correctly. Never rendered directly — go through `CarBusinessState`.
+    var isSold: Bool = false
+
     // Computed
     var coverPhotoURL: String? {
         photoSlots.first(where: { $0.slotType == .coverFront })?.imageURL
@@ -480,7 +557,8 @@ struct Car: Identifiable, Equatable, Hashable {
         totalEarned: Money = Money(amount: 0),
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        activeRental: ActiveRentalSummary? = nil
+        activeRental: ActiveRentalSummary? = nil,
+        isSold: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -502,6 +580,7 @@ struct Car: Identifiable, Equatable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.activeRental = activeRental
+        self.isSold = isSold
     }
 }
 

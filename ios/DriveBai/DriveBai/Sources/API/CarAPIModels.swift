@@ -70,6 +70,9 @@ struct ActiveRentalAPIResponse: Codable {
     let pickupConfirmedAt: Date
     let plannedEndAt: Date
     let currentEarnedCents: Int64
+    /// Owner↔driver chat for this rental. Optional/omitempty on the wire
+    /// (`chat_id`) — nil against older backends or when no chat row exists.
+    let chatId: UUID?
 
     enum CodingKeys: String, CodingKey {
         case leaseRequestId = "lease_request_id"
@@ -80,6 +83,7 @@ struct ActiveRentalAPIResponse: Codable {
         case pickupConfirmedAt = "pickup_confirmed_at"
         case plannedEndAt = "planned_end_at"
         case currentEarnedCents = "current_earned_cents"
+        case chatId = "chat_id"
     }
 
     func toDomain() -> ActiveRentalSummary {
@@ -91,7 +95,8 @@ struct ActiveRentalAPIResponse: Codable {
             weeklyPriceCents: weeklyPriceCents,
             pickupConfirmedAt: pickupConfirmedAt,
             plannedEndAt: plannedEndAt,
-            currentEarnedCents: currentEarnedCents
+            currentEarnedCents: currentEarnedCents,
+            chatId: chatId
         )
     }
 }
@@ -127,7 +132,10 @@ struct CarLocationResponse: Codable {
 
 struct CarRequirementsResponse: Codable {
     let minYearsLicensed: Int
-    let depositAmount: Double
+    /// Deposit is being removed from the product (QA pt 7). The backend
+    /// still emits the key (always 0) so shipped builds keep decoding, but
+    /// new code treats it as optional and renders nothing when nil/0.
+    let depositAmount: Double?
     let insuranceCoverage: String
 
     enum CodingKeys: String, CodingKey {
@@ -215,7 +223,8 @@ struct CreateCarRequest: Codable {
     var isForSale: Bool
     var salePrice: Double?
     var minYearsLicensed: Int?
-    var depositAmount: Double?
+    // deposit_amount intentionally not encoded anymore (QA pt 7) — the
+    // backend ignores it and forces 0.
     var insuranceCoverage: String?
 
     enum CodingKeys: String, CodingKey {
@@ -230,7 +239,6 @@ struct CreateCarRequest: Codable {
         case isForSale = "is_for_sale"
         case salePrice = "sale_price"
         case minYearsLicensed = "min_years_licensed"
-        case depositAmount = "deposit_amount"
         case insuranceCoverage = "insurance_coverage"
     }
 }
@@ -253,10 +261,13 @@ struct UpdateCarRequest: Codable {
     var isForSale: Bool?
     var salePrice: Double?
     var minYearsLicensed: Int?
-    var depositAmount: Double?
+    // deposit_amount intentionally not encoded anymore (QA pt 7) — the
+    // backend ignores it and forces 0.
+    // status / is_paused intentionally not encoded anymore (QA pt 9) — the
+    // backend ignores both; pause state flows exclusively through
+    // POST /cars/{id}/pause so a full-car autosave PATCH can never clobber
+    // the listing status.
     var insuranceCoverage: String?
-    var status: String?
-    var isPaused: Bool?
 
     enum CodingKeys: String, CodingKey {
         case title, description, make, model, year
@@ -268,10 +279,7 @@ struct UpdateCarRequest: Codable {
         case isForSale = "is_for_sale"
         case salePrice = "sale_price"
         case minYearsLicensed = "min_years_licensed"
-        case depositAmount = "deposit_amount"
         case insuranceCoverage = "insurance_coverage"
-        case status
-        case isPaused = "is_paused"
     }
 }
 
@@ -299,6 +307,13 @@ struct VINDecodeAPIResponse: Codable {
     let manufacturer: String?
     let vehicleType: String?
     let warning: String?
+    /// Advisory VIN-availability signal (QA pt 12): `false` when a
+    /// non-archived car already uses this VIN, `true` when it's free.
+    /// Absent/nil = unknown (the backend omits the field on a DB error or
+    /// hasn't shipped it yet) — callers MUST treat nil as "allowed" and let
+    /// the create-time 409 remain the authoritative backstop. Never treat
+    /// nil as unavailable.
+    let available: Bool?
 
     enum CodingKeys: String, CodingKey {
         case vin, make, model, year
@@ -307,6 +322,7 @@ struct VINDecodeAPIResponse: Codable {
         case manufacturer
         case vehicleType = "vehicle_type"
         case warning
+        case available
     }
 }
 
@@ -356,7 +372,9 @@ extension CarAPIResponse {
 
         let carRequirements = CarRequirements(
             minYearsLicensedDriving: requirements.minYearsLicensed,
-            depositAmount: Money(amount: requirements.depositAmount, currency: currency),
+            // Deposit is deprecated (QA pt 7): decode optionally, default 0.
+            // UI renders nothing for 0-deposit cars.
+            depositAmount: Money(amount: requirements.depositAmount ?? 0, currency: currency),
             insuranceCoverage: insuranceCoverage
         )
 
@@ -412,7 +430,8 @@ extension CarAPIResponse {
                 documentType: docType,
                 filename: doc.fileName,
                 fileSize: doc.fileSize,
-                uploadedAt: doc.createdAt
+                uploadedAt: doc.createdAt,
+                fileURL: doc.fileUrl
             )
         }
 
@@ -436,7 +455,10 @@ extension CarAPIResponse {
             totalEarned: Money(amount: totalEarned, currency: currency),
             createdAt: createdAt,
             updatedAt: updatedAt,
-            activeRental: activeRental?.toDomain()
+            activeRental: activeRental?.toDomain(),
+            // CarListingStatus has no .sold case (see Car.isSold docs), so a
+            // sold car decodes with status fallback .pending + this flag set.
+            isSold: status.lowercased() == "sold"
         )
     }
 }
@@ -467,7 +489,6 @@ extension Car {
             isForSale: isForSale,
             salePrice: salePrice?.amount,
             minYearsLicensed: requirements.minYearsLicensedDriving,
-            depositAmount: requirements.depositAmount.amount,
             insuranceCoverage: requirements.insuranceCoverage.rawValue
         )
     }
@@ -492,10 +513,7 @@ extension Car {
             isForSale: isForSale,
             salePrice: salePrice?.amount,
             minYearsLicensed: requirements.minYearsLicensedDriving,
-            depositAmount: requirements.depositAmount.amount,
-            insuranceCoverage: requirements.insuranceCoverage.rawValue,
-            status: status.rawValue,
-            isPaused: isPaused
+            insuranceCoverage: requirements.insuranceCoverage.rawValue
         )
     }
 }
