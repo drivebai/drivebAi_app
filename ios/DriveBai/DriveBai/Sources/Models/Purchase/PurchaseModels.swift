@@ -39,10 +39,10 @@ enum PurchaseRequestStatus: String, Codable, Equatable {
         case .inspectionAccepted: return "Vehicle accepted"
         case .completed: return "Sold"
         case .inspectionRejected: return "Rejection under review"
-        case .rejectedRefunded: return "Refunded"
+        case .rejectedRefunded: return "Hold released"
         case .rejectedUpheld: return "Sale upheld"
         case .expired: return "Offer expired"
-        case .expiredAuth: return "Authorization expired"
+        case .expiredAuth: return "Payment hold expired"
         }
     }
 
@@ -121,12 +121,13 @@ enum PurchaseCopy {
 When you tap Authorize payment, DrivaBai places a hold on your card for the sale amount through Stripe. \
 No funds are transferred to the seller yet — your bank simply reserves the amount.
 
-When you accept the vehicle after inspection, the hold is captured and funds are charged. If you reject the \
+When you accept the vehicle after inspection, the held amount is charged and paid to the seller. If you reject the \
 vehicle with valid evidence and DrivaBai support agrees, the hold is released and you are not charged.
 
 DrivaBai is not a licensed escrow agent, does not hold funds on the seller's behalf, and does not guarantee \
-the sale. Vehicle title transfer, DMV paperwork, and any warranties are the responsibility of the buyer and \
-seller.
+the sale. Title transfer, registration, and any additional DMV or state-required paperwork are the \
+responsibility of the buyer and seller — requirements vary by state, and the in-app Bill of Sale may not be \
+sufficient on its own.
 """
 }
 

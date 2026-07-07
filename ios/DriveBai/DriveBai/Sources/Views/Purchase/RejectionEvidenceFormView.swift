@@ -104,7 +104,7 @@ struct RejectionEvidenceFormView: View {
         } header: {
             Text("What went wrong?")
         } footer: {
-            Text("Be specific. DrivaBai support will review the evidence you attach below and decide whether to release your payment authorization.")
+            Text("Be specific. DrivaBai support will review the evidence you attach below and decide whether to release the hold on your payment.")
         }
     }
 
@@ -161,7 +161,7 @@ struct RejectionEvidenceFormView: View {
             }
             .disabled(!isValid || isSubmitting)
         } footer: {
-            Text("DrivaBai support typically responds within 24 hours. Your payment authorization stays on hold until they resolve the case.")
+            Text("DrivaBai support typically responds within 24 hours. Your payment stays on hold until they resolve the case.")
         }
     }
 

@@ -2,7 +2,8 @@ import Foundation
 
 // MARK: - Bill of Sale
 
-/// MV-912-aligned Bill of Sale domain model. Signature and finalized-PDF
+/// Vehicle Bill of Sale domain model — standard fields (seller/buyer,
+/// vehicle, price, signatures). Signature and finalized-PDF
 /// URLs are backend-signed private paths — no additional token handling on
 /// the iOS side.
 struct BillOfSale: Identifiable, Equatable, Hashable {

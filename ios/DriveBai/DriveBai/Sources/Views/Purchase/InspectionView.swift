@@ -128,7 +128,7 @@ struct InspectionView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(PurchaseCopy.paymentHoldHeadline)
                     .font(.subheadline.weight(.semibold))
-                Text("Accepting the vehicle triggers the capture. Rejecting with valid evidence releases the hold.")
+                Text("Accepting the vehicle completes your payment. Rejecting with valid evidence releases the hold — you won't be charged.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -144,7 +144,7 @@ struct InspectionView: View {
                 HStack(spacing: 8) {
                     if isAccepting { ProgressView().tint(.white).scaleEffect(0.85) }
                     Image(systemName: "checkmark.seal.fill")
-                    Text(isAccepting ? "Capturing payment…" : "Accept vehicle")
+                    Text(isAccepting ? "Completing payment…" : "Accept vehicle")
                         .font(.headline)
                 }
                 .foregroundColor(.white)

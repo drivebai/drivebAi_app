@@ -1,39 +1,14 @@
 import SwiftUI
 
-// MARK: - Price Editor Mode
-
-enum PriceEditorMode: String, CaseIterable, Identifiable {
-    /// Raw values are stable enum identifiers — NOT displayed to the user.
-    /// Use `displayName` to render the segment label so we can rename copy
-    /// without touching any persistence/serialization.
-    case adjust
-    case set
-    case dynamic
-
-    var id: String { rawValue }
-
-    /// User-facing label used by the segmented picker. Renamed from the
-    /// original "Adjust / Set / Dynamic" trio: "Type" is clearer than "Set"
-    /// (which was reading as a Turo-style CTA), and "Auto" better describes
-    /// the future auto-adjust behavior than "Dynamic".
-    var displayName: String {
-        switch self {
-        case .adjust:  return "Adjust"
-        case .set:     return "Type"
-        case .dynamic: return "Auto"
-        }
-    }
-}
-
 // MARK: - Price Editor Sheet
 
-/// A reusable bottom-sheet price editor with Adjust / Type / Auto segments.
-/// - Adjust: large centered price with -/+ buttons (±$10 per tap)
-/// - Type: numeric text entry with a Done toolbar button
-/// - Auto: placeholder ("coming soon")
+/// A reusable bottom-sheet price editor with a single unified surface:
+/// a large centered price that can be nudged with -/+ buttons (±`step`
+/// per tap) or tapped to type an exact amount on the decimal pad.
 ///
-/// Bind to a `Double` (the underlying price amount). The sheet preserves the
-/// value when switching modes. Enforces `minValue` (default 0).
+/// Bind to a `Double` (the underlying price amount). The -/+ buttons and
+/// the text field edit the same bound value and stay synchronized.
+/// Enforces `minValue` (default 0) — the price can never go below it.
 struct PriceEditorSheet: View {
     let title: String
     @Binding var value: Double
@@ -42,7 +17,6 @@ struct PriceEditorSheet: View {
     var subtitle: String? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @State private var mode: PriceEditorMode = .adjust
     @State private var textValue: String = ""
     @FocusState private var isTextFieldFocused: Bool
 
@@ -72,37 +46,9 @@ struct PriceEditorSheet: View {
             .padding(.top, 12)
             .padding(.bottom, 16)
 
-            // Segmented picker
-            Picker("Mode", selection: $mode) {
-                ForEach(PriceEditorMode.allCases) { m in
-                    Text(m.displayName).tag(m)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 28)
-            .onChange(of: mode) { _, newMode in
-                if newMode != .set {
-                    isTextFieldFocused = false
-                }
-                if newMode == .set {
-                    textValue = String(Int(value))
-                }
-            }
-
-            // Mode-specific content
-            Group {
-                switch mode {
-                case .adjust:
-                    adjustView
-                case .set:
-                    setView
-                case .dynamic:
-                    autoAdjustView
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 20)
+            editorView
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
 
             Spacer(minLength: 20)
 
@@ -117,23 +63,23 @@ struct PriceEditorSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .onAppear {
-            textValue = String(Int(max(value, minValue)))
+            textValue = fieldText(for: max(value, minValue))
+        }
+        .onChange(of: isTextFieldFocused) { _, focused in
+            if !focused {
+                commitTextEntry()
+            }
         }
     }
 
-    // MARK: - Adjust mode
+    // MARK: - Unified editor
 
-    private var adjustView: some View {
+    private var editorView: some View {
         VStack(spacing: 20) {
             Spacer(minLength: 0)
 
-            // Big centered price
             VStack(spacing: 6) {
-                Text(formattedValue)
-                    .font(.system(size: 56, weight: .bold))
-                    .foregroundColor(.primary)
-                    .contentTransition(.numericText())
-                    .animation(.easeOut(duration: 0.15), value: value)
+                priceDisplay
 
                 if let subtitle {
                     Text(subtitle)
@@ -158,6 +104,59 @@ struct PriceEditorSheet: View {
 
             Spacer(minLength: 0)
         }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { isTextFieldFocused = false }
+                    .fontWeight(.semibold)
+            }
+        }
+    }
+
+    /// Big centered price. Shows a formatted, animated `Text` when idle
+    /// (preserving the rolling-digit -/+ animation) and swaps to a raw
+    /// decimal-pad `TextField` while the user is typing, so live input is
+    /// never reformatted mid-keystroke. The canonical formatting is
+    /// reapplied when the field loses focus (commit on unfocus).
+    private var priceDisplay: some View {
+        ZStack {
+            // Editable field — visible while typing
+            HStack(spacing: 4) {
+                Text("$")
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundColor(.secondary)
+                TextField("0", text: $textValue)
+                    .font(.system(size: 56, weight: .bold))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .focused($isTextFieldFocused)
+                    .onChange(of: textValue) { _, newText in
+                        let sanitized = sanitize(newText)
+                        if sanitized != newText { textValue = sanitized }
+                        if let parsed = Double(sanitized) {
+                            value = max(parsed, minValue)
+                        } else if sanitized.isEmpty {
+                            value = minValue
+                        }
+                    }
+            }
+            .opacity(isTextFieldFocused ? 1 : 0)
+            .allowsHitTesting(isTextFieldFocused)
+
+            // Formatted display — visible when not typing
+            if !isTextFieldFocused {
+                Text(formattedValue)
+                    .font(.system(size: 56, weight: .bold))
+                    .foregroundColor(.primary)
+                    .contentTransition(.numericText())
+                    .animation(.easeOut(duration: 0.15), value: value)
+                    .onTapGesture {
+                        textValue = fieldText(for: value)
+                        isTextFieldFocused = true
+                    }
+            }
+        }
     }
 
     private var stepLabel: String {
@@ -180,96 +179,71 @@ struct PriceEditorSheet: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Set mode
-
-    private var setView: some View {
-        VStack(spacing: 20) {
-            Spacer(minLength: 0)
-
-            HStack(spacing: 4) {
-                Text("$")
-                    .font(.system(size: 44, weight: .bold))
-                    .foregroundColor(.secondary)
-                TextField("0", text: $textValue)
-                    .font(.system(size: 56, weight: .bold))
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .focused($isTextFieldFocused)
-                    .onChange(of: textValue) { _, newText in
-                        let filtered = newText.filter { $0.isNumber }
-                        if filtered != newText { textValue = filtered }
-                        if let parsed = Double(filtered) {
-                            value = max(parsed, minValue)
-                        } else if filtered.isEmpty {
-                            value = minValue
-                        }
-                    }
-            }
-
-            if let subtitle {
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundColor(.orange)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { isTextFieldFocused = false }
-                    .fontWeight(.semibold)
-            }
-        }
-        .onAppear {
-            textValue = String(Int(max(value, minValue)))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                isTextFieldFocused = true
-            }
-        }
-    }
-
-    // MARK: - Auto-adjust mode (placeholder — "coming soon")
-
-    private var autoAdjustView: some View {
-        VStack(spacing: 16) {
-            Spacer(minLength: 0)
-            Image(systemName: "sparkles")
-                .font(.system(size: 40))
-                .foregroundColor(.driveBaiPrimary)
-            Text("Auto-adjust price")
-                .font(.title3)
-                .fontWeight(.semibold)
-            Text("We'll suggest weekly prices based on your car and city. Available in a future update.")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-            Spacer(minLength: 0)
-        }
-    }
-
     // MARK: - Helpers
 
     private var formattedValue: String {
         Money(amount: value).formatted
     }
 
+    /// Raw text shown inside the text field: plain digits with an optional
+    /// decimal part — no "$" or thousands separators, which would fight the
+    /// input filter and jump the cursor while typing.
+    private func fieldText(for amount: Double) -> String {
+        if amount.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(Int(amount))
+        }
+        return String(format: "%.2f", amount)
+    }
+
+    /// Keeps only digits and at most one decimal point (max 2 decimals).
+    /// The decimal pad shows the LOCALE's separator — a comma on FR/DE/ES-
+    /// region devices — so commas are treated as decimal points rather than
+    /// stripped. Stripping made "12,50" silently become "1250": a 100×
+    /// price error committed straight to the binding.
+    private func sanitize(_ text: String) -> String {
+        var seenDot = false
+        var result = ""
+        for character in text {
+            if character.isNumber {
+                result.append(character)
+            } else if (character == "." || character == ","), !seenDot {
+                seenDot = true
+                result.append(".")
+            }
+        }
+        if let dotIndex = result.firstIndex(of: "."),
+           result.distance(from: dotIndex, to: result.endIndex) > 3 {
+            result = String(result[..<result.index(dotIndex, offsetBy: 3)])
+        }
+        return result
+    }
+
     private func increment() {
         value += step
+        textValue = fieldText(for: value)
     }
 
     private func decrement() {
         value = max(minValue, value - step)
+        textValue = fieldText(for: value)
+    }
+
+    /// Flushes the typed text into `value` (clamped to `minValue`) and
+    /// normalizes the field text back to its canonical form. Runs whenever
+    /// the field loses focus.
+    private func commitTextEntry() {
+        if let parsed = Double(textValue) {
+            value = max(parsed, minValue)
+        } else {
+            value = max(value, minValue)
+        }
+        textValue = fieldText(for: value)
     }
 
     private func commitAndDismiss() {
         isTextFieldFocused = false
         // Ensure text edits are flushed into value before closing
-        if mode == .set, let parsed = Double(textValue) {
-            value = max(parsed, minValue)
-        }
+        commitTextEntry()
         dismiss()
     }
 }

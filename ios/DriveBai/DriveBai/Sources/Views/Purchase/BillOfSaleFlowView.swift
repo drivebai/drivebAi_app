@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Multi-step wizard for the Bill of Sale.  Follows the MV-912 layout —
+/// Multi-step wizard for the Bill of Sale.  Covers standard Vehicle Bill of
+/// Sale fields (seller/buyer, vehicle, price, signatures) —
 /// vehicle → sale terms → seller info → buyer info → signature → review.
 /// Either party (buyer OR seller) may sign first; the "Review" step
 /// reports which side is still outstanding.

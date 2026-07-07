@@ -64,12 +64,13 @@ struct ChatView: View {
         VStack(spacing: 0) {
             // Tab picker. Custom segmented control instead of SwiftUI's
             // `.segmented` Picker so we can overlay an unread/attention dot
-            // on the Requests label without fighting UIKit's segmented
+            // on the tab labels without fighting UIKit's segmented
             // renderer. Visually matches the native segmented look the
             // screen used before.
             ChatTabsBar(
                 selection: $viewModel.selectedTab,
-                requestsHasBadge: viewModel.hasRequestsAttentionBadge
+                requestsHasBadge: viewModel.hasRequestsAttentionBadge,
+                messagesHasBadge: viewModel.hasMessagesAttentionBadge
             )
             .padding(.horizontal)
             .padding(.vertical, 8)
@@ -197,13 +198,22 @@ struct ChatView: View {
             CounterpartyProfileView(userId: counterpartyId)
         }
         .onAppear {
-            ChatsListViewModel.shared.activelyReadingChatId = chatId
             // Apply the caller-requested initial tab once on first appear.
             // We don't overwrite the user's later picks, so re-appearing
             // (e.g. push/pop in the nav stack) keeps their last selection.
+            // MUST run before the activelyReadingChatId decision below —
+            // landing straight on Requests (owner Today "Go to requests")
+            // is not "reading messages" and must keep the Chats-list badge
+            // and server read-state intact.
             if let initial = initialTab, viewModel.didApplyInitialTab == false {
                 viewModel.selectedTab = initial
                 viewModel.didApplyInitialTab = true
+            }
+            // Only suppress list-badge increments while the Messages tab is
+            // actually visible. Tab switches keep this in sync via the
+            // ViewModel's selectedTab.didSet.
+            if viewModel.selectedTab == .messages {
+                ChatsListViewModel.shared.activelyReadingChatId = chatId
             }
         }
         .onDisappear {
@@ -219,8 +229,12 @@ struct ChatView: View {
             async let sharedDocsTask: () = viewModel.loadSharedDocuments()
             async let carIdTask: () = loadRelatedCarId()
             _ = await (reqTask, leaseTask, purchaseTask, sharedDocsTask, carIdTask)
-            await viewModel.markAsRead()
-            ChatsListViewModel.shared.markChatRead(chatId)
+            // Tab-aware read gating: marks the chat read only when the user
+            // landed on Messages; a Requests landing instead seeds the
+            // Messages-tab unread dot from the server's unread count.
+            // `.onAppear` has already applied `initialTab` by the time this
+            // runs, so the check sees the real landing tab.
+            await viewModel.handleChatOpened()
         }
         .alert("Error", isPresented: .constant(viewModel.error != nil)) {
             Button("OK") { viewModel.error = nil }
@@ -633,13 +647,16 @@ struct ChatView: View {
 
 // MARK: - Tabs Bar
 
-/// In-chat segmented control with a small red attention dot above the
-/// Requests label. Replaces `Picker(.segmented)` so the dot can live inside
-/// the bar (a UIKit-rendered Picker doesn't expose per-segment overlays).
+/// In-chat segmented control with a small red attention dot next to the
+/// tab labels — Requests when a lease/purchase needs the user's action,
+/// Messages when the conversation has unread messages. Replaces
+/// `Picker(.segmented)` so the dot can live inside the bar (a
+/// UIKit-rendered Picker doesn't expose per-segment overlays).
 /// Styled to match the native segmented look the screen used before.
 private struct ChatTabsBar: View {
     @Binding var selection: ChatTab
     let requestsHasBadge: Bool
+    let messagesHasBadge: Bool
 
     var body: some View {
         HStack(spacing: 4) {
@@ -655,7 +672,8 @@ private struct ChatTabsBar: View {
     @ViewBuilder
     private func tabButton(_ tab: ChatTab) -> some View {
         let isSelected = selection == tab
-        let showBadge = tab == .requests && requestsHasBadge
+        let showBadge = (tab == .requests && requestsHasBadge)
+            || (tab == .messages && messagesHasBadge)
         Button {
             withAnimation(.easeInOut(duration: 0.15)) { selection = tab }
         } label: {

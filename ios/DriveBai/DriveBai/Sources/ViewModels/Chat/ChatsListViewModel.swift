@@ -40,7 +40,16 @@ final class ChatsListViewModel: ObservableObject {
             .sink { [weak self] message in
                 guard let self = self else { return }
                 guard let idx = self.chats.firstIndex(where: { $0.id == message.chatId }) else { return }
-                let isActive = message.chatId == self.activelyReadingChatId
+                // The backend broadcasts new_message to BOTH participants —
+                // including the sender — while its unread rule counts only
+                // messages from OTHER senders (sender_id != viewer). Mirror
+                // that here: update the preview row but never count our own
+                // outgoing message as unread. This was previously masked by
+                // activelyReadingChatId spanning the whole chat visit; with
+                // the suppressor now Messages-tab-scoped, an own message
+                // sent from the chat would otherwise inflate the badge.
+                let isOwnMessage = message.senderId == AuthStore.shared.state.user?.id
+                let isActive = message.chatId == self.activelyReadingChatId || isOwnMessage
                 var updated = self.chats[idx]
                 updated = ChatSummary(
                     id: updated.id, carId: updated.carId, carTitle: updated.carTitle,

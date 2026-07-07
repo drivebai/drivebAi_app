@@ -4,8 +4,11 @@ import UIKit
 
 /// Tappable pickup-location row rendered inside `KeyHandoverCard` and
 /// `PickupCountdownView`. Shows the best-available label (coords → area →
-/// car street/area → generic fallback) and opens directions in Apple Maps
-/// when tapped. If Google Maps is installed the user is offered a chooser.
+/// car street/area → generic fallback). Tapping presents a chooser:
+/// "Open in Apple Maps" / "Open in Google Maps" / "Cancel". Google Maps
+/// uses the `comgooglemaps://` app scheme when installed and falls back to
+/// the `https://www.google.com/maps/dir/` universal link otherwise, so the
+/// Google option is never a dead tap.
 ///
 /// **Failsafe:** never crashes when both coordinate and address are missing —
 /// the row disables itself and shows "See chat for the pickup location".
@@ -56,14 +59,14 @@ struct HandoverLocationRow: View {
         }
         .buttonStyle(.plain)
         .disabled(!canOpenMaps)
-        .confirmationDialog("Open in", isPresented: $showChooser, titleVisibility: .visible) {
-            Button("Apple Maps") { openAppleMaps() }
-            if googleMapsAvailable { Button("Google Maps") { openGoogleMaps() } }
+        .confirmationDialog("Get directions", isPresented: $showChooser, titleVisibility: .visible) {
+            Button("Open in Apple Maps") { openAppleMaps() }
+            Button("Open in Google Maps") { openGoogleMaps() }
             Button("Cancel", role: .cancel) { }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("Pickup location: \(primaryLine)"))
-        .accessibilityHint(canOpenMaps ? Text("Opens directions") : Text(""))
+        .accessibilityHint(canOpenMaps ? Text("Get directions") : Text(""))
     }
 
     // MARK: - Fallback chain
@@ -97,7 +100,7 @@ struct HandoverLocationRow: View {
     }
 
     private var secondaryLine: String? {
-        canOpenMaps ? "Tap for directions" : nil
+        canOpenMaps ? "Get directions" : nil
     }
 
     private var canOpenMaps: Bool { coordinate != nil || addressText != nil }
@@ -105,11 +108,14 @@ struct HandoverLocationRow: View {
     // MARK: - Launch
 
     private func openDirections() {
-        if googleMapsAvailable {
-            showChooser = true
-        } else {
-            openAppleMaps()
-        }
+        showChooser = true
+    }
+
+    /// Destination string shared by every URL-based launch path:
+    /// "lat,lng" when validated coordinates exist, else the address text.
+    private var destinationText: String? {
+        if let coord = coordinate { return "\(coord.latitude),\(coord.longitude)" }
+        return addressText
     }
 
     private func openAppleMaps() {
@@ -120,10 +126,20 @@ struct HandoverLocationRow: View {
             item.openInMaps(launchOptions: [
                 MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
             ])
-        } else if let text = addressText,
-                  let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                  let url = URL(string: "https://maps.apple.com/?daddr=\(encoded)&dirflg=d") {
-            UIApplication.shared.open(url)
+        } else if let text = addressText {
+            // URLComponents percent-encodes the query items, so addresses
+            // containing spaces, commas, '&', '=', or unicode stay intact.
+            var components = URLComponents()
+            components.scheme = "https"
+            components.host = "maps.apple.com"
+            components.path = "/"
+            components.queryItems = [
+                URLQueryItem(name: "daddr", value: text),
+                URLQueryItem(name: "dirflg", value: "d")
+            ]
+            if let url = components.url {
+                UIApplication.shared.open(url)
+            }
         }
     }
 
@@ -132,18 +148,31 @@ struct HandoverLocationRow: View {
         return UIApplication.shared.canOpenURL(url)
     }
 
+    /// Google Maps app when installed, otherwise the supported
+    /// `https://www.google.com/maps/dir/?api=1` universal link in Safari —
+    /// the Google button is never a dead tap.
     private func openGoogleMaps() {
-        let base = "comgooglemaps://"
-        let query: String
-        if let coord = coordinate {
-            query = "?daddr=\(coord.latitude),\(coord.longitude)&directionsmode=driving"
-        } else if let text = addressText,
-                  let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            query = "?daddr=\(encoded)&directionsmode=driving"
+        guard let destination = destinationText else { return }
+
+        var components = URLComponents()
+        if googleMapsAvailable {
+            components.scheme = "comgooglemaps"
+            components.host = ""  // keeps the canonical "comgooglemaps://" form
+            components.queryItems = [
+                URLQueryItem(name: "daddr", value: destination),
+                URLQueryItem(name: "directionsmode", value: "driving")
+            ]
         } else {
-            return
+            components.scheme = "https"
+            components.host = "www.google.com"
+            components.path = "/maps/dir/"
+            components.queryItems = [
+                URLQueryItem(name: "api", value: "1"),
+                URLQueryItem(name: "destination", value: destination),
+                URLQueryItem(name: "travelmode", value: "driving")
+            ]
         }
-        if let url = URL(string: base + query) {
+        if let url = components.url {
             UIApplication.shared.open(url)
         }
     }
