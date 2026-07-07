@@ -212,7 +212,7 @@ function statusLabel(s: string): string {
     case 'inspection_accepted': return 'Inspection accepted'
     case 'completed': return 'Completed'
     case 'inspection_rejected': return 'Rejected — under review'
-    case 'rejected_refunded': return 'Rejected — refunded'
+    case 'rejected_refunded': return 'Rejected — hold released'
     case 'rejected_upheld': return 'Sale upheld'
     case 'expired': return 'Expired'
     case 'expired_auth': return 'Auth expired'
@@ -273,7 +273,7 @@ function rejectionTone(row: PurchaseRequest | PurchaseRequestDetail): 'danger' |
 
 function rejectionLabel(row: PurchaseRequest | PurchaseRequestDetail): string {
   if (row.status === 'inspection_rejected') return 'Under review'
-  if (row.status === 'rejected_refunded') return 'Refunded'
+  if (row.status === 'rejected_refunded') return 'Hold released'
   if (row.status === 'rejected_upheld') return 'Upheld'
   return '—'
 }

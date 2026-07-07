@@ -156,7 +156,7 @@ struct PurchaseTodayCard: View {
         case (.completed, _, _), (.rejectedUpheld, _, _):
             return "Sale complete"
         case (.rejectedRefunded, _, _):
-            return "Sale cancelled — payment released"
+            return "Sale cancelled — payment hold released"
         case (.declined, _, _), (.cancelled, _, _), (.expired, _, _), (.expiredAuth, _, _):
             return purchaseRequest.status.displayText
         default:
@@ -171,7 +171,7 @@ struct PurchaseTodayCard: View {
         case .requested where isBuyer:
             return "Waiting for the seller to accept your offer."
         case .accepted, .bosPendingSeller, .bosPendingBuyer:
-            return "Sign the Bill of Sale to move to payment authorization."
+            return "Sign the Bill of Sale to move to payment."
         case .bosSigned where isBuyer:
             return "Bill of Sale complete. Authorize the payment hold to move to handover."
         case .bosSigned where isSeller:
@@ -194,13 +194,13 @@ struct PurchaseTodayCard: View {
         case .awaitingInspection where isSeller:
             return "Buyer has the car and is inspecting."
         case .inspectionAccepted:
-            return "Payment is being captured — sale finalising."
+            return "Payment is being completed — sale finalising."
         case .inspectionRejected:
             return "DrivaBai support is reviewing the rejection evidence."
         case .completed, .rejectedUpheld:
-            return "Payment captured. Congratulations!"
+            return "Payment completed. Congratulations!"
         case .rejectedRefunded:
-            return "The payment authorization has been released to the buyer."
+            return "The payment hold has been released — the buyer was not charged."
         default:
             return purchaseRequest.status.displayText
         }

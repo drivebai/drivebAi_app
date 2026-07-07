@@ -326,7 +326,7 @@ struct PurchaseRequestCardView: View {
         case .rejectedRefunded:
             HStack(spacing: 6) {
                 Image(systemName: "arrow.uturn.backward.circle.fill")
-                Text("Payment released — rejection accepted")
+                Text("Payment hold released — rejection accepted")
             }
             .font(.subheadline.weight(.medium))
             .frame(maxWidth: .infinity)
@@ -346,7 +346,7 @@ struct PurchaseRequestCardView: View {
         case .inspectionAccepted:
             HStack(spacing: 6) {
                 Image(systemName: "hourglass")
-                Text("Capturing payment…")
+                Text("Completing payment…")
             }
             .font(.subheadline.weight(.medium))
             .frame(maxWidth: .infinity)

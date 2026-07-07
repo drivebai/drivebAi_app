@@ -59,8 +59,23 @@ final class ChatViewModel: ObservableObject {
     @Published var isLoadingSharedDocuments = false
 
     @Published var messageText = ""
-    @Published var selectedTab: ChatTab = .messages
+    @Published var selectedTab: ChatTab = .messages {
+        didSet {
+            guard oldValue != selectedTab else { return }
+            handleTabChange()
+        }
+    }
     @Published var error: String?
+
+    /// True when this chat has messages the current user hasn't viewed on
+    /// the Messages tab yet. Server-derived — seeded from the GET /chats
+    /// `unread_count` (which the backend computes from
+    /// `chat_participants.last_read_at`) via `refreshUnreadState()` — and
+    /// bumped live by WS `new_message` events that arrive while the user
+    /// isn't looking at the conversation (Requests tab visible, or the chat
+    /// pushed off-screen). Cleared the moment the Messages tab becomes
+    /// visible, in the same breath as the POST /read stamp.
+    @Published private(set) var hasUnreadMessages = false
 
     /// One-shot flag the View flips after consuming `ChatView(initialTab:)`.
     /// Stops the override from re-applying on every nav-stack re-appear,
@@ -73,6 +88,13 @@ final class ChatViewModel: ObservableObject {
 
     private let apiClient: APIClient
     private var cancellables = Set<AnyCancellable>()
+
+    /// Tracks whether this VM has already seen the socket in `.connected`
+    /// state. The first `.connected` emission is the normal open-path
+    /// handshake (the `.task` HTTP loads cover it); only LATER ones are
+    /// real reconnects whose outage may have swallowed `new_message`
+    /// events, requiring a server-side resync.
+    private var hasEverBeenConnected = false
 
     init(chatId: UUID, currentUserId: UUID, apiClient: APIClient = .shared) {
         self.chatId = chatId
@@ -194,6 +216,34 @@ final class ChatViewModel: ObservableObject {
             .sink { [weak self] _ in
                 Task { [weak self] in
                     await self?.loadKeyHandoversForChatLeases()
+                }
+            }
+            .store(in: &cancellables)
+
+        // Reconnect resync. A dropped socket silently swallows `new_message`
+        // events, which would leave both the local message list and the
+        // Messages-tab unread dot stale. When the socket comes back after a
+        // real drop (not the initial handshake), re-derive everything from
+        // the server instead of trusting whatever WS state accumulated.
+        //
+        // Seeding: @Published replays the CURRENT state on subscribe. When
+        // the socket is already connected at VM init, that replayed
+        // `.connected` is the normal open-path handshake — consume it once
+        // (seed false → else-branch). But when the chat is opened while the
+        // socket is DOWN (backoff can reach minutes), the `.task` HTTP loads
+        // finish first and any message arriving before the socket recovers
+        // is never delivered — so the FIRST `.connected` after a cold-open
+        // gap must resync too (seed true).
+        hasEverBeenConnected = WebSocketManager.shared.connectionState != .connected
+        WebSocketManager.shared.$connectionState
+            .receive(on: RunLoop.main)
+            .removeDuplicates()
+            .sink { [weak self] state in
+                guard let self, state == .connected else { return }
+                if self.hasEverBeenConnected {
+                    Task { [weak self] in await self?.resyncAfterReconnect() }
+                } else {
+                    self.hasEverBeenConnected = true
                 }
             }
             .store(in: &cancellables)
@@ -370,6 +420,24 @@ final class ChatViewModel: ObservableObject {
         // Plain dedup by id (covers messages without a clientMessageId).
         if messages.contains(where: { $0.id == msg.id }) { return }
         messages.append(msg)
+
+        // Unread bookkeeping. Own messages (echoes from another device —
+        // the local-optimistic path already returned above) never light the
+        // dot: direction is derived from senderId, so only counterparty /
+        // system rows count, mirroring the backend's
+        // `sender_id != $1` unread_count rule.
+        guard msg.direction == .received else { return }
+        if selectedTab == .messages, ChatsListViewModel.shared.activelyReadingChatId == chatId {
+            // The user is watching the conversation right now — stamp
+            // `last_read_at` so the server-side unread_count doesn't drift
+            // upward while they sit in an open chat (the Chats-list badge
+            // increment is already suppressed via activelyReadingChatId).
+            Task { await markAsRead() }
+        } else {
+            // Requests tab visible, or the chat is buried under a pushed
+            // screen: surface the dot and leave the read marker untouched.
+            hasUnreadMessages = true
+        }
     }
 
     // MARK: - Requests
@@ -396,6 +464,18 @@ final class ChatViewModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    // MARK: - Attention Badges
+
+    /// Red-dot signal on the in-chat "Messages" segmented tab — the mirror
+    /// of `hasRequestsAttentionBadge`. True when the conversation holds
+    /// messages the user hasn't seen. Suppressed while the user is already
+    /// on Messages: the thread itself is visible there (and arrival marks
+    /// the chat read anyway), so a persistent dot would be redundant.
+    var hasMessagesAttentionBadge: Bool {
+        if selectedTab == .messages { return false }
+        return hasUnreadMessages
     }
 
     // MARK: - Lease Requests
@@ -1018,6 +1098,86 @@ final class ChatViewModel: ObservableObject {
 
     func markAsRead() async {
         _ = try? await apiClient.markChatRead(chatId: chatId)
+    }
+
+    /// Tab-aware read bookkeeping, fired from `selectedTab.didSet`.
+    ///
+    /// Messages became visible → the user is now reading the thread, so
+    /// stamp the server read marker (POST /read also drains the matching
+    /// bell/APNs chat_message notifications backend-side), zero the local
+    /// badges, and suppress Chats-list increments for live arrivals.
+    ///
+    /// Requests became visible → the user is explicitly NOT reading
+    /// messages: stop claiming "actively reading" so a message arriving
+    /// mid-dwell bumps both the Messages-tab dot and the Chats-list badge.
+    private func handleTabChange() {
+        switch selectedTab {
+        case .messages:
+            ChatsListViewModel.shared.activelyReadingChatId = chatId
+            hasUnreadMessages = false
+            ChatsListViewModel.shared.markChatRead(chatId)
+            Task { await markAsRead() }
+        case .requests:
+            if ChatsListViewModel.shared.activelyReadingChatId == chatId {
+                ChatsListViewModel.shared.activelyReadingChatId = nil
+            }
+        }
+    }
+
+    /// Open-path read gating, called once per appearance from ChatView's
+    /// `.task` — AFTER `.onAppear` has applied `initialTab`, so the check
+    /// reflects the tab the user actually landed on. Landing on Messages
+    /// marks the chat read exactly like the old unconditional path; landing
+    /// on Requests leaves `last_read_at` (and its bell/APNs cascade)
+    /// untouched and instead seeds the Messages dot from the server-side
+    /// unread count.
+    func handleChatOpened() async {
+        if selectedTab == .messages {
+            hasUnreadMessages = false
+            await markAsRead()
+            ChatsListViewModel.shared.markChatRead(chatId)
+        } else {
+            await refreshUnreadState()
+        }
+    }
+
+    /// Re-derives `hasUnreadMessages` from the server's read model — the
+    /// per-chat `unread_count` in GET /chats, which the backend computes
+    /// from `chat_participants.last_read_at`. Prefers the already-fetched
+    /// ChatsListViewModel cache; falls back to refetching the list for
+    /// deep-link opens where the Chats tab was never visited. Pass
+    /// `forceRefetch` when local state can't be trusted (WS reconnect).
+    func refreshUnreadState(forceRefetch: Bool = false) async {
+        if !forceRefetch,
+           let summary = ChatsListViewModel.shared.chats.first(where: { $0.id == chatId }) {
+            hasUnreadMessages = summary.unreadCount > 0
+            return
+        }
+        await ChatsListViewModel.shared.fetchChats()
+        let unread = ChatsListViewModel.shared.chats
+            .first(where: { $0.id == chatId })?.unreadCount ?? 0
+        hasUnreadMessages = unread > 0
+    }
+
+    /// Server-side resync after a WS drop. Messages that arrived during the
+    /// outage were never delivered on `newMessagePublisher`, so both the
+    /// local thread and the unread dot may be stale.
+    ///
+    ///   - Messages tab visible on-screen → reload the thread so the missed
+    ///     rows actually render, then stamp the read marker (matching what
+    ///     the live-arrival path would have done).
+    ///   - Otherwise → reload the thread silently and re-derive the dot
+    ///     from the server's unread_count instead of trusting WS history.
+    private func resyncAfterReconnect() async {
+        await loadInitialMessages()
+        if selectedTab == .messages,
+           ChatsListViewModel.shared.activelyReadingChatId == chatId {
+            hasUnreadMessages = false
+            await markAsRead()
+            ChatsListViewModel.shared.markChatRead(chatId)
+        } else {
+            await refreshUnreadState(forceRefetch: true)
+        }
     }
 
     // MARK: - Error Helpers

@@ -174,7 +174,7 @@ type PurchaseRequest struct {
 	UpdatedAt time.Time
 }
 
-// PurchaseBillOfSale is the MV-912-shaped record for a purchase.
+// PurchaseBillOfSale is the Vehicle Bill of Sale record for a purchase.
 type PurchaseBillOfSale struct {
 	ID                uuid.UUID
 	PurchaseRequestID uuid.UUID

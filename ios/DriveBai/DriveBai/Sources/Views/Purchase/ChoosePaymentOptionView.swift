@@ -94,7 +94,7 @@ struct ChoosePaymentOptionView: View {
             paymentRow(
                 icon: "creditcard.fill",
                 title: "I have the funds available",
-                subtitle: "Pay with a card or bank via Stripe. Funds are held, not captured.",
+                subtitle: "Pay with a card or bank via Stripe. Your payment is held — the seller won't receive the funds until you accept the vehicle.",
                 accent: true,
                 isBusy: isCreatingIntent
             )

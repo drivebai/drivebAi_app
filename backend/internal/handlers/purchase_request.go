@@ -1044,11 +1044,11 @@ func (h *PurchaseRequestHandler) InspectAccept(w http.ResponseWriter, r *http.Re
 	resp := h.buildResponse(r.Context(), final, userID)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 	h.broadcast("purchase_request_updated", final, nil)
-	h.postSystemMessage(r.Context(), final.ChatID, userID, "Buyer accepted the vehicle — payment captured, sale complete")
+	h.postSystemMessage(r.Context(), final.ChatID, userID, "Buyer accepted the vehicle — payment completed, sale complete")
 
 	h.notifyPurchaseCounterparty(final, userID, models.NotificationTypePurchasePayment,
 		"Sale complete",
-		fmt.Sprintf("%s accepted the vehicle. Payment has been captured.", nameOr(resp.BuyerName, "The buyer")))
+		fmt.Sprintf("%s accepted the vehicle. Payment is complete — funds are on the way to you.", nameOr(resp.BuyerName, "The buyer")))
 }
 
 // capturePayment runs Stripe capture + MarkCaptured. Returns the updated
@@ -1495,13 +1495,13 @@ func (h *PurchaseRequestHandler) AdminResolveRejection(w http.ResponseWriter, r 
 			final = released
 		}
 		h.postSystemMessage(r.Context(), final.ChatID, adminID,
-			"DrivaBai support accepted the rejection — hold released, sale cancelled")
+			"DrivaBai support accepted the rejection — payment hold released (buyer not charged), sale cancelled")
 	case "uphold":
 		if captured := h.capturePayment(r.Context(), p); captured != nil {
 			final = captured
 		}
 		h.postSystemMessage(r.Context(), final.ChatID, adminID,
-			"DrivaBai support upheld the sale — payment captured, sale complete")
+			"DrivaBai support upheld the sale — payment completed, sale complete")
 	}
 
 	// Build a rejection response with fresh evidence signatures.
@@ -1615,11 +1615,11 @@ func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventTyp
 				if priorStatus != models.PurchaseStatusCompleted {
 					amount := formatMoney(updated.OfferAmountCents)
 					h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchasePayment,
-						"Payment captured",
-						fmt.Sprintf("Your payment of %s has been captured.", amount))
+						"Payment completed",
+						fmt.Sprintf("Your payment of %s is complete. The seller has been paid.", amount))
 					h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchasePayment,
-						"Payment captured",
-						fmt.Sprintf("Payment of %s has been captured. Funds are on the way.", amount))
+						"Payment completed",
+						fmt.Sprintf("The buyer's payment of %s is complete. Funds are on the way.", amount))
 				}
 			}
 		}
@@ -1633,11 +1633,11 @@ func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventTyp
 			if updated, err := h.repo.MarkAuthCancelled(ctx, p.ID, terminal); err == nil {
 				h.broadcast("purchase_payment_updated", updated, map[string]any{"payment_status": "canceled"})
 				h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchasePayment,
-					"Authorization released",
-					"The payment authorization on your card has been released.")
+					"Payment hold released",
+					"The hold on your card has been released — you were not charged.")
 				h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchaseRequest,
-					"Authorization released",
-					"The buyer's payment authorization was released.")
+					"Payment hold released",
+					"The buyer's payment hold was released.")
 			}
 		}
 	}
@@ -1705,13 +1705,13 @@ func (h *PurchaseRequestHandler) runAuthExpiry(ctx context.Context) {
 			continue
 		}
 		h.broadcast("purchase_request_updated", released, nil)
-		h.postSystemMessage(ctx, released.ChatID, released.BuyerID, "Payment authorization expired — sale cancelled")
+		h.postSystemMessage(ctx, released.ChatID, released.BuyerID, "Payment hold expired — sale cancelled")
 		h.notifyPurchaseParty(released, released.BuyerID, models.NotificationTypePurchasePayment,
-			"Authorization expired",
-			"Your payment authorization has expired. Re-authorize to continue the sale.")
+			"Payment hold expired",
+			"The hold on your card expired. Authorize payment again to continue the sale.")
 		h.notifyPurchaseParty(released, released.SellerID, models.NotificationTypePurchaseRequest,
 			"Sale on hold",
-			"The buyer's payment authorization expired. Awaiting re-authorization.")
+			"The buyer's payment hold expired. Waiting for them to authorize again.")
 	}
 }
 

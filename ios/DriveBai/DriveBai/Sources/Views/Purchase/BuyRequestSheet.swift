@@ -165,10 +165,10 @@ struct BuyRequestSheet: View {
                 .foregroundColor(.driveBaiPrimary)
             VStack(alignment: .leading, spacing: 6) {
                 stepRow(number: 1, text: "Seller reviews and accepts your offer.")
-                stepRow(number: 2, text: "You both sign a Bill of Sale (MV-912 aligned).")
-                stepRow(number: 3, text: "You authorize payment — funds are held, not captured.")
+                stepRow(number: 2, text: "You both sign a Vehicle Bill of Sale in the app.")
+                stepRow(number: 3, text: "You authorize payment — the amount is held on your card, not charged yet.")
                 stepRow(number: 4, text: "You meet the seller, inspect the vehicle, and accept it.")
-                stepRow(number: 5, text: "Payment is captured on your acceptance.")
+                stepRow(number: 5, text: "Your payment completes when you accept the vehicle.")
             }
             .font(.subheadline)
             .foregroundColor(.primary)
@@ -195,7 +195,7 @@ struct BuyRequestSheet: View {
             Label(PurchaseCopy.paymentHoldHeadline, systemImage: "lock.shield")
                 .font(.caption.weight(.semibold))
                 .foregroundColor(.primary)
-            Text("DrivaBai is not a licensed escrow agent. Title transfer and DMV paperwork are the responsibility of the buyer and seller.")
+            Text("DrivaBai is not a licensed escrow agent. Title transfer and DMV paperwork are the responsibility of the buyer and seller — requirements vary by state.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
