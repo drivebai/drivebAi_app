@@ -33,11 +33,29 @@ struct PurchaseRequestCardView: View {
             statusBanner
             participants
             actionButtons
+            // Signed Bill of Sale PDF (or a "Preparing…" placeholder). Only
+            // renders once both parties have signed; the finalized-PDF coach
+            // mark anchors here.
+            BillOfSalePDFRow(billOfSale: billOfSale, isTourTarget: true)
         }
         .padding()
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+        .onAppear { emitSignatureTourEvents() }
+        .onChange(of: billOfSale) { _, _ in emitSignatureTourEvents() }
+    }
+
+    /// Mirror of the BoS signing transition for the product tour: when both
+    /// signatures are present, fire `bothSignaturesPresent` (signature-lock
+    /// teach) and, once the finalized PDF exists, flag the context so the
+    /// pdf-ready teach can chain.
+    private func emitSignatureTourEvents() {
+        guard let bos = billOfSale, bos.isFullySigned else { return }
+        if bos.finalizedPdfUrl?.isEmpty == false {
+            ProductTourCoordinator.shared.updateContext { $0.pdfReady = true }
+        }
+        ProductTourCoordinator.shared.handle(.bothSignaturesPresent)
     }
 
     // MARK: - Header
@@ -422,4 +440,89 @@ enum PurchaseCardAction {
     case sellerScheduleHandover
     case sellerMarkHandedOver
     case buyerInspect
+}
+
+// MARK: - Bill of Sale PDF row (shared)
+
+/// Reusable "View / Preparing" affordance for the finalized Bill of Sale
+/// PDF. Shared by `PurchaseRequestCardView`, `BillOfSaleFlowView` (review
+/// step) and `PurchaseTodayCard`.
+///
+/// Behaviour:
+///  - Renders **nothing** until both parties have signed, so the action
+///    never appears before the PDF can exist.
+///  - Once both have signed and `finalizedPdfUrl` is populated, shows a
+///    "View Bill of Sale" button that opens the signed PDF in
+///    `DocumentPreviewSheet` (QuickLook preview + Share / Save to Files).
+///  - While both are signed but the server is still rendering the PDF
+///    (`finalizedPdfUrl == nil`), shows a disabled "Preparing Bill of
+///    Sale…" row with a spinner. It clears automatically when the
+///    `purchase_bill_of_sale_updated` WS event delivers the populated URL
+///    and the caller re-renders with a fresh `BillOfSale`.
+struct BillOfSalePDFRow: View {
+    let billOfSale: BillOfSale?
+    /// When true, the "View" button is tagged as the `pdf_ready` coach-mark
+    /// target. Keep this to a single on-screen host at a time.
+    var isTourTarget: Bool = false
+
+    @State private var showPreview = false
+
+    private var bothSigned: Bool { billOfSale?.isFullySigned == true }
+    private var pdfURL: String? {
+        guard let url = billOfSale?.finalizedPdfUrl, !url.isEmpty else { return nil }
+        return url
+    }
+
+    var body: some View {
+        if bothSigned {
+            if let url = pdfURL {
+                viewButton(url: url)
+            } else {
+                preparingRow
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func viewButton(url: String) -> some View {
+        let button = Button {
+            showPreview = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.richtext")
+                Text("View Bill of Sale")
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(Color.driveBaiPrimary.opacity(0.12))
+            .foregroundColor(.driveBaiPrimary)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showPreview) {
+            DocumentPreviewSheet(
+                source: .remoteURL(url, filename: "Bill of Sale.pdf")
+            )
+        }
+
+        if isTourTarget {
+            button.onboardingTarget(.finalizedPdfLink)
+        } else {
+            button
+        }
+    }
+
+    private var preparingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView().scaleEffect(0.8)
+            Text("Preparing Bill of Sale…")
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
 }

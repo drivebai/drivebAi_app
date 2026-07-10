@@ -183,6 +183,35 @@ async function retryRefund() {
   }
 }
 
+// ── Bill of Sale finalize (admin retry) ────────────────────────────────────────
+
+const finalizing = ref(false)
+
+/**
+ * The finalized PDF is generated once both parties have signed. The retry
+ * endpoint (Design A §3d) only regenerates when the BoS is signed and the
+ * column is still NULL, so we only surface the "Generate" affordance in that
+ * window — reusing the same signed roll-up the BoS badge uses.
+ */
+function canGenerateBos(r: PurchaseRequestDetail): boolean {
+  return bosStatus(r).label === 'Signed'
+}
+
+async function retryFinalizeBos() {
+  if (!detail.value || finalizing.value) return
+  finalizing.value = true
+  try {
+    await adminApi.finalizeBillOfSale(detail.value.id)
+    toast.success('Bill of Sale PDF generated')
+    // Re-fetch so the freshly-signed finalized_pdf_url replaces the empty state.
+    detail.value = await adminApi.getPurchaseRequest(detail.value.id)
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to generate Bill of Sale PDF')
+  } finally {
+    finalizing.value = false
+  }
+}
+
 // ── Status / tone helpers ─────────────────────────────────────────────────────
 
 /**
@@ -570,9 +599,28 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
             </div>
           </div>
 
-          <p v-if="detailRow.bill_of_sale.finalized_pdf_url" class="pdf-link">
-            <a :href="imgUrl(detailRow.bill_of_sale.finalized_pdf_url)" target="_blank" rel="noopener">Download signed PDF</a>
-          </p>
+          <!-- Finalized PDF: signed private URL (same imgUrl signing path as the
+               signature images). When the column is still NULL we say so plainly
+               and, once both parties have signed, offer an admin-callable
+               regenerate (Design A §3d). -->
+          <div class="pdf-block">
+            <a
+              v-if="detailRow.bill_of_sale.finalized_pdf_url"
+              class="pdf-btn"
+              :href="imgUrl(detailRow.bill_of_sale.finalized_pdf_url)"
+              target="_blank"
+              rel="noopener"
+            >View finalized Bill of Sale (PDF)</a>
+            <template v-else>
+              <p class="muted pdf-empty">Bill of Sale PDF not generated yet.</p>
+              <button
+                v-if="canGenerateBos(detailRow)"
+                class="btn-primary"
+                :disabled="finalizing"
+                @click="retryFinalizeBos"
+              >{{ finalizing ? 'Generating…' : 'Generate PDF' }}</button>
+            </template>
+          </div>
         </template>
         <p v-else class="muted">Bill of Sale has not been opened yet.</p>
       </section>
@@ -816,7 +864,27 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
 .sig-img { max-width: 100%; background: #fff; border-radius: 6px; }
 .sig-empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; text-align: center; }
 .sig-date { font-size: 11px; color: var(--text-muted); }
-.pdf-link { margin: 12px 0 0; font-size: 13px; }
+.pdf-block {
+  margin: 14px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pdf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  min-height: 36px;
+}
+.pdf-empty { margin: 0; font-size: 13px; }
 
 /* ---- Admin actions ---- */
 .admin-label {

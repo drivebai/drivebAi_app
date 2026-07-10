@@ -99,6 +99,7 @@ func main() {
 	supportRepo := repository.NewSupportRepository(db)
 	notifRepo := repository.NewNotificationRepository(db)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(db)
+	onboardingRepo := repository.NewOnboardingProgressRepository(db)
 
 	// Ensure uploads directory exists
 	uploadDir := cfg.UploadDir
@@ -176,6 +177,7 @@ func main() {
 	// optional (setter wiring) so test constructors don't need to change.
 	chatHandler.SetNotificationHandler(notifHandler)
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
+	onboardingHandler := handlers.NewOnboardingHandler(onboardingRepo)
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
 	pickupDeadline := time.Duration(cfg.PickupDeadlineMinutes) * time.Minute
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, carDocRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
@@ -289,8 +291,16 @@ func main() {
 			r.Post("/documents/{type}", userHandler.UploadDocument)
 			r.Delete("/documents/{id}", userHandler.DeleteDocument)
 
-			// Onboarding
+			// Onboarding (signup flow)
 			r.Post("/onboarding/complete", userHandler.CompleteOnboarding)
+
+			// Product-tour ("onboarding") progress. All three endpoints are
+			// strictly self-scoped: the user id comes only from the JWT, so a
+			// caller can read/write/reset ONLY their own rows. DELETE backs the
+			// debug-build QA reset; it touches no product data.
+			r.Get("/me/onboarding-progress", onboardingHandler.GetProgress)
+			r.Put("/me/onboarding-progress", onboardingHandler.UpdateProgress)
+			r.Delete("/me/onboarding-progress", onboardingHandler.ResetProgress)
 
 			// Actions (Today tab) — chat requests
 			r.Get("/me/actions", chatHandler.GetMyActions)
@@ -409,6 +419,7 @@ func main() {
 			r.Patch("/purchase-requests/{id}/bos/buyer-fields", purchaseHandler.UpdateBOSBuyerFields)
 			r.Get("/purchase-requests/{id}/bos", purchaseHandler.GetBOS)
 			r.Post("/purchase-requests/{id}/bos/sign", purchaseHandler.SignBOS)
+			r.Post("/purchase-requests/{id}/bos/finalize", purchaseHandler.FinalizeBOS)
 			r.Post("/purchase-requests/{id}/payment-intent", purchaseHandler.CreatePaymentIntent)
 			r.Post("/purchase-requests/{id}/sync-payment", purchaseHandler.SyncPayment)
 			r.Post("/purchase-requests/{id}/schedule-handover", purchaseHandler.ScheduleHandover)

@@ -124,6 +124,19 @@ struct BillOfSaleFlowView: View {
                 mergeExternalUpdate(fresh)
             }
         }
+        // Product-tour host lives INSIDE the BoS sheet (a root-level overlay
+        // does not cover a presented sheet); re-inject the shared coordinator
+        // because a sheet gets a fresh environment.
+        .environmentObject(ProductTourCoordinator.shared)
+        .onboardingOverlayHost(ProductTourCoordinator.shared)
+        .onAppear { ProductTourCoordinator.shared.handle(.bosOpened) }
+        .onChange(of: bos) { _, newValue in
+            guard let newValue, newValue.isFullySigned else { return }
+            if newValue.finalizedPdfUrl?.isEmpty == false {
+                ProductTourCoordinator.shared.updateContext { $0.pdfReady = true }
+            }
+            ProductTourCoordinator.shared.handle(.bothSignaturesPresent)
+        }
     }
 
     // MARK: - Step content
@@ -155,6 +168,7 @@ struct BillOfSaleFlowView: View {
             vehicleLockCaption
         }
         .disabled(!isSeller || sellerLockedForEdits)
+        .onboardingTarget(.bosFirstSection)
     }
 
     @ViewBuilder
@@ -304,6 +318,7 @@ struct BillOfSaleFlowView: View {
                 )
             }
         }
+        .onboardingTarget(.bosSignedSection)
     }
 
     private var reviewStep: some View {
@@ -344,6 +359,14 @@ struct BillOfSaleFlowView: View {
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            // Signed PDF (or a "Preparing…" placeholder) once both parties
+            // have signed. Preview + Share / Save to Files.
+            //
+            // Tagged as the `pdf_ready` target: the signature/PDF teach fires
+            // while this sheet is frontmost, so the spotlight has to resolve
+            // against the row in *this* subtree, not the chat card's copy.
+            BillOfSalePDFRow(billOfSale: bos, isTourTarget: true)
         }
     }
 

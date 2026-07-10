@@ -163,6 +163,14 @@ struct ContentView: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
 
+    // Product-tour bootstrap bookkeeping. `tourDidBootstrap` guards the
+    // one-time cache load + server reconcile; `tourSawOnboarding` records that
+    // we observed this account mid-signup so that the moment it completes we
+    // can treat it as a genuinely new user (UserProfile carries no createdAt,
+    // so a live signup→complete transition is our new-user signal).
+    @State private var tourDidBootstrap = false
+    @State private var tourSawOnboarding = false
+
     var body: some View {
         Group {
             switch authStore.state {
@@ -202,6 +210,49 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: authStore.state)
+        // Product tour lives in its own coordinator, injected once at the
+        // authenticated root so every tab + pushed screen observes the same
+        // instance. (Sheets get a fresh environment and re-inject it.)
+        .environmentObject(ProductTourCoordinator.shared)
+        .task { syncProductTour(for: authStore.state) }
+        .onChange(of: authStore.state) { _, newState in
+            syncProductTour(for: newState)
+        }
+    }
+
+    /// Bridge auth state into the product-tour coordinator: bootstrap once on
+    /// first authenticated render, and fire `signupCompleted` (starting the
+    /// welcome → role-tabs chain) the first time a mid-signup account reaches a
+    /// completed state. Legacy / returning users never flip `isNewUser`, so no
+    /// tour auto-starts for them.
+    private func syncProductTour(for state: AuthState) {
+        let coord = ProductTourCoordinator.shared
+        guard case .authenticated(let user) = state else {
+            // Signed out / loading: drop scoping so nothing can fire and force a
+            // fresh bootstrap on the next sign-in.
+            coord.refreshUserContext()
+            coord.isNewUser = false
+            tourDidBootstrap = false
+            tourSawOnboarding = false
+            return
+        }
+        if user.needsOnboarding {
+            tourSawOnboarding = true
+            return
+        }
+        Task { @MainActor in
+            if !tourDidBootstrap {
+                tourDidBootstrap = true
+                await coord.bootstrap()
+            } else {
+                coord.refreshUserContext()
+            }
+            if tourSawOnboarding {
+                tourSawOnboarding = false
+                coord.isNewUser = true
+                coord.handle(.signupCompleted)
+            }
+        }
     }
 }
 

@@ -115,8 +115,8 @@ const (
 	// PurchaseRejectionMinEvidence is the smallest number of evidence files
 	// required to submit a rejection.
 	PurchaseRejectionMinEvidence = 1
-	// PurchaseOfferMinCents mirrors the $1,000 floor from CreateListing.
-	PurchaseOfferMinCents int64 = 100000
+	// PurchaseOfferMinCents is the minimum accepted offer: strictly positive (1 cent).
+	PurchaseOfferMinCents int64 = 1
 	// PurchaseExplanationMinLen / MaxLen mirror the DB CHECK constraint.
 	PurchaseExplanationMinLen = 20
 	PurchaseExplanationMaxLen = 2000
@@ -461,7 +461,7 @@ var (
 	ErrPurchaseRequestNotFound = &APIError{Code: ErrCodePurchaseRequestNotFound, Message: "Purchase request not found"}
 	ErrPurchaseRejectionNotFound = &APIError{Code: ErrCodePurchaseRejectionNotFound, Message: "Rejection record not found"}
 	ErrPurchaseNotCancellable = &APIError{Code: ErrCodePurchaseNotCancellable, Message: "This offer can no longer be cancelled"}
-	ErrPurchaseOfferTooLow    = &APIError{Code: ErrCodePurchaseOfferTooLow, Message: "Offer must be at least $1,000"}
+	ErrPurchaseOfferTooLow    = &APIError{Code: ErrCodePurchaseOfferTooLow, Message: "Offer must be greater than $0"}
 	ErrInvalidRoleField       = &APIError{Code: ErrCodeInvalidRoleField, Message: "Role must be 'seller' or 'buyer' and match the caller's identity"}
 	ErrPurchaseEvidenceRequired = &APIError{Code: ErrCodePurchaseEvidenceRequired, Message: "At least one piece of evidence is required to reject the vehicle"}
 )

@@ -83,6 +83,13 @@ struct ChatView: View {
                 requestsContent
             }
         }
+        .onChange(of: viewModel.selectedTab) { _, tab in
+            // Actually looking at Requests is the real "found where you pay"
+            // event. Seeing the coach mark that describes it is not.
+            if tab == .requests {
+                ProductTourCoordinator.shared.recordMilestone(.openedRequestsTab)
+            }
+        }
         .navigationTitle(counterpartyName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -209,6 +216,11 @@ struct ChatView: View {
                 viewModel.selectedTab = initial
                 viewModel.didApplyInitialTab = true
             }
+            // Landing directly on Requests (deep link, post-request navigation)
+            // never fires `.onChange`, so record the milestone here too.
+            if viewModel.selectedTab == .requests {
+                ProductTourCoordinator.shared.recordMilestone(.openedRequestsTab)
+            }
             // Only suppress list-badge increments while the Messages tab is
             // actually visible. Tab switches keep this in sync via the
             // ViewModel's selectedTab.didSet.
@@ -229,6 +241,12 @@ struct ChatView: View {
             async let sharedDocsTask: () = viewModel.loadSharedDocuments()
             async let carIdTask: () = loadRelatedCarId()
             _ = await (reqTask, leaseTask, purchaseTask, sharedDocsTask, carIdTask)
+            // A chat that carries a lease/purchase request is the trigger for the
+            // Messages-vs-Requests explainer. Deduped + suppressed while the
+            // higher-priority post-request teach is running.
+            if hasAnyRequests {
+                ProductTourCoordinator.shared.handle(.chatWithRequestOpened)
+            }
             // Tab-aware read gating: marks the chat read only when the user
             // landed on Messages; a Requests landing instead seeds the
             // Messages-tab unread dot from the server's unread count.
@@ -706,5 +724,8 @@ private struct ChatTabsBar: View {
         .buttonStyle(.plain)
         .accessibilityLabel(showBadge ? "\(tab.rawValue), needs attention" : tab.rawValue)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        // Coach-mark anchors: Messages vs Requests segments. Each tab maps to a
+        // distinct target id so the two don't overwrite each other's anchor.
+        .onboardingTarget(tab == .requests ? .chatRequestsSegment : .chatMessagesSegment)
     }
 }

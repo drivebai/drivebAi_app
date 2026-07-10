@@ -67,6 +67,12 @@ struct HandoverLocationRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("Pickup location: \(primaryLine)"))
         .accessibilityHint(canOpenMaps ? Text("Get directions") : Text(""))
+        // Coach-mark target for the Today teach. Only claim it when the row can
+        // actually open Maps: the tour must never spotlight a disabled control.
+        .onboardingTarget(canOpenMaps ? .getDirectionsRow : nil)
+        .onAppear {
+            ProductTourCoordinator.shared.updateContext { $0.hasPickupLocation = canOpenMaps }
+        }
     }
 
     // MARK: - Fallback chain

@@ -50,6 +50,8 @@ struct AuthenticatedProfileView: View {
     @State private var switchError: String?
     @State private var showSupportChat = false
     @State private var showEditProfile = false
+    /// Set when a replayed tip was armed for its own screen rather than played here.
+    @State private var armedTourNotice: String?
 
     /// Constructs the full URL for the profile photo
     private var profilePhotoURL: URL? {
@@ -153,6 +155,9 @@ struct AuthenticatedProfileView: View {
                     .padding(.horizontal)
                 }
 
+                // Help & product tour
+                helpAndTipsSection
+
                 // Actions
                 VStack(spacing: 0) {
                     ProfileActionRow(icon: "person.fill", title: "Edit Profile", action: { showEditProfile = true })
@@ -230,6 +235,98 @@ struct AuthenticatedProfileView: View {
         } message: {
             Text(switchError ?? "")
         }
+        .alert("Tips are back on", isPresented: Binding(
+            get: { armedTourNotice != nil },
+            set: { if !$0 { armedTourNotice = nil } }
+        )) {
+            Button("OK", role: .cancel) { armedTourNotice = nil }
+        } message: {
+            Text(armedTourNotice ?? "")
+        }
+    }
+
+    /// The product-tour role bucket for the signed-in user (admins share the
+    /// owner surfaces, so they map to `.owner`).
+    private var tourRole: TourRole {
+        user.role == .driver ? .driver : .owner
+    }
+
+    /// Most tips spotlight a control that only exists on its own screen, so
+    /// replaying one from Profile arms it rather than playing it here. Tell the
+    /// user where to go instead of leaving the tap looking broken.
+    private func handleReplay(_ outcome: TourReplayOutcome, screen: String) {
+        guard outcome == .armedForLater else { return }
+        armedTourNotice = "We'll walk you through it the next time you \(screen)."
+    }
+
+    /// "Help & product tour" — replay the tour, re-show the setup checklist, and
+    /// re-run any individual tip. Every action just calls the coordinator; an
+    /// explicit replay bypasses the new-user gate, so legacy users can opt in.
+    private var helpAndTipsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Help & product tour")
+                .font(.footnote)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+                .padding(.horizontal)
+                .padding(.leading, 4)
+
+            VStack(spacing: 0) {
+                ProfileActionRow(icon: "sparkles", title: "Replay app tour") {
+                    handleReplay(ProductTourCoordinator.shared.replayWelcomeAndTabs(),
+                                 screen: "the tour")
+                }
+                Divider().padding(.leading, 56)
+                ProfileActionRow(icon: "checklist", title: "Show setup checklist") {
+                    ProductTourCoordinator.shared.showChecklist(role: tourRole)
+                }
+                Divider().padding(.leading, 56)
+                ProfileActionRow(icon: "bubble.left.and.bubble.right.fill",
+                                 title: "How Messages & Requests work") {
+                    handleReplay(ProductTourCoordinator.shared.replay(.chatSegments),
+                                 screen: "open a chat")
+                }
+                Divider().padding(.leading, 56)
+                if tourRole == .driver {
+                    ProfileActionRow(icon: "car.fill", title: "Renting a car") {
+                        handleReplay(ProductTourCoordinator.shared.replay(.driverFirstDiscover),
+                                     screen: "open Discover")
+                    }
+                } else {
+                    ProfileActionRow(icon: "car.fill", title: "Listing a car") {
+                        handleReplay(ProductTourCoordinator.shared.replay(.ownerFirstListing),
+                                     screen: "start adding a vehicle")
+                    }
+                }
+                Divider().padding(.leading, 56)
+                ProfileActionRow(icon: "creditcard.fill", title: "Buying or selling a car") {
+                    handleReplay(ProductTourCoordinator.shared.replay(.purchaseIntro),
+                                 screen: "open a car that's for sale")
+                }
+
+                #if DEBUG
+                Divider().padding(.leading, 56)
+                Button {
+                    Task { await ProductTourCoordinator.shared.resetAll() }
+                } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 20))
+                            .foregroundColor(.red)
+                            .frame(width: 40)
+                        Text("Reset onboarding (this account)")
+                            .font(.subheadline)
+                            .foregroundColor(.red)
+                        Spacer()
+                    }
+                    .padding()
+                }
+                #endif
+            }
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+            .padding(.horizontal)
+        }
     }
 
     private func performSwitch(isRetryAfterDocs: Bool = false) {
@@ -242,6 +339,11 @@ struct AuthenticatedProfileView: View {
                 case .switched:
                     // ContentView will re-route to the new tab group automatically
                     // because it keys off `user.role` which /me now mirrors.
+                    // Tell the tour so it can run the "you switched modes"
+                    // explainer (and chain the new role's tab walk if eligible).
+                    ProductTourCoordinator.shared.handle(
+                        .roleSwitched(target == .driver ? .driver : .owner)
+                    )
                     isSwitchingMode = false
                 case .needsDriverDocs:
                     await authStore.fetchDocuments()

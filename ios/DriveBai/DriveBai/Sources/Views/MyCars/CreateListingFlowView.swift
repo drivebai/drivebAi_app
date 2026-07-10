@@ -166,7 +166,7 @@ class CreateListingState: ObservableObject {
     var isPricingValid: Bool {
         (isForRent || isForSale) &&
         (!isForRent || weeklyRentPrice >= kMinWeeklyRentPrice) &&
-        (!isForSale || salePrice >= 1000)
+        (!isForSale || salePrice > 0)
     }
 
     var isRequirementsValid: Bool {
@@ -467,6 +467,21 @@ struct CreateListingFlowView: View {
             }
         }
         .environmentObject(state)
+        // Product-tour host lives INSIDE the wizard sheet (a root-level
+        // overlay does not cover a presented sheet). Re-inject the shared
+        // coordinator because a sheet gets a fresh environment.
+        .environmentObject(ProductTourCoordinator.shared)
+        .onboardingOverlayHost(ProductTourCoordinator.shared)
+        .onAppear { ProductTourCoordinator.shared.handle(.listingWizardOpened) }
+        // The listing tour is screen-driven: each card explains the page the
+        // user is on, and the wizard — not the card — decides when the next one
+        // appears. Without this the tour marched through all six explanations
+        // while the wizard sat on page one, pointing at controls that weren't
+        // on screen yet.
+        .onChange(of: state.currentStep) { _, step in
+            guard let stepID = Self.tourStepID(for: step) else { return }
+            ProductTourCoordinator.shared.syncScreenStep(stepID, in: .ownerFirstListing)
+        }
         // Swipe-to-dismiss is blocked while submitting AND once the user
         // has entered anything — dismissal then goes through the explicit
         // Cancel → Discard confirmation instead (QA pt 5).
@@ -487,6 +502,19 @@ struct CreateListingFlowView: View {
                 Text(docUploadFailureMessage)
             }
         )
+    }
+
+    /// Wizard page → the `ownerFirstListing` step that explains it. Pages with
+    /// no coaching return nil and simply leave the last card dismissed.
+    private static func tourStepID(for step: CreateListingStep) -> String? {
+        switch step {
+        case .basicInfo:    return "vin"
+        case .pricing:      return "pricing"
+        case .photos:       return "photos"
+        case .documents:    return "documents"
+        case .review:       return "review"
+        case .details, .requirements: return nil
+        }
     }
 
     private var docUploadFailureMessage: String {
@@ -550,6 +578,10 @@ struct CreateListingFlowView: View {
 
         print("[CreateListingFlow] Car created on backend with ID: \(createdCar.id)")
         state.createdCarId = createdCar.id
+
+        // POST /cars succeeded (status == pending) — surface the tour's
+        // "Submitted for review" confirmation card.
+        ProductTourCoordinator.shared.handle(.listingSubmitted)
 
         // Upload photos for slots that have local image data
         let photosToUpload = state.photoSlots.filter { $0.localImageData != nil }
@@ -802,6 +834,7 @@ struct CreateListingBasicInfoStep: View {
                 // autofill Make / Model / Year (and later steps pre-fill
                 // Body / Fuel). User can still edit any of them afterwards.
                 VINAutofillSection(focus: focus)
+                    .onboardingTarget(.wizardVIN)
 
                 // VIN-conflict surface: if addCar() bubbled a 409 about a
                 // duplicate VIN, show it right under the VIN row so the
@@ -950,7 +983,7 @@ private struct VINAutofillSection: View {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.red)
-                    Text("This VIN is already listed on DrivaBai.")
+                    Text("This VIN is already in use.")
                         .font(.caption)
                         .foregroundColor(.red)
                 }
@@ -1144,12 +1177,12 @@ struct CreateListingPricingStep: View {
                             label: "Sale Price",
                             suffix: nil,
                             value: $state.salePrice,
-                            minValue: 1000,
+                            minValue: 0,
                             step: 10,
                             sheetTitle: "Sale price"
                         )
 
-                        Text("Minimum $1,000 — tap to edit with +/- or type")
+                        Text("Tap to edit with +/- or type")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -1161,6 +1194,7 @@ struct CreateListingPricingStep: View {
                         .foregroundColor(.red)
                 }
             }
+            .onboardingTarget(.wizardPricing)
         }
     }
 }
@@ -1330,6 +1364,7 @@ struct CreateListingPhotosStep: View {
                     .foregroundColor(.white)
                     .cornerRadius(12)
                 }
+                .onboardingTarget(.wizardPhotos)
 
                 // Multi-select picker button
                 if emptySlotCount > 0 {
@@ -1689,6 +1724,7 @@ struct CreateListingDocumentsStep: View {
                         .padding(.top, 4)
                 }
             }
+            .onboardingTarget(.wizardDocuments)
         }
     }
 }
@@ -1913,6 +1949,7 @@ struct CreateListingReviewStep: View {
                         .foregroundColor(.red)
                 }
             }
+            .onboardingTarget(.wizardReview)
         }
     }
 }

@@ -6,6 +6,10 @@ struct DriverTodayView: View {
     @StateObject private var viewModel = DriverTodayViewModel()
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
+    @ObservedObject private var tour = ProductTourCoordinator.shared
+    /// Local mirror of the Getting-started card's collapse state (persisted
+    /// best-effort into the tour cache).
+    @State private var checklistCollapsed = false
     @State private var showNotifications = false
     @State private var navigateToChatTask: OnboardingTask?
     @State private var showChat = false
@@ -130,10 +134,21 @@ struct DriverTodayView: View {
                 }
             }
             .task {
+                checklistCollapsed = tour.checklistUIState(role: .driver).collapsed
                 async let actionsTask: () = viewModel.fetchActions()
                 async let notifTask: () = viewModel.fetchNotifications()
-                _ = await (actionsTask, notifTask)
+                // Refresh documents so the "Add your driver's license" checklist
+                // row reflects real upload state, not a stale/empty cache.
+                async let docsTask: () = authStore.fetchDocuments()
+                _ = await (actionsTask, notifTask, docsTask)
                 viewModel.markActionsSeen()
+                if !viewModel.tasks.isEmpty { tour.handle(.firstTodayActionPresent) }
+            }
+            .onChange(of: viewModel.tasks.isEmpty) { _, isEmpty in
+                if !isEmpty { tour.handle(.firstTodayActionPresent) }
+            }
+            .onChange(of: checklistCollapsed) { _, collapsed in
+                tour.setChecklistCollapsed(collapsed, role: .driver)
             }
             .refreshable {
                 await viewModel.refresh()
@@ -288,8 +303,11 @@ struct DriverTodayView: View {
 
             // Task cards or empty state
             if viewModel.tasks.isEmpty {
-                AllDoneView()
-                    .padding(.horizontal, TodayLayout.horizontalPadding)
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    driverChecklistCard
+                    AllDoneView()
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
             } else {
                 VStack(spacing: TodayLayout.cardSpacing) {
                     ForEach(viewModel.tasks) { task in
@@ -335,11 +353,46 @@ struct DriverTodayView: View {
                                 }
                             }
                         )
+                        // Coach-mark anchor for `first_today_action_v1` — only
+                        // the first (top) card is spotlighted.
+                        .onboardingTargetIf(task.id == viewModel.tasks.first?.id, .todayFirstCard)
                     }
                 }
                 .padding(.horizontal, TodayLayout.horizontalPadding)
             }
         }
+    }
+
+    // MARK: - Getting-started checklist
+
+    /// Driver "Getting started" card, shown in the empty Quick-actions region
+    /// until every step is real-domain complete or the owner dismisses it.
+    /// Rows are bound to genuine signals: the license upload, and the
+    /// discover/request/where-to-pay milestones the coordinator records as the
+    /// matching real events fire.
+    @ViewBuilder
+    private var driverChecklistCard: some View {
+        if !tour.checklistUIState(role: .driver).dismissed {
+            ChecklistCard.driver(
+                hasLicense: authStore.hasRequiredDocuments(),
+                browsedCars: tour.hasMilestone(.viewedCarDetail),
+                sentRequest: tour.hasMilestone(.sentLeaseRequest),
+                foundWhereToPay: tour.hasMilestone(.openedRequestsTab),
+                collapsed: $checklistCollapsed,
+                onDismiss: { tour.dismissChecklist(role: .driver) }
+            )
+        }
+    }
+}
+
+// MARK: - Conditional coach-mark target helper
+
+private extension View {
+    /// Apply `.onboardingTarget(id)` only when `condition` is true, so a list
+    /// can spotlight a single element without every row overwriting the anchor.
+    @ViewBuilder
+    func onboardingTargetIf(_ condition: Bool, _ id: TourTargetID) -> some View {
+        if condition { self.onboardingTarget(id) } else { self }
     }
 }
 

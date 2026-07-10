@@ -5,6 +5,11 @@ struct DriverTabView: View {
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var chatsVM = ChatsListViewModel.shared
+    @ObservedObject private var tour = ProductTourCoordinator.shared
+
+    /// Tag of the Discover tab. Named so the tour redirect below doesn't rely
+    /// on a bare literal matching the `.tag(...)` order.
+    private static let discoverTabIndex = 1
 
     @State private var selectedTab = 0
 
@@ -41,6 +46,24 @@ struct DriverTabView: View {
                 .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
+        // Product-tour coach-mark overlay. Installed on the TabView root so the
+        // welcome card, the geometric tab-bar spotlights and any coach-mark on a
+        // pushed screen (Discover detail, Chat) all render above the tabs. The
+        // native bar, its badges and the deep-link handlers below are untouched.
+        .onboardingOverlayHost(tour)
+        // Announce the active role so the coordinator can (eventually) run the
+        // driver tab walk. For a fresh signup this is a no-op until the welcome
+        // card finishes, which then chains into the tab walk.
+        .task { tour.handle(.roleActivated(.driver)) }
+        // The tab walk ends on "Explore Discover" — land the driver there so the
+        // first-Discover coach-marks can pick up when that screen appears.
+        // Only on completion: a user who tapped "Skip tour" asked to be left
+        // alone, not moved to a tab they never chose.
+        .onChange(of: tour.activeTour) { oldValue, newValue in
+            guard oldValue == .driverTabs, newValue == nil,
+                  tour.progress[.driverTabs] == .completed else { return }
+            selectedTab = Self.discoverTabIndex
+        }
         // Live Activity tap routes here via DeepLinkRouter. Switch to the
         // Today tab so DriverTodayView (which owns the keyHandover list and
         // the existing ChatView navigation machinery) can finish the

@@ -107,13 +107,16 @@ func TestPurchase_Create_InvalidCarID(t *testing.T) {
 	}
 }
 
-// TestPurchase_Create_BelowMinimum guards the $1,000 floor.
+// TestPurchase_Create_BelowMinimum guards the relaxed positivity floor:
+// offers must be strictly > 0. $0 is rejected with OFFER_TOO_LOW before any
+// repo access. (A $500 offer is now ACCEPTED — see
+// TestPurchase_Create_PositiveOfferPassesFloor.)
 func TestPurchase_Create_BelowMinimum(t *testing.T) {
 	h := &PurchaseRequestHandler{}
 	carID := uuid.New()
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("carId", carID.String())
-	body := `{"offer_amount_cents":50000}` // $500 — below floor
+	body := `{"offer_amount_cents":0}` // $0 — not strictly positive
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/cars/"+carID.String()+"/purchase-requests", bytes.NewBufferString(body))
 	ctx := context.WithValue(req.Context(), httputil.UserIDKey, uuid.New())
 	ctx = context.WithValue(ctx, chi.RouteCtxKey, rctx)
