@@ -39,6 +39,16 @@ struct DocumentPreviewSheet: View {
                 .navigationTitle(displayFilename)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    // Share / Save to Files for a downloaded (or staged)
+                    // document once it's on disk. The iOS share sheet's
+                    // destinations include "Save to Files".
+                    if case .file(let url) = phase {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            ShareLink(item: url) {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                        }
+                    }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { dismiss() }
                     }

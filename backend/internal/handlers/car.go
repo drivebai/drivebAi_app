@@ -341,6 +341,17 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 		))
 		return
 	}
+	// A for-sale car must carry a positive price at every write entry point.
+	// UpdateCar's sale-readiness gate enforces this; without the same check
+	// here a listing could be *created* at 0 or a negative price — a state the
+	// update path refuses. The title-document half of that gate cannot apply at
+	// create time, because documents are uploaded after the car row exists.
+	if salePriceMissingOrNonPositive(car) {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
+			"Sale price must be greater than 0 when a car is listed for sale",
+		))
+		return
+	}
 
 	// Save to database
 	if err := h.carRepo.Create(ctx, car); err != nil {
@@ -425,8 +436,8 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sale-readiness validation (QA pt-8 / D4): enabling For Sale requires
-	// a sale price of at least $1,000 and a 'title' document on file. The
-	// client mirrors these rules as a checklist; details.missing carries
+	// a positive sale price and a 'title' document on file. The client
+	// mirrors these rules as a checklist; details.missing carries
 	// machine-readable reasons.
 	//
 	// LEGACY GRANDFATHERING: the gate fires only on the off→on TRANSITION
@@ -583,11 +594,6 @@ func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
 	// req.Status, req.IsPaused, req.DepositAmount: intentionally not applied.
 }
 
-// minSalePriceDollars is the floor for listing a car for sale (D4). Kept in
-// sync with models.PurchaseOfferMinCents (100000 cents = $1,000), the
-// minimum offer the purchase flow accepts.
-const minSalePriceDollars = 1000
-
 // Machine-readable reasons in SALE_REQUIREMENTS_NOT_MET details.missing.
 const (
 	saleMissingPriceMin      = "sale_price_min"
@@ -630,12 +636,29 @@ func pauseConflictError(car *models.Car) *models.APIError {
 	return nil
 }
 
+// salePriceMissingOrNonPositive is the single sale-price rule, shared by both
+// write entry points (CreateCar's pre-insert guard and UpdateCar's readiness
+// gate) so the two can never drift apart. There is no minimum amount: any
+// strictly positive price is a valid listing. The NULL-guard is load-bearing —
+// it is the only thing rejecting a for-sale listing with no price at all.
+//
+// Callers that already know the car is for sale still get the right answer:
+// the IsForSale term short-circuits for rent-only cars.
+func salePriceMissingOrNonPositive(car *models.Car) bool {
+	if !car.IsForSale {
+		return false
+	}
+	return !car.SalePrice.Valid || car.SalePrice.Float64 <= 0
+}
+
 // saleRequirementsMissing returns the unmet sale-readiness requirements for
-// a car that would end up listed for sale: a sale price of at least
-// $1,000 and a 'title' document on file. Empty slice = ready.
+// a car that would end up listed for sale: a positive sale price and a
+// 'title' document on file. Empty slice = ready.
 func saleRequirementsMissing(car *models.Car, documents []models.CarDocument) []string {
 	missing := []string{}
-	if !car.SalePrice.Valid || car.SalePrice.Float64 < minSalePriceDollars {
+	// This gate only ever runs for a car that is (becoming) for sale, so ask
+	// the shared rule directly rather than re-deriving it.
+	if !car.SalePrice.Valid || car.SalePrice.Float64 <= 0 {
 		missing = append(missing, saleMissingPriceMin)
 	}
 	hasTitle := false

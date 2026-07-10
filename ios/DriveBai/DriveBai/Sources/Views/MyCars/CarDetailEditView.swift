@@ -565,7 +565,7 @@ private struct GeneralInformationContent: View {
             }
 
             // List for sale (QA pt 8) — owners can enable this any time;
-            // the backend requires a sale price >= $1,000 and a Title
+            // the backend requires a positive sale price and a Title
             // document before the save is accepted.
             Toggle(isOn: $car.isForSale) {
                 Text("List for sale")
@@ -583,7 +583,7 @@ private struct GeneralInformationContent: View {
                         get: { car.salePrice?.amount ?? 0 },
                         set: { car.salePrice = Money(amount: $0) }
                     ),
-                    minValue: 1000,
+                    minValue: 0,
                     step: 10,
                     sheetTitle: "Sale price"
                 )
@@ -613,14 +613,14 @@ private struct GeneralInformationContent: View {
 // MARK: - Sale Readiness Checklist (QA pt 8)
 
 /// Client-side mirror of the backend's SALE_REQUIREMENTS_NOT_MET rules:
-/// a sale price of at least $1,000 and a Title document on file. Shown
+/// a positive sale price and a Title document on file. Shown
 /// only while something is missing (or when the server just rejected a
 /// save), so a fully-ready listing renders no noise.
 private struct SaleReadinessChecklist: View {
     let car: Car
     let serverMessage: String?
 
-    private var priceOK: Bool { (car.salePrice?.amount ?? 0) >= 1000 }
+    private var priceOK: Bool { (car.salePrice?.amount ?? 0) > 0 }
     private var titleOK: Bool {
         car.documents.contains { $0.documentType == .title }
     }
@@ -639,7 +639,7 @@ private struct SaleReadinessChecklist: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                requirementRow(done: priceOK, text: "A sale price of at least $1,000")
+                requirementRow(done: priceOK, text: "A sale price")
                 requirementRow(done: titleOK, text: "A Title document — add it in the Documents section below")
             }
             .padding(12)

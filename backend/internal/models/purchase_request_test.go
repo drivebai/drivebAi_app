@@ -116,13 +116,33 @@ func TestBillOfSale_SigningFlags(t *testing.T) {
 	}
 }
 
-// TestPurchaseOfferMinCents_Threshold locks the $1,000 floor from the
-// CreateListing spec. If someone bumps this without updating the model
-// enum, the DB CHECK constraint will still refuse but the handler will
-// return an ambiguous 500 instead of the friendly OFFER_TOO_LOW.
+// TestPurchaseOfferMinCents_Threshold locks the relaxed offer floor: offers
+// are free-form negotiation and only need to be strictly positive (1 cent).
+// The handler keys OFFER_TOO_LOW off this constant, and the DB CHECK
+// (migration 000033) is the matching `offer_amount_cents > 0`. If someone
+// bumps this without updating the migration, the handler and constraint drift.
 func TestPurchaseOfferMinCents_Threshold(t *testing.T) {
-	if PurchaseOfferMinCents != 100_000 {
-		t.Errorf("min cents should be $1000 = 100_000, got %d", PurchaseOfferMinCents)
+	if PurchaseOfferMinCents != 1 {
+		t.Errorf("min cents should be strictly-positive floor = 1, got %d", PurchaseOfferMinCents)
+	}
+}
+
+// TestPurchaseOfferFloor_Semantics mirrors the handler's
+// `offer < PurchaseOfferMinCents` comparison: an offer of $500 on a $500
+// listing (50000 cents) is accepted (offers are free-form, not tied to the
+// list price), $0 and negatives are rejected, and 1 cent is the boundary.
+func TestPurchaseOfferFloor_Semantics(t *testing.T) {
+	accepted := []int64{1, 50000 /* $500 */, 100000, 250000}
+	for _, c := range accepted {
+		if c < PurchaseOfferMinCents {
+			t.Errorf("offer %d cents should be accepted (>= floor %d)", c, PurchaseOfferMinCents)
+		}
+	}
+	rejected := []int64{0, -1, -100000}
+	for _, c := range rejected {
+		if c >= PurchaseOfferMinCents {
+			t.Errorf("offer %d cents should be rejected (< floor %d)", c, PurchaseOfferMinCents)
+		}
 	}
 }
 

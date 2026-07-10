@@ -5,6 +5,11 @@ struct OwnerTabView: View {
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var chatsVM = ChatsListViewModel.shared
+    @ObservedObject private var tour = ProductTourCoordinator.shared
+
+    /// Tag of the My Cars tab. Named so the tour redirect below doesn't rely on
+    /// a bare literal matching the `.tag(...)` order.
+    private static let myCarsTabIndex = 1
 
     @State private var selectedTab = 0
 
@@ -41,6 +46,18 @@ struct OwnerTabView: View {
                 .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
+        // Product-tour coach-mark overlay (see DriverTabView for the rationale).
+        .onboardingOverlayHost(tour)
+        .task { tour.handle(.roleActivated(.owner)) }
+        // The owner tab walk ends on "List a car" — land the owner on My cars,
+        // whose zero-car empty state carries the "List your first vehicle"
+        // checklist + primer. Only on completion: skipping the tour must not
+        // move the user to a tab they never chose.
+        .onChange(of: tour.activeTour) { oldValue, newValue in
+            guard oldValue == .ownerTabs, newValue == nil,
+                  tour.progress[.ownerTabs] == .completed else { return }
+            selectedTab = Self.myCarsTabIndex
+        }
         .onChange(of: deepLinkRouter.pendingLeasePickupId) { _, newId in
             guard newId != nil else { return }
             selectedTab = 0

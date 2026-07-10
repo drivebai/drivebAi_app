@@ -17,21 +17,20 @@ struct BuyRequestSheet: View {
     @State private var isSubmitting = false
     @State private var errorMessage: String?
 
-    /// The spec mirrors the CreateListing minimum — $1,000 floor.
-    private static let minOfferDollars: Double = 1000
-
     init(car: Car, onSubmitted: @escaping (UUID) -> Void) {
         self.car = car
         self.onSubmitted = onSubmitted
-        _offerAmount = State(initialValue: car.salePrice?.amount ?? Self.minOfferDollars)
+        _offerAmount = State(initialValue: car.salePrice?.amount ?? 0)
     }
 
     private var offerCents: Int64 {
         Int64((offerAmount * 100).rounded())
     }
 
+    /// Offers are free-form negotiation — any strictly-positive amount is
+    /// accepted (there is no minimum tied to the listed sale price).
     private var isValid: Bool {
-        offerAmount >= Self.minOfferDollars
+        offerAmount > 0
     }
 
     var body: some View {
@@ -52,6 +51,12 @@ struct BuyRequestSheet: View {
             }
             .navigationTitle("Buy this car")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                // The purchase intro runs on the car detail before this sheet is
+                // presented (its first card spotlights the Buy button, which
+                // lives there). Here we only keep the context flag true.
+                ProductTourCoordinator.shared.updateContext { $0.carIsForSale = true }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -72,6 +77,12 @@ struct BuyRequestSheet: View {
                 Text(errorMessage ?? "")
             }
         }
+        // A presented sheet occludes the tab-root overlay and gets a fresh
+        // environment, so the purchase teach needs its own host here. Without
+        // it the card drew behind this sheet and only appeared once the sheet
+        // was dismissed — long after the moment it was explaining.
+        .environmentObject(ProductTourCoordinator.shared)
+        .onboardingOverlayHost(ProductTourCoordinator.shared)
     }
 
     // MARK: - Sections
@@ -129,7 +140,7 @@ struct BuyRequestSheet: View {
             .background(Color(.systemGray6))
             .cornerRadius(10)
 
-            Text("Minimum offer: $1,000")
+            Text("Enter your offer")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

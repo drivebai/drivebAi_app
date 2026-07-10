@@ -58,6 +58,11 @@ struct InspectionView: View {
             }
             .onReceive(ticker) { now = $0 }
         }
+        // Product-tour host lives inside the inspection sheet; re-inject the
+        // shared coordinator because a sheet gets a fresh environment.
+        .environmentObject(ProductTourCoordinator.shared)
+        .onboardingOverlayHost(ProductTourCoordinator.shared)
+        .onAppear { ProductTourCoordinator.shared.handle(.inspectionAvailable) }
     }
 
     // MARK: - Sections
@@ -154,6 +159,7 @@ struct InspectionView: View {
                 .cornerRadius(12)
             }
             .disabled(isAccepting)
+            .onboardingTarget(.inspectionCTA)
 
             Button {
                 showRejectionForm = true

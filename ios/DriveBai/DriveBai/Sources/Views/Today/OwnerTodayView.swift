@@ -7,6 +7,8 @@ struct OwnerTodayView: View {
     @StateObject private var carsStore = OwnerCarsStore.shared
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
+    @ObservedObject private var tour = ProductTourCoordinator.shared
+    @State private var checklistCollapsed = false
     @State private var showNotifications = false
     @State private var showCreateListing = false
     @State private var selectedCarId: UUID?
@@ -152,11 +154,19 @@ struct OwnerTodayView: View {
                 }
             }
             .task {
+                checklistCollapsed = tour.checklistUIState(role: .owner).collapsed
                 await carsStore.fetchCars()
                 async let actionsTask: () = viewModel.fetchActions()
                 async let notifTask: () = viewModel.fetchNotifications()
                 _ = await (actionsTask, notifTask)
                 viewModel.markActionsSeen()
+                if !viewModel.tasks.isEmpty { tour.handle(.firstTodayActionPresent) }
+            }
+            .onChange(of: viewModel.tasks.isEmpty) { _, isEmpty in
+                if !isEmpty { tour.handle(.firstTodayActionPresent) }
+            }
+            .onChange(of: checklistCollapsed) { _, collapsed in
+                tour.setChecklistCollapsed(collapsed, role: .owner)
             }
             .refreshable {
                 await viewModel.refresh()
@@ -334,8 +344,11 @@ struct OwnerTodayView: View {
 
             // Task cards or empty state
             if viewModel.tasks.isEmpty {
-                AllDoneView()
-                    .padding(.horizontal, TodayLayout.horizontalPadding)
+                VStack(spacing: TodayLayout.cardSpacing) {
+                    ownerChecklistCard
+                    AllDoneView()
+                }
+                .padding(.horizontal, TodayLayout.horizontalPadding)
             } else {
                 VStack(spacing: TodayLayout.cardSpacing) {
                     ForEach(viewModel.tasks) { task in
@@ -377,11 +390,48 @@ struct OwnerTodayView: View {
                                 }
                             }
                         )
+                        // Coach-mark anchor for `first_today_action_v1` — only
+                        // the first (top) card is spotlighted.
+                        .onboardingTargetIf(task.id == viewModel.tasks.first?.id, .todayFirstCard)
                     }
                 }
                 .padding(.horizontal, TodayLayout.horizontalPadding)
             }
         }
+    }
+
+    // MARK: - Getting-started checklist
+
+    /// Owner "Getting started" card mirrored on the Today empty state. Every row
+    /// is bound to real car domain state (see `OwnerMyCarsView` for the same
+    /// predicates); "List your first vehicle" opens the create-listing flow.
+    @ViewBuilder
+    private var ownerChecklistCard: some View {
+        if !tour.checklistUIState(role: .owner).dismissed {
+            ChecklistCard.owner(
+                hasCar: !carsStore.cars.isEmpty,
+                docsComplete: carsStore.cars.contains { CarBusinessState.forCar($0) != .pendingReview },
+                submittedForReview: !carsStore.cars.isEmpty,
+                isLive: carsStore.cars.contains { car in
+                    switch CarBusinessState.forCar(car) {
+                    case .available, .rented: return true
+                    default: return false
+                    }
+                },
+                collapsed: $checklistCollapsed,
+                onPrimaryAction: { showCreateListing = true },
+                onDismiss: { tour.dismissChecklist(role: .owner) }
+            )
+        }
+    }
+}
+
+// MARK: - Conditional coach-mark target helper
+
+private extension View {
+    @ViewBuilder
+    func onboardingTargetIf(_ condition: Bool, _ id: TourTargetID) -> some View {
+        if condition { self.onboardingTarget(id) } else { self }
     }
 }
 

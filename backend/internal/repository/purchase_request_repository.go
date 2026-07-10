@@ -462,6 +462,30 @@ func (r *PurchaseRequestRepository) GetBillOfSale(ctx context.Context, purchaseI
 	return &b, nil
 }
 
+// SetFinalizedPDF stamps the finalized Bill-of-Sale PDF path onto the row,
+// but ONLY when finalized_pdf_url is still NULL. This is the idempotency
+// guard for the finalize flow: whether the write comes from the async
+// SignBOS goroutine or a manual retry, whoever wins the race sets the
+// column; every later caller is a no-op (rowsAffected == 0). The path is
+// deterministic (one file per purchase), so any concurrent identical file
+// write overwrites the same bytes at the same path harmlessly.
+//
+// The stored value MUST be the BARE relative /uploads/... path — never a
+// signed URL. buildBOSResponse signs it on the way out.
+//
+// Returns true when this call performed the write (was the winner).
+func (r *PurchaseRequestRepository) SetFinalizedPDF(ctx context.Context, purchaseID uuid.UUID, relativeURL string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE purchase_bill_of_sales
+		SET finalized_pdf_url = $2, finalized_at = NOW(), updated_at = NOW()
+		WHERE purchase_request_id = $1 AND finalized_pdf_url IS NULL
+	`, purchaseID, relativeURL)
+	if err != nil {
+		return false, fmt.Errorf("set finalized pdf: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // validateNonBlankPatch returns a 400 APIError when the caller sent an
 // explicit empty (or all-whitespace) string for a field that must remain
 // populated. nil pointers (field omitted from JSON) are always allowed.

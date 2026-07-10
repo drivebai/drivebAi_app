@@ -1,20 +1,25 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/png" // registers the PNG decoder used by validateSignatureUpload
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/drivebai/backend/internal/billofsale"
 	"github.com/drivebai/backend/internal/httputil"
 	"github.com/drivebai/backend/internal/models"
 	"github.com/drivebai/backend/internal/repository"
@@ -722,9 +727,21 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 	}
 	filename := fmt.Sprintf("%s_signature_%s.png", role, uuid.New().String())
 	filePath := filepath.Join(dir, filename)
-	data, err := io.ReadAll(file)
+	// Bound the read: ParseMultipartForm's 5 MB argument is only the in-memory
+	// buffer, not a hard cap on the part's size.
+	data, err := io.ReadAll(io.LimitReader(file, maxSignatureUploadBytes+1))
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	// Reject anything that isn't a small, well-formed PNG *before* it reaches
+	// the filesystem. The PDF renderer parses these images; a file with valid
+	// PNG magic but a malformed header can make the PDF library panic instead
+	// of erroring, and generation runs on a detached goroutine where a panic
+	// would kill the process. Validate at the door, not just at render time.
+	if err := validateSignatureUpload(data); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest,
+			models.NewValidationError("signature must be a PNG image"))
 		return
 	}
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
@@ -790,7 +807,310 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 		h.notifyPurchaseParty(p, p.BuyerID, models.NotificationTypePurchasePayment,
 			"Bill of Sale signed",
 			"Both parties have signed. Authorize payment to continue.")
+		// Generate the finalized Bill-of-Sale PDF in a detached goroutine —
+		// AFTER the response is written and the WS broadcast fired above. The
+		// signer must not wait on PDF layout + disk I/O. Signatures are
+		// already durably committed by MarkSignature, so a PDF failure never
+		// loses them; clients refresh on the purchase_bill_of_sale_updated WS
+		// event the goroutine broadcasts on success, or self-heal via the
+		// retry endpoint / lazy GetBOS finalize. Use context.Background()
+		// because the request context is cancelled once we return.
+		go h.finalizeBillOfSale(context.Background(), p.ID, p.SellerID, p.BuyerID)
 	}
+}
+
+// ─── Bill-of-Sale finalization (PDF) ─────────────────────────────────────────
+
+const (
+	// maxSignatureUploadBytes caps a signature PNG upload.
+	maxSignatureUploadBytes = 5 << 20
+	// maxSignatureUploadDimension bounds the decoded signature dimensions.
+	maxSignatureUploadDimension = 8000
+)
+
+// validateSignatureUpload accepts only a bounded, well-formed PNG.
+// image.DecodeConfig parses just the header, so this is cheap and — unlike the
+// PDF library's own reader — it fails safely on a bogus IHDR.
+func validateSignatureUpload(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("signature is empty")
+	}
+	if len(data) > maxSignatureUploadBytes {
+		return fmt.Errorf("signature exceeds %d bytes", maxSignatureUploadBytes)
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("signature is not a decodable image: %w", err)
+	}
+	if format != "png" {
+		return fmt.Errorf("signature must be png, got %s", format)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 ||
+		cfg.Width > maxSignatureUploadDimension || cfg.Height > maxSignatureUploadDimension {
+		return fmt.Errorf("signature has implausible dimensions %dx%d", cfg.Width, cfg.Height)
+	}
+	return nil
+}
+
+// finalizeInFlight serialises Bill-of-Sale PDF generation per purchase.
+//
+// Generation is kicked from three places (the second signature, the lazy
+// self-heal in GetBOS, and the explicit retry endpoint) and GetBOS is polled
+// by several screens. Without this guard, a handful of goroutines race to
+// render the same document and rewrite the same path. The DB column is
+// already NULL-guarded, so only one can win the row — but the losers were
+// still free to truncate the file another request was busy serving.
+var finalizeInFlight sync.Map // purchaseID -> struct{}
+
+// beginFinalize claims the finalize slot for a purchase. The bool reports
+// whether the caller won the claim; the func releases it.
+func beginFinalize(purchaseID uuid.UUID) (func(), bool) {
+	if _, loaded := finalizeInFlight.LoadOrStore(purchaseID, struct{}{}); loaded {
+		return func() {}, false
+	}
+	return func() { finalizeInFlight.Delete(purchaseID) }, true
+}
+
+// billOfSalePDFRelPath is the deterministic BARE relative URL stored in
+// finalized_pdf_url. Deterministic (one file per purchase) so retries
+// overwrite the same path rather than accumulating files. buildBOSResponse
+// signs it on the way out.
+func billOfSalePDFRelPath(purchaseID uuid.UUID) string {
+	return fmt.Sprintf("/uploads/purchases/%s/bill_of_sale_%s.pdf", purchaseID.String(), purchaseID.String())
+}
+
+// billOfSalePDFDiskPath is where the generated PDF is written on disk.
+func (h *PurchaseRequestHandler) billOfSalePDFDiskPath(purchaseID uuid.UUID) string {
+	return filepath.Join(h.uploadDir, "purchases", purchaseID.String(), "bill_of_sale_"+purchaseID.String()+".pdf")
+}
+
+// uploadRelToDiskPath resolves a stored "/uploads/..." relative URL to a
+// concrete disk path under uploadDir — with NO HTTP fetch, matching how
+// SignBOS constructs signature paths. Returns "" for anything that isn't an
+// /uploads/ path.
+func (h *PurchaseRequestHandler) uploadRelToDiskPath(rel string) string {
+	if !strings.HasPrefix(rel, "/uploads/") {
+		return ""
+	}
+	trimmed := strings.TrimPrefix(rel, "/uploads/")
+	return filepath.Join(h.uploadDir, filepath.FromSlash(trimmed))
+}
+
+// buildBOSData maps a canonical BoS row to the renderer's presentation data,
+// resolving each signature URL to its on-disk PNG path.
+func (h *PurchaseRequestHandler) buildBOSData(b *models.PurchaseBillOfSale) billofsale.Data {
+	d := billofsale.Data{
+		ReferenceID:    b.PurchaseRequestID.String(),
+		GeneratedDate:  time.Now().UTC().Format("2006-01-02"),
+		VehicleYear:    b.VehicleYear,
+		VehicleMake:    b.VehicleMake,
+		VehicleModel:   b.VehicleModel,
+		VIN:            b.VIN,
+		SalePriceCents: b.SaleAmountCents,
+		Currency:       b.Currency,
+		Terms:          b.TermsConditions,
+		SellerName:     b.SellerName,
+		SellerAddress:  b.SellerAddress,
+		BuyerName:      b.BuyerName,
+		BuyerAddress:   b.BuyerAddress,
+	}
+	if b.SellerSignatureURL != nil {
+		d.SellerSignaturePath = h.uploadRelToDiskPath(*b.SellerSignatureURL)
+	}
+	if b.BuyerSignatureURL != nil {
+		d.BuyerSignaturePath = h.uploadRelToDiskPath(*b.BuyerSignatureURL)
+	}
+	if b.SellerSignedAt != nil {
+		d.SellerSignedAt = b.SellerSignedAt.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	if b.BuyerSignedAt != nil {
+		d.BuyerSignedAt = b.BuyerSignedAt.UTC().Format("2006-01-02 15:04 UTC")
+	}
+	return d
+}
+
+// writeBillOfSalePDF renders the PDF and writes it to the deterministic path,
+// returning the BARE relative URL to persist. It performs NO database access,
+// so a render/write failure leaves the DB untouched — the signature-file
+// failure-isolation guarantee. Requires both parties to have signed.
+func (h *PurchaseRequestHandler) writeBillOfSalePDF(b *models.PurchaseBillOfSale) (string, error) {
+	if b.SellerSignatureURL == nil || b.BuyerSignatureURL == nil {
+		return "", fmt.Errorf("finalize bos: cannot generate before both parties have signed")
+	}
+	pdfBytes, err := billofsale.Render(h.buildBOSData(b))
+	if err != nil {
+		return "", fmt.Errorf("finalize bos: render: %w", err)
+	}
+	diskPath := h.billOfSalePDFDiskPath(b.PurchaseRequestID)
+	dir := filepath.Dir(diskPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("finalize bos: mkdir: %w", err)
+	}
+	// Publish atomically. os.WriteFile opens O_TRUNC, so a client fetching the
+	// URL a previous writer already committed could read a half-written file.
+	// Write to a unique temp file in the same directory, then rename — on a
+	// single filesystem the reader sees either the whole old file or the whole
+	// new one, never a truncated one.
+	tmp, err := os.CreateTemp(dir, ".bill_of_sale_*.pdf.tmp")
+	if err != nil {
+		return "", fmt.Errorf("finalize bos: temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(pdfBytes); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("finalize bos: write: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("finalize bos: close: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return "", fmt.Errorf("finalize bos: chmod: %w", err)
+	}
+	if err := os.Rename(tmpName, diskPath); err != nil {
+		return "", fmt.Errorf("finalize bos: publish: %w", err)
+	}
+	return billOfSalePDFRelPath(b.PurchaseRequestID), nil
+}
+
+// generateAndStoreBillOfSale renders + writes the PDF then runs the
+// NULL-guarded UPDATE. It is the shared core of both the async finalize
+// goroutine and the manual retry endpoint.
+//
+// Idempotent + failure-isolated:
+//   - already finalized (finalized_pdf_url set) → no-op, nil error.
+//   - both signatures required; a missing signature file surfaces as a
+//     controlled error from the renderer (no PDF written, column stays NULL).
+//   - the deterministic path means a re-run overwrites the same bytes, and
+//     the WHERE finalized_pdf_url IS NULL guard makes the DB write a no-op for
+//     any loser of a concurrent race.
+func (h *PurchaseRequestHandler) generateAndStoreBillOfSale(ctx context.Context, b *models.PurchaseBillOfSale) error {
+	if b.FinalizedPDFURL != nil {
+		return nil // already finalized — nothing to do
+	}
+	relURL, err := h.writeBillOfSalePDF(b)
+	if err != nil {
+		return err
+	}
+	if _, err := h.repo.SetFinalizedPDF(ctx, b.PurchaseRequestID, relURL); err != nil {
+		return fmt.Errorf("finalize bos: persist: %w", err)
+	}
+	return nil
+}
+
+// finalizeBillOfSale is the detached-goroutine entry point invoked after the
+// second signature commits. Errors are logged loudly and swallowed: the
+// signatures + bos_signed status are already durable, so the worst case is a
+// NULL finalized_pdf_url that a retry (or lazy GetBOS finalize) heals later.
+func (h *PurchaseRequestHandler) finalizeBillOfSale(ctx context.Context, purchaseID, sellerID, buyerID uuid.UUID) {
+	// This runs detached from any request, so chi's Recoverer cannot see it: an
+	// escaping panic would terminate the whole API process. Never let one out.
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Error("purchase: finalize bos: panic recovered",
+				"panic", r, "purchase_id", purchaseID)
+		}
+	}()
+	// Only one finalize per purchase at a time. GetBOS kicks this off lazily on
+	// every fetch while the column is NULL, and several screens poll GetBOS.
+	release, won := beginFinalize(purchaseID)
+	if !won {
+		return // another goroutine is already generating this document
+	}
+	defer release()
+
+	b, err := h.repo.GetBillOfSale(ctx, purchaseID)
+	if err != nil {
+		h.logger.Error("purchase: finalize bos: load", "error", err, "purchase_id", purchaseID)
+		return
+	}
+	if b == nil {
+		h.logger.Error("purchase: finalize bos: bos row missing", "purchase_id", purchaseID)
+		return
+	}
+	if b.FinalizedPDFURL != nil {
+		return // already finalized by a concurrent path
+	}
+	if err := h.generateAndStoreBillOfSale(ctx, b); err != nil {
+		h.logger.Error("purchase: finalize bos", "error", err, "purchase_id", purchaseID)
+		return
+	}
+	// Re-fetch and broadcast so both clients pick up the signed PDF URL.
+	fresh, err := h.repo.GetBillOfSale(ctx, purchaseID)
+	if err != nil || fresh == nil {
+		h.logger.Error("purchase: finalize bos: refetch", "error", err, "purchase_id", purchaseID)
+		return
+	}
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "purchase_bill_of_sale_updated",
+		Payload:       h.buildBOSResponse(fresh),
+		TargetUserIDs: []uuid.UUID{sellerID, buyerID},
+	})
+}
+
+// FinalizeBOS — POST /api/v1/purchase-requests/{id}/bos/finalize
+//
+// Manual/lazy retry for the finalized PDF. Auth: the two participants
+// (GetByIDForUser succeeds → seller or buyer) AND admins. A stranger who is
+// neither a participant nor an admin gets 404. Idempotent: if already
+// finalized, no-op and return the existing signed response; otherwise
+// regenerate (same NULL-guarded UPDATE) and return the fresh response.
+func (h *PurchaseRequestHandler) FinalizeBOS(w http.ResponseWriter, r *http.Request) {
+	userID, id, ok := h.parseAuthed(w, r)
+	if !ok {
+		return
+	}
+	// Participant check first; fall back to admin.
+	p, err := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if err != nil {
+		if role, roleOK := httputil.GetRole(r.Context()); roleOK && role == models.RoleAdmin {
+			p, err = h.repo.GetByID(r.Context(), id)
+		}
+		if err != nil || p == nil {
+			httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
+			return
+		}
+	}
+	b, err := h.repo.GetBillOfSale(r.Context(), id)
+	if err != nil {
+		h.logger.Error("purchase: finalize bos retry: load", "error", err, "purchase_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if b == nil {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("BILL_OF_SALE_NOT_FOUND", "Bill of Sale hasn't been created yet"))
+		return
+	}
+	// Only finalize once both parties have signed (status bos_signed+).
+	if !b.FullySigned() {
+		httputil.WriteError(w, http.StatusConflict, models.ErrBOSNotSigned)
+		return
+	}
+	if b.FinalizedPDFURL == nil {
+		// Take the same per-purchase claim the async path uses. If a generation
+		// is already running we simply return the current (still-pending) state
+		// rather than rendering a second copy on top of it; the client is
+		// already listening for purchase_bill_of_sale_updated.
+		release, won := beginFinalize(id)
+		if won {
+			defer release()
+			if err := h.generateAndStoreBillOfSale(r.Context(), b); err != nil {
+				h.logger.Error("purchase: finalize bos retry", "error", err, "purchase_id", id)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+		}
+		if fresh, ferr := h.repo.GetBillOfSale(r.Context(), id); ferr == nil && fresh != nil {
+			b = fresh
+		}
+	}
+	resp := h.buildBOSResponse(b)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+	h.wsHub.Broadcast(&ws.Event{
+		Type:          "purchase_bill_of_sale_updated",
+		Payload:       resp,
+		TargetUserIDs: []uuid.UUID{p.SellerID, p.BuyerID},
+	})
 }
 
 // GetBOS — GET /api/v1/purchase-requests/{id}/bos
@@ -816,6 +1136,18 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 	if bos == nil {
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("BILL_OF_SALE_NOT_FOUND", "Bill of Sale hasn't been created yet"))
 		return
+	}
+	// Lazy self-heal: if both parties have signed but the finalized PDF was
+	// never produced (e.g. the client missed the WS event, or the async
+	// finalize errored transiently), kick a background regenerate. The
+	// NULL-guarded UPDATE keeps this idempotent; the response shape is
+	// unchanged (the URL simply appears on a subsequent fetch).
+	if bos.FullySigned() && bos.FinalizedPDFURL == nil {
+		p, sellerID, buyerID := id, uuid.Nil, uuid.Nil
+		if pr, perr := h.repo.GetByID(r.Context(), p); perr == nil && pr != nil {
+			sellerID, buyerID = pr.SellerID, pr.BuyerID
+		}
+		go h.finalizeBillOfSale(context.Background(), id, sellerID, buyerID)
 	}
 	httputil.WriteJSON(w, http.StatusOK, h.buildBOSResponse(bos))
 }

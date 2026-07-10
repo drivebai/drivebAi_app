@@ -4,6 +4,8 @@ import SwiftUI
 struct OwnerMyCarsView: View {
     @StateObject private var store = OwnerCarsStore.shared
     @EnvironmentObject private var authStore: AuthStore
+    @ObservedObject private var tour = ProductTourCoordinator.shared
+    @State private var checklistCollapsed = false
     @State private var selectedTab: CarListTab = .forRent
     @State private var showCreateListing = false
 
@@ -53,8 +55,16 @@ struct OwnerMyCarsView: View {
                     CreateListingFlowView()
                 }
                 .task {
+                    checklistCollapsed = tour.checklistUIState(role: .owner).collapsed
                     // Fetch cars from backend on view appear
                     await store.fetchCars()
+                    if store.cars.isEmpty { tour.handle(.ownerCarCountZero) }
+                }
+                .onChange(of: store.cars.isEmpty) { _, isEmpty in
+                    if isEmpty { tour.handle(.ownerCarCountZero) }
+                }
+                .onChange(of: checklistCollapsed) { _, collapsed in
+                    tour.setChecklistCollapsed(collapsed, role: .owner)
                 }
         }
     }
@@ -97,15 +107,61 @@ struct OwnerMyCarsView: View {
         let spacing = MyCarsLayout.cardSpacing
 
         return LazyVStack(spacing: spacing) {
-            ForEach(cars) { car in
-                carNavigationLink(for: car)
-            }
-            if cars.isEmpty && filter.isActive {
-                filteredEmptyState
+            if store.cars.isEmpty {
+                // Fix for confusion #3: a zero-car owner used to see a blank
+                // screen with only a "+" toolbar. Surface the Getting-started
+                // checklist + a clear "List your first vehicle" call to action.
+                zeroCarEmptyState
+            } else {
+                ForEach(cars) { car in
+                    carNavigationLink(for: car)
+                }
+                if cars.isEmpty && filter.isActive {
+                    filteredEmptyState
+                }
             }
         }
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, spacing)
+    }
+
+    // MARK: - Zero-car empty state (fix for confusion #3)
+
+    @ViewBuilder
+    private var zeroCarEmptyState: some View {
+        VStack(spacing: 20) {
+            if !tour.checklistUIState(role: .owner).dismissed {
+                ChecklistCard.owner(
+                    hasCar: false,
+                    docsComplete: false,
+                    submittedForReview: false,
+                    isLive: false,
+                    collapsed: $checklistCollapsed,
+                    onPrimaryAction: { showCreateListing = true },
+                    onDismiss: { tour.dismissChecklist(role: .owner) }
+                )
+            } else {
+                // Checklist dismissed — keep a plain, un-blank empty state so the
+                // owner still has a way in besides the toolbar "+".
+                VStack(spacing: 16) {
+                    Image(systemName: "car.fill")
+                        .font(.system(size: 52))
+                        .foregroundColor(Color.driveBaiPrimary.opacity(0.4))
+                    Text("No cars listed yet")
+                        .font(.headline)
+                    Text("List your first vehicle to start renting or selling it.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("List your first vehicle") { showCreateListing = true }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.driveBaiPrimary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+            }
+        }
+        .onboardingTarget(.myCarsEmpty)
     }
 
     private var filteredEmptyState: some View {

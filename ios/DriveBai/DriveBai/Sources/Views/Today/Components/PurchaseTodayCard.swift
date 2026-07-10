@@ -13,6 +13,22 @@ struct PurchaseTodayCard: View {
     private var isBuyer: Bool { currentUserId == purchaseRequest.buyerId }
     private var isSeller: Bool { currentUserId == purchaseRequest.sellerId }
 
+    /// Lazily-fetched Bill of Sale so this card can surface the signed PDF
+    /// (or a "Preparing…" placeholder) once both parties have signed.
+    @State private var bos: BillOfSale?
+
+    /// True once the purchase has reached (or passed) the fully-signed BoS
+    /// stage — the only point at which a finalized PDF can exist.
+    private var bosStageReached: Bool {
+        switch purchaseRequest.status {
+        case .bosSigned, .paymentAuthorized, .handoverScheduled, .awaitingInspection,
+             .inspectionAccepted, .completed, .rejectedUpheld, .rejectedRefunded, .expiredAuth:
+            return true
+        default:
+            return false
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -28,6 +44,10 @@ struct PurchaseTodayCard: View {
                 paymentHeldBanner
             }
 
+            // Signed Bill of Sale PDF (or "Preparing…") — renders only once
+            // both parties have signed.
+            BillOfSalePDFRow(billOfSale: bos, isTourTarget: true)
+
             openButton
         }
         .padding(16)
@@ -40,6 +60,29 @@ struct PurchaseTodayCard: View {
         .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 2)
         .contentShape(Rectangle())
         .onTapGesture { onOpen() }
+        .task(id: purchaseRequest.status) { await loadBoSIfNeeded() }
+        // The PDF is rendered after the second signature, without changing the
+        // purchase status — so a status-keyed task alone would leave this card
+        // on "Preparing Bill of Sale…" until something else moved. Listen for
+        // the same WS event the chat card uses.
+        .onReceive(WebSocketManager.shared.purchaseBillOfSaleUpdatedPublisher) { purchaseID in
+            guard purchaseID == nil || purchaseID == purchaseRequest.id else { return }
+            Task { await loadBoSIfNeeded() }
+        }
+    }
+
+    /// Fetch the BoS row while the finalized PDF might still be missing.
+    /// No timers — driven by the purchase status and by the Bill-of-Sale
+    /// WebSocket event that fires when the finalized PDF lands.
+    @MainActor
+    private func loadBoSIfNeeded() async {
+        guard bosStageReached else { return }
+        if bos != nil, bos?.finalizedPdfUrl?.isEmpty == false { return }
+        if let response = try? await APIClient.shared.getBillOfSale(
+            purchaseRequestId: purchaseRequest.id
+        ) {
+            bos = response.toDomain()
+        }
     }
 
     // MARK: - Sections

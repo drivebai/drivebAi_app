@@ -5,7 +5,7 @@ import { api, qs } from './client'
 import type {
   AdminUser, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
   AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
-  PurchaseRequest, PurchaseRequestDetail, PurchaseRejection,
+  PurchaseRequest, PurchaseRequestDetail, PurchaseRejection, PurchaseBillOfSale,
 } from './types'
 
 const BASE = '/api/v1/admin'
@@ -91,4 +91,21 @@ export const adminApi = {
     api.post<PurchaseRejection>(`${BASE}/purchase-rejections/${id}/resolve`, body),
   retryPurchaseRefund: (id: string) =>
     api.post<{ ok: boolean }>(`${BASE}/purchase-requests/${id}/retry-refund`, {}),
+
+  /**
+   * Regenerate the finalized Bill of Sale PDF (Design A §3d).
+   *
+   * NOTE: this route lives in the *shared* protected group, NOT under
+   * `${BASE}` (/api/v1/admin). Per the spec it is callable by the two
+   * participants AND by admins via the existing admin middleware, so the
+   * admin's Bearer token is accepted. It is idempotent: when
+   * `finalized_pdf_url` is NULL (and the BoS is signed) it regenerates the
+   * deterministic PDF and returns the freshly-signed BoS; when already
+   * finalized it is a no-op and returns the existing signed response.
+   *
+   * The backend may not have shipped this endpoint yet — callers should
+   * catch the 404/403/422 and surface a toast rather than assume success.
+   */
+  finalizeBillOfSale: (id: string) =>
+    api.post<PurchaseBillOfSale>(`/api/v1/purchase-requests/${id}/bos/finalize`, {}),
 }

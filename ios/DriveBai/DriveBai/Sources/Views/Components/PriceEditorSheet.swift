@@ -308,7 +308,7 @@ struct PriceEditorRow: View {
         var body: some View {
             VStack(spacing: 16) {
                 PriceEditorRow(label: "Weekly rent price", suffix: "/ week", value: $price, minValue: 50)
-                PriceEditorRow(label: "Sale price", suffix: nil, value: .constant(25000), minValue: 1000)
+                PriceEditorRow(label: "Sale price", suffix: nil, value: .constant(25000), minValue: 0)
             }
             .padding()
         }

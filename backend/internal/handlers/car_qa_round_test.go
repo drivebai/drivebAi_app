@@ -79,14 +79,34 @@ func TestSaleRequirementsMissing(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "no price, no title",
+			name: "no price (NULL), no title",
 			car:  &models.Car{IsForSale: true},
 			docs: nil,
 			want: []string{"sale_price_min", "title_document"},
 		},
 		{
-			name: "price below 1000",
+			// Floor relaxed: any positive amount is accepted. $500 + title = ready.
+			name: "price 500 with title — ready (no $1,000 floor)",
 			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Float64: 500, Valid: true}},
+			docs: []models.CarDocument{titleDoc},
+			want: []string{},
+		},
+		{
+			name: "price zero rejected",
+			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Float64: 0, Valid: true}},
+			docs: []models.CarDocument{titleDoc},
+			want: []string{"sale_price_min"},
+		},
+		{
+			name: "negative price rejected",
+			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Float64: -100, Valid: true}},
+			docs: []models.CarDocument{titleDoc},
+			want: []string{"sale_price_min"},
+		},
+		{
+			// The nil-guard: is_for_sale with a NULL sale price must be rejected.
+			name: "NULL price rejected even with title",
+			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Valid: false}},
 			docs: []models.CarDocument{titleDoc},
 			want: []string{"sale_price_min"},
 		},
@@ -97,8 +117,8 @@ func TestSaleRequirementsMissing(t *testing.T) {
 			want: []string{"title_document"},
 		},
 		{
-			name: "price exactly 1000 with title — ready",
-			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Float64: 1000, Valid: true}},
+			name: "price 1 cent-equivalent positive with title — ready",
+			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Float64: 1, Valid: true}},
 			docs: []models.CarDocument{titleDoc, insuranceDoc},
 			want: []string{},
 		},

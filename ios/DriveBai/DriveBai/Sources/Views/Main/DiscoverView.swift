@@ -83,6 +83,9 @@ struct DiscoverView: View {
                 }
             }
             .task {
+                // Driver-only screen: announce the first Discover appearance so
+                // the search/first-card coach-marks can run for a new user.
+                ProductTourCoordinator.shared.handle(.discoverAppeared)
                 await viewModel.fetchListings()
             }
             .sheet(isPresented: $showFilterSheet) {
@@ -118,6 +121,7 @@ struct DiscoverView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+        .onboardingTarget(.discoverSearch)
     }
 
     // MARK: - Filter Chips Row
@@ -209,9 +213,11 @@ struct FilterChip: View {
 struct AuthenticatedDiscoverContent: View {
     @EnvironmentObject private var viewModel: DiscoverViewModel
     @EnvironmentObject private var likedStore: LikedListingsStore
+    @ObservedObject private var tour = ProductTourCoordinator.shared
     @Binding var showMapView: Bool
     @Binding var showSortOptions: Bool
     @State private var selectedMapCar: Car?
+    @State private var checklistCollapsed = false
 
     /// Listings filtered by liked state when "Liked" filter is selected
     private var displayedListings: [Car] {
@@ -243,10 +249,16 @@ struct AuthenticatedDiscoverContent: View {
             }
         }
         .task {
+            // Restore the checklist's collapse state, as the Today views do —
+            // otherwise collapsing it here is forgotten the moment you leave.
+            checklistCollapsed = tour.checklistUIState(role: .driver).collapsed
             // Fetch liked listings from backend if not already loaded
             if likedStore.likedIDs.isEmpty && !likedStore.isLoading {
                 await likedStore.fetchLikedListings()
             }
+        }
+        .onChange(of: checklistCollapsed) { _, collapsed in
+            tour.setChecklistCollapsed(collapsed, role: .driver)
         }
     }
 
@@ -275,6 +287,24 @@ struct AuthenticatedDiscoverContent: View {
 
     private var emptyStateView: some View {
         VStack(spacing: 16) {
+            // Getting-started banner for a new driver landing on an empty
+            // Discover (Section 8). Hidden once dismissed or fully complete.
+            if viewModel.selectedFilter != .liked,
+               !tour.checklistUIState(role: .driver).dismissed {
+                // Rows reflect what the user has actually done — never which
+                // coach marks they happened to see.
+                ChecklistCard.driver(
+                    hasLicense: AuthStore.shared.hasRequiredDocuments(),
+                    browsedCars: tour.hasMilestone(.viewedCarDetail),
+                    sentRequest: tour.hasMilestone(.sentLeaseRequest),
+                    foundWhereToPay: tour.hasMilestone(.openedRequestsTab),
+                    collapsed: $checklistCollapsed,
+                    onDismiss: { tour.dismissChecklist(role: .driver) }
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+
             Image(systemName: viewModel.selectedFilter == .liked ? "heart.slash" : "car.2")
                 .font(.system(size: 50))
                 .foregroundColor(.secondary)
@@ -348,6 +378,9 @@ struct AuthenticatedDiscoverContent: View {
                                 .environmentObject(likedStore)
                         }
                         .buttonStyle(PlainButtonStyle())
+                        // Coach-mark anchor for `driver_first_discover_v1` —
+                        // only the first result card is spotlighted.
+                        .onboardingTargetIf(car.id == displayedListings.first?.id, .discoverFirstCard)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -797,6 +830,16 @@ struct ListingDetailView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear {
+            // Feed the for-sale flag into the tour context so the "Or buy it"
+            // coach-mark only enqueues for cars that are actually for sale,
+            // then announce the detail open.
+            ProductTourCoordinator.shared.updateContext { $0.carIsForSale = car.isForSale }
+            ProductTourCoordinator.shared.handle(.carDetailOpened)
+            // Opening a listing is the real "browsed cars" event, independent of
+            // whether the coach mark was eligible to run.
+            ProductTourCoordinator.shared.recordMilestone(.viewedCarDetail)
+        }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [shareText])
         }
@@ -834,6 +877,16 @@ struct ListingDetailView: View {
     }
 
     private func requestLease() {
+        guard authStore.state.user != nil, !isRequestingLease else { return }
+        // The "What happens next?" card's button reads "Send request", so it must
+        // actually gate the POST. When the explainer isn't due, this sends
+        // straight away.
+        ProductTourCoordinator.shared.startOrRun(.driverPreRequest) {
+            sendLeaseRequest()
+        }
+    }
+
+    private func sendLeaseRequest() {
         guard let user = authStore.state.user, !isRequestingLease else { return }
         isRequestingLease = true
 
@@ -843,6 +896,9 @@ struct ListingDetailView: View {
                 let request = CreateLeaseRequestAPIRequest(weeks: 1, message: nil)
                 let response = try await APIClient.shared.createLeaseRequest(listingId: car.id, request: request)
 
+                // A real domain milestone: the request exists on the server.
+                ProductTourCoordinator.shared.recordMilestone(.sentLeaseRequest)
+
                 // Navigate to the chat and show the Requests tab
                 navigateToChat = ChatNavigationData(
                     chatId: response.chatId,
@@ -850,6 +906,12 @@ struct ListingDetailView: View {
                     counterpartyId: car.owner.id,
                     counterpartyName: car.owner.name
                 )
+
+                // Teach where the driver pays *after* pushing the chat: the
+                // Requests segment this coach-mark points at only exists once
+                // that screen is on stack.
+                ProductTourCoordinator.shared.handle(.leaseRequestCreated)
+
                 // Refresh chats list
                 await ChatsListViewModel.shared.fetchChats()
             } catch let apiError as APIError {
@@ -1033,11 +1095,20 @@ struct ListingDetailView: View {
                         .cornerRadius(12)
                     }
                     .disabled(isRequestingLease)
+                    .onboardingTarget(.requestLeaseCTA)
                 }
 
                 if car.isForSale {
                     Button {
-                        buyRequestCar = car
+                        // Explain buying *before* opening the offer form: the
+                        // intro's first card spotlights this very button, which
+                        // only exists on this screen. The sheet then presents
+                        // when the intro finishes (or immediately, if it's
+                        // already been seen).
+                        ProductTourCoordinator.shared.updateContext { $0.carIsForSale = true }
+                        ProductTourCoordinator.shared.startOrRun(.purchaseIntro) {
+                            buyRequestCar = car
+                        }
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "cart.fill")
@@ -1057,6 +1128,7 @@ struct ListingDetailView: View {
                         .background(Color.green)
                         .cornerRadius(12)
                     }
+                    .onboardingTarget(.buyThisCarCTA)
                 }
             }
             .padding(16)
@@ -1179,6 +1251,17 @@ struct RequirementRow: View {
 
             Spacer()
         }
+    }
+}
+
+// MARK: - Conditional coach-mark target helper
+
+private extension View {
+    /// Apply `.onboardingTarget(id)` only when `condition` is true, so a list
+    /// can spotlight a single element without every row overwriting the anchor.
+    @ViewBuilder
+    func onboardingTargetIf(_ condition: Bool, _ id: TourTargetID) -> some View {
+        if condition { self.onboardingTarget(id) } else { self }
     }
 }
 
