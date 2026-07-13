@@ -45,14 +45,18 @@ enum TabBarSpotlightRect {
         ) else { return nil }
 
         let count = max(tabCount, 1)
-        let barHeight = standardBarHeight + proxy.safeAreaInsets.bottom
+        // The tappable icon row is the 49pt band sitting ABOVE the bottom
+        // safe-area (home-indicator) inset. Anchoring to the inset's top and
+        // keeping the height at 49pt puts the cutout on the icons; adding the
+        // inset to either would push the rect down into empty home-indicator
+        // space and drop its centre below the real icon row.
         let cellWidth = proxy.size.width / CGFloat(count)
         let clampedIndex = min(max(tabIndex, 0), count - 1)
         return CGRect(
             x: cellWidth * CGFloat(clampedIndex),
-            y: proxy.size.height - barHeight,
+            y: proxy.size.height - proxy.safeAreaInsets.bottom - standardBarHeight,
             width: cellWidth,
-            height: barHeight
+            height: standardBarHeight
         )
     }
 }

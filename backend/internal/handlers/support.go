@@ -23,7 +23,12 @@ type SupportHandler struct {
 	supportRepo *repository.SupportRepository
 	adminRepo   *repository.AdminRepository
 	wsHub       *ws.Hub
-	logger      *slog.Logger
+	// notifHandler is optional. When wired (via SetNotificationHandler), an
+	// inbound user support message creates a durable notification for each
+	// admin so staff see the request even with the web console closed. Nil in
+	// tests / local runs that don't need push — those paths skip the notify.
+	notifHandler *NotificationHandler
+	logger       *slog.Logger
 }
 
 func NewSupportHandler(
@@ -38,6 +43,14 @@ func NewSupportHandler(
 		wsHub:       wsHub,
 		logger:      logger,
 	}
+}
+
+// SetNotificationHandler wires the central NotificationHandler so inbound
+// support messages produce durable per-admin notifications + pushes. Setter
+// rather than a ctor arg so main.go can inject it after construction without
+// breaking existing test constructors.
+func (h *SupportHandler) SetNotificationHandler(n *NotificationHandler) {
+	h.notifHandler = n
 }
 
 // GetOrCreate — POST /support/chats
@@ -135,6 +148,23 @@ func (h *SupportHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
 			Payload:       msg,
 			TargetUserIDs: adminIDs,
 		})
+
+		// Durable fan-out: a WS broadcast only reaches admins with the console
+		// open. Create a per-admin notification (+ push) so staff still see the
+		// request with the console closed. System type keeps it grouped under
+		// "system" in Notification Center. related_chat_id is left nil — it FKs
+		// the chats table, not support_chats, so passing the support chat ID
+		// would violate the constraint. Guarded so nil-handler runs skip notify.
+		if h.notifHandler != nil {
+			preview := body.Body
+			if len(preview) > 140 {
+				preview = preview[:140] + "…"
+			}
+			for _, adminID := range adminIDs {
+				go h.notifHandler.Notify(adminID, models.NotificationTypeSystem,
+					"New support message", preview, nil, nil)
+			}
+		}
 	}
 
 	h.logger.Info("support message sent", "chat_id", chatID, "user_id", userID, "msg_id", msg.ID)

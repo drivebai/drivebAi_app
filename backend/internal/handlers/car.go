@@ -267,12 +267,21 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil {
 		car.Description = sql.NullString{String: *req.Description, Valid: true}
 	}
+	// VIN is REQUIRED for every NEW listing (rent + sale) per product
+	// decision. Normalize (trim + upper) then enforce the SAE 17-char shape.
+	// Grandfathering applies only to legacy rows via UpdateCar — a fresh
+	// create always demands a valid VIN.
+	vin := ""
 	if req.VIN != nil {
-		vin := normalizeVIN(*req.VIN)
-		if vin != "" {
-			car.VIN = sql.NullString{String: vin, Valid: true}
-		}
+		vin = normalizeVIN(*req.VIN)
 	}
+	if !isValidVIN(vin) {
+		httputil.WriteError(w, http.StatusBadRequest,
+			models.NewAPIError(models.ErrCodeInvalidVIN,
+				"A valid 17-character VIN is required"))
+		return
+	}
+	car.VIN = sql.NullString{String: vin, Valid: true}
 	// Pre-flight VIN-uniqueness check. The partial unique index
 	// `cars_vin_unique_lower_idx` is the source of truth (and catches the race
 	// below) — this lookup just lets us return a clean 409 in the common case
@@ -373,6 +382,10 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	if h.autoApproveCars {
 		if err := h.carRepo.SetApproved(ctx, car.ID, true); err != nil {
 			slog.Warn("auto-approve failed", "car_id", car.ID, "error", err)
+		} else {
+			// Reflect the approved state in the create response so the client
+			// doesn't show a spurious "Awaiting approval" badge in dev/staging.
+			car.IsApproved = true
 		}
 	}
 
@@ -413,10 +426,42 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A sold car is terminal — reject every edit with 409 CAR_SOLD.
+	if isCarSold(car) {
+		writeCarSold(w)
+		return
+	}
+
 	var req models.UpdateCarRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
 		return
+	}
+
+	// VIN rules (product decision): a valid 17-char VIN is required for all
+	// listings, but legacy rows created before this rule may carry a
+	// NULL/empty VIN and must NOT be force-migrated. So validate ONLY when the
+	// owner is actually supplying a VIN, and never let an owner CLEAR a VIN
+	// that is already on file. `car.VIN` here is still the pre-update value.
+	if req.VIN != nil {
+		newVIN := normalizeVIN(*req.VIN)
+		hadVIN := car.VIN.Valid && car.VIN.String != ""
+		if newVIN == "" {
+			// Clearing: a no-op for a legacy VIN-less row (allowed), but
+			// blocked when a VIN is already on file — a live listing can't
+			// drop below the VIN requirement.
+			if hadVIN {
+				httputil.WriteError(w, http.StatusBadRequest,
+					models.NewAPIError(models.ErrCodeInvalidVIN,
+						"A valid 17-character VIN is required"))
+				return
+			}
+		} else if !isValidVIN(newVIN) {
+			httputil.WriteError(w, http.StatusBadRequest,
+				models.NewAPIError(models.ErrCodeInvalidVIN,
+					"A valid 17-character VIN is required"))
+			return
+		}
 	}
 
 	// Snapshot the pre-update sale flag so the sale-readiness gate below
@@ -435,27 +480,21 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sale-readiness validation (QA pt-8 / D4): enabling For Sale requires
-	// a positive sale price and a 'title' document on file. The client
-	// mirrors these rules as a checklist; details.missing carries
-	// machine-readable reasons.
+	// Sale-readiness validation: enabling For Sale requires a positive sale
+	// price. Per decision C the 'title' document is NO LONGER required here —
+	// that requirement moved to the Bill-of-Sale Accept gate — so this is now
+	// purely the price check. The client mirrors it as a checklist;
+	// details.missing carries machine-readable reasons.
 	//
-	// LEGACY GRANDFATHERING: the gate fires only on the off→on TRANSITION
-	// (or when the sale price itself is being changed on an already-for-sale
-	// car). The 'title' doc type was introduced by migration 000032, so every
-	// pre-existing for-sale listing lacks it by definition — gating on the
-	// steady state would 422 every unrelated autosave PATCH (description,
-	// mileage, …) on those cars and effectively brick their edit screen.
+	// The gate still fires only on the off→on TRANSITION (or when the sale
+	// price itself is being changed on an already-for-sale car) so an
+	// unrelated autosave PATCH (description, mileage, …) never 422s.
 	saleTransition := car.IsForSale && !wasForSale
 	salePriceTouched := car.IsForSale && req.SalePrice != nil
 	if saleTransition || salePriceTouched {
-		documents, docErr := h.docRepo.GetByCarID(ctx, car.ID)
-		if docErr != nil {
-			slog.Error("failed to load documents for sale-readiness check", "error", docErr, "car_id", car.ID)
-			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
-			return
-		}
-		if missing := saleRequirementsMissing(car, documents); len(missing) > 0 {
+		// No document lookup needed anymore — the only remaining requirement
+		// is the sale price (decision C dropped the title-document gate here).
+		if missing := saleRequirementsMissing(car, nil); len(missing) > 0 {
 			httputil.WriteError(w, http.StatusBadRequest,
 				models.NewAPIError(models.ErrCodeSaleRequirementsNotMet,
 					"This car can't be listed for sale yet").
@@ -594,10 +633,9 @@ func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
 	// req.Status, req.IsPaused, req.DepositAmount: intentionally not applied.
 }
 
-// Machine-readable reasons in SALE_REQUIREMENTS_NOT_MET details.missing.
+// Machine-readable reason in SALE_REQUIREMENTS_NOT_MET details.missing.
 const (
-	saleMissingPriceMin      = "sale_price_min"
-	saleMissingTitleDocument = "title_document"
+	saleMissingPriceMin = "sale_price_min"
 )
 
 // validPhotoSlots is the accepted set for POST /cars/{id}/photos. Kept in
@@ -623,6 +661,24 @@ var validCarDocumentTypes = map[models.CarDocumentType]bool{
 	models.CarDocPermit:       true,
 	models.CarDocInsurance:    true,
 	models.CarDocTitle:        true,
+}
+
+// isCarSold reports whether the listing is in the terminal 'sold' state. A
+// sold car is inert: every owner-write endpoint (UpdateCar, PauseCar,
+// UploadCarPhoto, UploadCarDocument, UpdateCarLocation, DeleteCarDocument)
+// rejects mutations with 409 CAR_SOLD so a completed sale can never be
+// edited out from under the buyer, and pause/resume can never move a car
+// back off 'sold'. Pure — unit-testable without a repository.
+func isCarSold(car *models.Car) bool {
+	return car.Status == models.CarStatusSold
+}
+
+// writeCarSold writes the shared 409 CAR_SOLD envelope. Reuses the existing
+// machine code models.ErrCodeCarSold with the edit-specific message.
+func writeCarSold(w http.ResponseWriter) {
+	httputil.WriteError(w, http.StatusConflict,
+		models.NewAPIError(models.ErrCodeCarSold,
+			"This vehicle has been sold and can no longer be edited."))
 }
 
 // pauseConflictError returns the 409 payload when the car can't be
@@ -652,24 +708,17 @@ func salePriceMissingOrNonPositive(car *models.Car) bool {
 }
 
 // saleRequirementsMissing returns the unmet sale-readiness requirements for
-// a car that would end up listed for sale: a positive sale price and a
-// 'title' document on file. Empty slice = ready.
+// a car that would end up listed for sale. Per decision C the title document
+// is NO LONGER required to enable For Sale (that requirement moved to the
+// Bill-of-Sale Accept gate), so the only remaining check is a positive sale
+// price. `documents` is retained in the signature for call-site stability.
+// Empty slice = ready.
 func saleRequirementsMissing(car *models.Car, documents []models.CarDocument) []string {
 	missing := []string{}
 	// This gate only ever runs for a car that is (becoming) for sale, so ask
 	// the shared rule directly rather than re-deriving it.
 	if !car.SalePrice.Valid || car.SalePrice.Float64 <= 0 {
 		missing = append(missing, saleMissingPriceMin)
-	}
-	hasTitle := false
-	for _, d := range documents {
-		if d.DocumentType == models.CarDocTitle {
-			hasTitle = true
-			break
-		}
-	}
-	if !hasTitle {
-		missing = append(missing, saleMissingTitleDocument)
 	}
 	return missing
 }
@@ -714,6 +763,16 @@ func (h *CarHandler) DeleteCar(w http.ResponseWriter, r *http.Request) {
 
 	// Already archived → idempotent success (double-tap / retry safe).
 	if car.IsArchived() {
+		httputil.WriteSuccess(w, http.StatusOK, "Car deleted successfully", nil)
+		return
+	}
+
+	// A sold car is already inert: the sale-completion flow auto-archives it
+	// (W1-B), so there is nothing left to archive and no live obligations to
+	// guard. Treat delete as an idempotent no-op success rather than a 409 —
+	// this is the safe option (the listing is effectively gone) and avoids
+	// erroring on a delete of something the user can no longer see anyway.
+	if isCarSold(car) {
 		httputil.WriteSuccess(w, http.StatusOK, "Car deleted successfully", nil)
 		return
 	}
@@ -769,6 +828,13 @@ func (h *CarHandler) PauseCar(w http.ResponseWriter, r *http.Request) {
 	// Verify ownership
 	if car.OwnerID != userID {
 		httputil.WriteError(w, http.StatusForbidden, models.NewAPIError("FORBIDDEN", "You do not own this car"))
+		return
+	}
+
+	// A sold car is terminal: pause/resume must never move it back off
+	// 'sold' to available. Reject before touching status.
+	if isCarSold(car) {
+		writeCarSold(w)
 		return
 	}
 
@@ -882,6 +948,12 @@ func (h *CarHandler) UploadCarPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A sold car is terminal — no further photo edits.
+	if isCarSold(car) {
+		writeCarSold(w)
+		return
+	}
+
 	// Parse multipart form (max 10MB)
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Failed to parse form data"))
@@ -989,24 +1061,10 @@ func (h *CarHandler) UploadCarPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-publish listing when first photo (cover_front) is uploaded
-	// This makes the listing visible in Discover for drivers
-	slog.Info("checking auto-publish conditions",
-		"slot_type", slotType,
-		"expected_slot", models.PhotoSlotCoverFront,
-		"car_status", car.Status,
-		"expected_status", models.CarStatusPending,
-		"will_auto_publish", slotType == models.PhotoSlotCoverFront && car.Status == models.CarStatusPending)
-
-	if slotType == models.PhotoSlotCoverFront && car.Status == models.CarStatusPending {
-		slog.Info("auto-publishing car", "car_id", carID, "old_status", car.Status)
-		if err := h.carRepo.UpdateStatus(ctx, carID, models.CarStatusAvailable, false); err != nil {
-			slog.Warn("failed to auto-publish car after photo upload", "error", err, "car_id", carID)
-			// Don't fail the request - photo was uploaded successfully
-		} else {
-			slog.Info("car auto-published after cover photo upload", "car_id", carID, "new_status", models.CarStatusAvailable)
-		}
-	}
+	// NOTE: uploading a cover photo no longer publishes the listing. Admin
+	// approval (ApproveCar → is_approved false→true, which also flips status
+	// pending→available) is now the SINGLE publish gate. Uploading a cover
+	// photo persists the photo only and never changes status.
 
 	slog.Info("car photo uploaded", "car_id", carID, "slot_type", slotType, "photo_id", photoID)
 	httputil.WriteJSON(w, http.StatusOK, models.CarPhotoResponse{
@@ -1050,6 +1108,13 @@ func (h *CarHandler) DeleteCarPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 	if car.OwnerID != userID {
 		httputil.WriteError(w, http.StatusForbidden, models.NewAPIError("FORBIDDEN", "You do not own this car"))
+		return
+	}
+	// A sold car is frozen: the ex-owner must not be able to tamper with the
+	// completed sale's photo record (those photos still surface in the buyer +
+	// admin purchase-detail views). Same guard as the other owner-write paths.
+	if isCarSold(car) {
+		writeCarSold(w)
 		return
 	}
 
@@ -1157,6 +1222,12 @@ func (h *CarHandler) UploadCarDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	if car.OwnerID != userID {
 		httputil.WriteError(w, http.StatusForbidden, models.NewAPIError("FORBIDDEN", "You do not own this car"))
+		return
+	}
+
+	// A sold car is terminal — no further document edits.
+	if isCarSold(car) {
+		writeCarSold(w)
 		return
 	}
 
@@ -1343,6 +1414,12 @@ func (h *CarHandler) UpdateCarLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A sold car is terminal — no further location edits.
+	if isCarSold(car) {
+		writeCarSold(w)
+		return
+	}
+
 	var req models.UpdateCarLocationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
@@ -1429,6 +1506,12 @@ func (h *CarHandler) DeleteCarDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	if car.OwnerID != userID {
 		httputil.WriteError(w, http.StatusForbidden, models.NewAPIError("FORBIDDEN", "You do not own this car"))
+		return
+	}
+
+	// A sold car is terminal — no further document edits.
+	if isCarSold(car) {
+		writeCarSold(w)
 		return
 	}
 

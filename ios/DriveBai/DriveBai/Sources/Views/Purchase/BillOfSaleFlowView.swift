@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 /// Multi-step wizard for the Bill of Sale.  Covers standard Vehicle Bill of
 /// Sale fields (seller/buyer, vehicle, price, signatures) —
@@ -45,8 +46,24 @@ struct BillOfSaleFlowView: View {
     @State private var termsConditions: String = ""
     @State private var sellerName: String = ""
     @State private var sellerAddress: String = ""
+    @State private var sellerAddressLat: Double? = nil
+    @State private var sellerAddressLng: Double? = nil
     @State private var buyerName: String = ""
     @State private var buyerAddress: String = ""
+    @State private var buyerAddressLat: Double? = nil
+    @State private var buyerAddressLng: Double? = nil
+    @State private var selectedTitleCondition: TitleCondition? = nil
+    @State private var titleConditionOther: String = ""
+
+    /// Drives the map-picker / document-preview sheets (a single enum-backed
+    /// `.sheet(item:)` so multiple presentations never collide).
+    @State private var activeSheet: ActiveSheet? = nil
+    /// Drives the shared document source chooser for the seller's title upload.
+    @State private var showTitleSourcePicker = false
+    @State private var isUploadingTitle = false
+    /// Surfaced (with a Retry) when the cold-start GET fails and we have no
+    /// cached row to fall back on. Never silently swallowed.
+    @State private var loadError: String? = nil
 
     /// Per-step dirty flags. Only steps in this set produce a PATCH on
     /// the next "Save & continue" tap.
@@ -70,6 +87,40 @@ struct BillOfSaleFlowView: View {
     private var isSeller: Bool { currentUserId == purchaseRequest.sellerId }
     private var isBuyer: Bool { currentUserId == purchaseRequest.buyerId }
 
+    /// A backend-signed document reference to preview (ID or title).
+    private struct PreviewDoc: Identifiable, Equatable {
+        let id = UUID()
+        let url: String
+        let filename: String
+    }
+
+    /// Single presentation channel for the map pickers and document previews.
+    private enum ActiveSheet: Identifiable, Equatable {
+        case sellerAddress
+        case buyerAddress
+        case preview(PreviewDoc)
+
+        var id: String {
+            switch self {
+            case .sellerAddress: return "sellerAddress"
+            case .buyerAddress: return "buyerAddress"
+            case .preview(let doc): return "preview-\(doc.id.uuidString)"
+            }
+        }
+    }
+
+    private var sellerCoordinate: CLLocationCoordinate2D? {
+        guard let lat = sellerAddressLat, let lng = sellerAddressLng,
+              lat != 0 || lng != 0 else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+
+    private var buyerCoordinate: CLLocationCoordinate2D? {
+        guard let lat = buyerAddressLat, let lng = buyerAddressLng,
+              lat != 0 || lng != 0 else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+
     private var currentRoleHasSigned: Bool {
         guard let bos else { return false }
         return isSeller ? bos.sellerHasSigned : bos.buyerHasSigned
@@ -87,6 +138,12 @@ struct BillOfSaleFlowView: View {
                 VStack(spacing: 0) {
                     progressHeader
                     if showStaleBanner { staleBanner }
+                    // Cold start with no cached row shows the full placeholder +
+                    // Retry inside the step (gated on !hasSeeded). A REFRESH
+                    // failure while cached content is on screen (hasSeeded) must
+                    // still surface — this compact banner covers that case so a
+                    // stale BoS can't silently hide its own load error.
+                    if hasSeeded, let loadError { loadErrorBanner(loadError) }
                     Divider()
                     ScrollView {
                         VStack(alignment: .leading, spacing: 22) {
@@ -122,6 +179,23 @@ struct BillOfSaleFlowView: View {
             .onChange(of: externalBoSStream) { _, fresh in
                 guard let fresh, fresh.purchaseRequestId == purchaseRequest.id else { return }
                 mergeExternalUpdate(fresh)
+            }
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .sellerAddress:
+                    CarPickupLocationPickerView(initialCoordinate: sellerCoordinate) { coord, resolved in
+                        applySellerAddress(coord: coord, resolved: resolved)
+                    }
+                case .buyerAddress:
+                    CarPickupLocationPickerView(initialCoordinate: buyerCoordinate) { coord, resolved in
+                        applyBuyerAddress(coord: coord, resolved: resolved)
+                    }
+                case .preview(let doc):
+                    DocumentPreviewSheet(source: .remoteURL(doc.url, filename: doc.filename))
+                }
+            }
+            .documentSourcePicker(isPresented: $showTitleSourcePicker, filenameBase: "title") { picked in
+                Task { await uploadTitle(picked) }
             }
         }
         // Product-tour host lives INSIDE the BoS sheet (a root-level overlay
@@ -213,6 +287,133 @@ struct BillOfSaleFlowView: View {
                 saleLockCaption
             }
             .disabled(!isSeller || sellerLockedForEdits)
+            titleCard(allowEditing: isSeller && !sellerLockedForEdits)
+        }
+    }
+
+    // MARK: - Title section (condition + document)
+
+    /// Title condition + document affordances. Rendered in both the sale step
+    /// (seller edits) and the review step (read-only). `allowEditing` gates the
+    /// picker; the upload/view/warning affordances are role-driven regardless.
+    private func titleCard(allowEditing: Bool) -> some View {
+        PurchaseSectionCard(title: "Title") {
+            VStack(alignment: .leading, spacing: 12) {
+                if allowEditing {
+                    titleConditionPicker
+                    if selectedTitleCondition == .other {
+                        PurchaseFormField("Describe title condition", text: $titleConditionOther)
+                            .onChange(of: titleConditionOther) { _, _ in markDirty(.sale) }
+                    }
+                } else {
+                    reviewRow("Condition", selectedTitleCondition == nil
+                              ? "" : titleConditionReadOnlyText,
+                              requiredMissingHint: "Missing — seller must complete")
+                }
+
+                titleDocumentAffordance
+
+                if isBuyer {
+                    Label("Review the vehicle title carefully before accepting the vehicle.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.orange)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.10))
+                        .cornerRadius(10)
+                }
+            }
+        }
+    }
+
+    private var titleConditionReadOnlyText: String {
+        guard let cond = selectedTitleCondition else { return "" }
+        if cond == .other {
+            let detail = titleConditionOther.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty ? cond.displayText : "\(cond.displayText) — \(detail)"
+        }
+        return cond.displayText
+    }
+
+    private var titleConditionPicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Condition")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+            Menu {
+                ForEach(TitleCondition.allCases) { cond in
+                    Button {
+                        selectedTitleCondition = cond
+                        markDirty(.sale)
+                    } label: {
+                        if selectedTitleCondition == cond {
+                            Label(cond.displayText, systemImage: "checkmark")
+                        } else {
+                            Text(cond.displayText)
+                        }
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(selectedTitleCondition?.displayText ?? "Select title condition")
+                        .font(.subheadline)
+                        .foregroundColor(selectedTitleCondition == nil ? .secondary : .primary)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 11)
+                .background(Color(.systemGray6))
+                .cornerRadius(9)
+            }
+        }
+    }
+
+    /// View / upload the vehicle title. When the title is on file both roles
+    /// can view it; when it is missing only the seller sees the upload prompt.
+    @ViewBuilder
+    private var titleDocumentAffordance: some View {
+        if bos?.titleUploaded == true, let url = bos?.titleDocumentUrl, !url.isEmpty {
+            Button {
+                activeSheet = .preview(PreviewDoc(url: url, filename: "Vehicle Title"))
+            } label: {
+                Label("View Title", systemImage: "doc.text.magnifyingglass")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.driveBaiPrimary)
+            }
+            .buttonStyle(.plain)
+        } else if isSeller {
+            Button {
+                showTitleSourcePicker = true
+            } label: {
+                HStack(spacing: 8) {
+                    if isUploadingTitle {
+                        ProgressView().scaleEffect(0.8)
+                    } else {
+                        Image(systemName: "arrow.up.doc.fill")
+                    }
+                    Text(isUploadingTitle
+                         ? "Uploading title…"
+                         : "Upload the vehicle title (required to complete the sale)")
+                        .font(.caption.weight(.semibold))
+                        .multilineTextAlignment(.leading)
+                }
+                .foregroundColor(.driveBaiPrimary)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.driveBaiPrimary.opacity(0.08))
+                .cornerRadius(10)
+            }
+            .buttonStyle(.plain)
+            .disabled(isUploadingTitle)
+        } else {
+            Label("The seller hasn't uploaded the vehicle title yet.",
+                  systemImage: "clock.badge.exclamationmark")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -234,8 +435,15 @@ struct BillOfSaleFlowView: View {
             VStack(spacing: 10) {
                 PurchaseFormField("Legal name", text: $sellerName)
                     .onChange(of: sellerName) { _, _ in markDirty(.seller) }
-                PurchaseFormField("Address", text: $sellerAddress, axis: .vertical)
-                    .onChange(of: sellerAddress) { _, _ in markDirty(.seller) }
+                    .disabled(!isSeller || sellerLockedForEdits)
+                addressPickerRow(
+                    address: sellerAddress,
+                    editable: isSeller && !sellerLockedForEdits,
+                    onEdit: { activeSheet = .sellerAddress }
+                )
+            }
+            if bos?.sellerIdDocumentUrl != nil {
+                viewIdRow(url: bos?.sellerIdDocumentUrl, filename: "Seller ID")
             }
             if !isSeller {
                 Text("Only the seller can edit this section.")
@@ -247,7 +455,6 @@ struct BillOfSaleFlowView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .disabled(!isSeller || sellerLockedForEdits)
     }
 
     private var buyerStep: some View {
@@ -255,8 +462,15 @@ struct BillOfSaleFlowView: View {
             VStack(spacing: 10) {
                 PurchaseFormField("Legal name", text: $buyerName)
                     .onChange(of: buyerName) { _, _ in markDirty(.buyer) }
-                PurchaseFormField("Address", text: $buyerAddress, axis: .vertical)
-                    .onChange(of: buyerAddress) { _, _ in markDirty(.buyer) }
+                    .disabled(!isBuyer || buyerLockedForEdits)
+                addressPickerRow(
+                    address: buyerAddress,
+                    editable: isBuyer && !buyerLockedForEdits,
+                    onEdit: { activeSheet = .buyerAddress }
+                )
+            }
+            if bos?.buyerIdDocumentUrl != nil {
+                viewIdRow(url: bos?.buyerIdDocumentUrl, filename: "Buyer ID")
             }
             if !isBuyer {
                 Text("Only the buyer can edit this section.")
@@ -268,10 +482,79 @@ struct BillOfSaleFlowView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .disabled(!isBuyer || buyerLockedForEdits)
     }
 
+    // MARK: - Address picker + document rows
+
+    /// Map-backed address field. Tapping opens `CarPickupLocationPickerView`,
+    /// which resolves a real street address from the map center (defaulting to
+    /// the device fix when empty) — so we never persist a bare coordinate.
+    private func addressPickerRow(
+        address: String,
+        editable: Bool,
+        onEdit: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Address")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+            Button(action: onEdit) {
+                HStack(spacing: 8) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .foregroundColor(.driveBaiPrimary)
+                    Text(address.isEmpty ? "Select address on map" : address)
+                        .font(.subheadline)
+                        .foregroundColor(address.isEmpty ? .secondary : .primary)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if editable {
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 11)
+                .background(Color(.systemGray6))
+                .cornerRadius(9)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!editable)
+            if editable {
+                Text("Required to sign. Pick the location on the map.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    /// "View ID" row — shown only when a signed ID document is on file. Never
+    /// blocks on a missing document.
+    @ViewBuilder
+    private func viewIdRow(url: String?, filename: String) -> some View {
+        if let url, !url.isEmpty {
+            Button {
+                activeSheet = .preview(PreviewDoc(url: url, filename: filename))
+            } label: {
+                Label("View ID", systemImage: "person.text.rectangle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.driveBaiPrimary)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
     private var signatureStep: some View {
+        if !hasSeeded {
+            notLoadedPlaceholder
+        } else {
+            signatureStepContent
+        }
+    }
+
+    private var signatureStepContent: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text(isSeller ? "You are signing as the seller." : "You are signing as the buyer.")
                 .font(.subheadline.weight(.medium))
@@ -307,6 +590,22 @@ struct BillOfSaleFlowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.orange.opacity(0.08))
                     .cornerRadius(10)
+            } else if !canSign {
+                // Section incomplete (missing name/address/vehicle). The pad is
+                // withheld — not just the bottom CTA — so the UI can't
+                // contradict itself with an enabled Save-signature button above
+                // a disabled "Complete your section first" CTA. The backend
+                // SELLER_ADDRESS_REQUIRED/BUYER_ADDRESS_REQUIRED gate is the
+                // backstop; this stops the user from ever reaching the round-trip.
+                Text(isSeller
+                     ? "Add your name, address, and the vehicle details before signing."
+                     : "Add your name and address before signing.")
+                    .font(.subheadline)
+                    .foregroundColor(.orange)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(10)
             } else {
                 PurchaseSignaturePadView(
                     title: isSeller ? "Seller signature" : "Buyer signature",
@@ -321,26 +620,42 @@ struct BillOfSaleFlowView: View {
         .onboardingTarget(.bosSignedSection)
     }
 
+    @ViewBuilder
     private var reviewStep: some View {
+        if !hasSeeded {
+            notLoadedPlaceholder
+        } else {
+            reviewStepContent
+        }
+    }
+
+    private var reviewStepContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             PurchaseSectionCard(title: "Vehicle") {
                 reviewRow("Year", vehicleYear)
-                reviewRow("Make", vehicleMake)
-                reviewRow("Model", vehicleModel)
-                reviewRow("VIN", vin)
+                reviewRow("Make", vehicleMake, requiredMissingHint: missingSellerHint)
+                reviewRow("Model", vehicleModel, requiredMissingHint: missingSellerHint)
+                reviewRow("VIN", vin, requiredMissingHint: missingSellerHint)
             }
             PurchaseSectionCard(title: "Sale") {
                 reviewRow("Amount", displaySaleAmount)
                 reviewRow("Terms", termsConditions.isEmpty ? "—" : termsConditions)
             }
+            titleCard(allowEditing: false)
             PurchaseSectionCard(title: "Seller") {
-                reviewRow("Name", sellerName)
-                reviewRow("Address", sellerAddress)
+                reviewRow("Name", sellerName, requiredMissingHint: missingSellerHint)
+                reviewRow("Address", sellerAddress, requiredMissingHint: missingSellerHint)
+                if bos?.sellerIdDocumentUrl != nil {
+                    viewIdRow(url: bos?.sellerIdDocumentUrl, filename: "Seller ID")
+                }
                 reviewSignatureRow(signed: bos?.sellerHasSigned == true, label: "Seller")
             }
             PurchaseSectionCard(title: "Buyer") {
-                reviewRow("Name", buyerName)
-                reviewRow("Address", buyerAddress)
+                reviewRow("Name", buyerName, requiredMissingHint: missingBuyerHint)
+                reviewRow("Address", buyerAddress, requiredMissingHint: missingBuyerHint)
+                if bos?.buyerIdDocumentUrl != nil {
+                    viewIdRow(url: bos?.buyerIdDocumentUrl, filename: "Buyer ID")
+                }
                 reviewSignatureRow(signed: bos?.buyerHasSigned == true, label: "Buyer")
             }
 
@@ -439,7 +754,10 @@ struct BillOfSaleFlowView: View {
                 ? ChipState(icon: "exclamationmark.circle", color: .orange)
                 : ChipState(icon: "checkmark.circle.fill", color: .green)
         case .sale:
-            let ok = !termsConditions.isEmpty && !saleAmountString.isEmpty
+            // Title condition is required before the buyer can accept, so nudge
+            // the seller here too (buyers can't edit it — don't gate their chip).
+            let titleOk = !isSeller || selectedTitleCondition != nil
+            let ok = !termsConditions.isEmpty && !saleAmountString.isEmpty && titleOk
             return ok
                 ? ChipState(icon: "checkmark.circle.fill", color: .green)
                 : ChipState(icon: "exclamationmark.circle", color: .orange)
@@ -567,6 +885,9 @@ struct BillOfSaleFlowView: View {
                 if otherRoleHasSigned { return .done }
                 return .doneWaiting
             }
+            // Never allow signing before the BoS row has loaded — the fields
+            // would be blank/unseeded.
+            if !hasSeeded { return .signBlocked }
             if hasPendingEditsForMe { return .signBlocked }
             if !canSign { return .signBlocked }
             return .sign
@@ -624,6 +945,7 @@ struct BillOfSaleFlowView: View {
         case .continueOnly:    return currentStep == .buyer ? "Continue" : "Continue"
         case .sign:            return "Sign Bill of Sale"
         case .signBlocked:
+            if !hasSeeded { return "Loading Bill of Sale…" }
             if hasPendingEditsForMe { return "Save changes first" }
             return canSign ? "Sign Bill of Sale" : "Complete your section first"
         case .doneWaiting:
@@ -696,10 +1018,75 @@ struct BillOfSaleFlowView: View {
             let domain = response.toDomain()
             applyServerBOS(domain, source: .load)
             hasSeeded = true
+            loadError = nil
+        } catch let apiError as APIError {
+            // Do NOT swallow: the wizard opens in a BoS stage, so the row
+            // should exist. Surface a retryable error instead of leaving the
+            // user on a blank Review/Signature.
+            loadError = apiError.errorDescription ?? "Couldn't load the Bill of Sale."
+            #if DEBUG
+            print("[BillOfSaleFlow] getBillOfSale error: \(apiError)")
+            #endif
         } catch {
+            loadError = error.localizedDescription
             #if DEBUG
             print("[BillOfSaleFlow] getBillOfSale error: \(error)")
             #endif
+        }
+    }
+
+    // MARK: - Address + title actions
+
+    private func applySellerAddress(coord: CLLocationCoordinate2D, resolved: ResolvedAddress) {
+        // Persist the resolved human address string + coordinate — never a bare
+        // map center. `displaySummary` always yields a non-empty label.
+        sellerAddress = resolved.displaySummary
+        sellerAddressLat = coord.latitude
+        sellerAddressLng = coord.longitude
+        markDirty(.seller)
+    }
+
+    private func applyBuyerAddress(coord: CLLocationCoordinate2D, resolved: ResolvedAddress) {
+        buyerAddress = resolved.displaySummary
+        buyerAddressLat = coord.latitude
+        buyerAddressLng = coord.longitude
+        markDirty(.buyer)
+    }
+
+    /// Uploads a car `title` document, then refreshes the BoS so the derived
+    /// `title_uploaded` / `title_document_url` reflect it. Uses an edit-
+    /// preserving refresh (not `loadBoS`) so an unsaved title-condition edit in
+    /// the same card isn't silently dropped by a dirty-set reset.
+    private func uploadTitle(_ picked: PickedDocument) async {
+        guard !isUploadingTitle else { return }
+        isUploadingTitle = true
+        defer { isUploadingTitle = false }
+        do {
+            _ = try await APIClient.shared.uploadCarDocument(
+                carId: purchaseRequest.carId,
+                documentType: .title,
+                fileData: picked.data,
+                filename: picked.filename,
+                mimeType: picked.mimeType
+            )
+            if let response = try? await APIClient.shared.getBillOfSale(
+                purchaseRequestId: purchaseRequest.id
+            ) {
+                let domain = response.toDomain()
+                // Update the read-model (title_uploaded / signed URLs) and the
+                // diff baseline, but keep the user's in-flight edits + their
+                // dirty flags: rehydrateFields only overwrites clean fields.
+                bos = domain
+                lastServer = domain
+                rehydrateFields(from: domain)
+                onBoSUpdated(domain)
+                hasSeeded = true
+                loadError = nil
+            }
+        } catch let apiError as APIError {
+            errorMessage = apiError.errorDescription
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -785,10 +1172,14 @@ struct BillOfSaleFlowView: View {
             if saleClean {
                 termsConditions = domain.termsConditions
                 saleAmountString = format(cents: domain.saleAmountCents)
+                selectedTitleCondition = domain.titleCondition
+                titleConditionOther = domain.titleConditionOther ?? ""
             }
             if sellerClean {
                 sellerName = domain.sellerName
                 sellerAddress = domain.sellerAddress
+                sellerAddressLat = domain.sellerAddressLat
+                sellerAddressLng = domain.sellerAddressLng
             }
         } else {
             // Buyer viewer: vehicle / sale / seller are read-only, so
@@ -799,8 +1190,12 @@ struct BillOfSaleFlowView: View {
             vin = domain.vin
             termsConditions = domain.termsConditions
             saleAmountString = format(cents: domain.saleAmountCents)
+            selectedTitleCondition = domain.titleCondition
+            titleConditionOther = domain.titleConditionOther ?? ""
             sellerName = domain.sellerName
             sellerAddress = domain.sellerAddress
+            sellerAddressLat = domain.sellerAddressLat
+            sellerAddressLng = domain.sellerAddressLng
         }
 
         // Buyer identity fields — mirror of the block above.
@@ -809,10 +1204,14 @@ struct BillOfSaleFlowView: View {
             if buyerClean {
                 buyerName = domain.buyerName
                 buyerAddress = domain.buyerAddress
+                buyerAddressLat = domain.buyerAddressLat
+                buyerAddressLng = domain.buyerAddressLng
             }
         } else {
             buyerName = domain.buyerName
             buyerAddress = domain.buyerAddress
+            buyerAddressLat = domain.buyerAddressLat
+            buyerAddressLng = domain.buyerAddressLng
         }
     }
 
@@ -822,6 +1221,13 @@ struct BillOfSaleFlowView: View {
     private func saveEdits() async {
         guard let step = currentStep.saveable, dirty.contains(step) else {
             advance()
+            return
+        }
+        // "Other" title condition requires a description (server enforces this
+        // too). Block the save so the user isn't bounced by a 400.
+        if isSeller, step == .sale, selectedTitleCondition == .other,
+           titleConditionOther.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errorMessage = "Please describe the title condition (required when it's set to “Other”)."
             return
         }
         isSaving = true
@@ -887,6 +1293,10 @@ struct BillOfSaleFlowView: View {
         var terms: String? = nil
         var name: String? = nil
         var address: String? = nil
+        var addressLat: Double? = nil
+        var addressLng: Double? = nil
+        var titleCond: String? = nil
+        var titleCondOther: String? = nil
 
         if step == .vehicle {
             if let y = Int(vehicleYear), y != lastServer?.vehicleYear { year = y }
@@ -896,10 +1306,25 @@ struct BillOfSaleFlowView: View {
         }
         if step == .sale {
             if termsConditions != lastServer?.termsConditions { terms = termsConditions }
+            let condRaw = selectedTitleCondition?.rawValue
+            let condChanged = condRaw != lastServer?.titleCondition?.rawValue
+            let otherChanged = titleConditionOther != (lastServer?.titleConditionOther ?? "")
+            if condChanged { titleCond = condRaw }
+            // The server requires title_condition_other whenever the condition
+            // is "other"; send it if either the condition or the text moved.
+            if selectedTitleCondition == .other, condChanged || otherChanged {
+                titleCondOther = titleConditionOther
+            }
         }
         if step == .seller {
             if sellerName != lastServer?.sellerName { name = sellerName }
-            if sellerAddress != lastServer?.sellerAddress { address = sellerAddress }
+            if sellerAddress != lastServer?.sellerAddress
+                || sellerAddressLat != lastServer?.sellerAddressLat
+                || sellerAddressLng != lastServer?.sellerAddressLng {
+                address = sellerAddress
+                addressLat = sellerAddressLat
+                addressLng = sellerAddressLng
+            }
         }
 
         return UpdateBillOfSaleAPIRequest(
@@ -909,23 +1334,46 @@ struct BillOfSaleFlowView: View {
             vin: vinField,
             termsConditions: terms,
             sellerName: name,
-            sellerAddress: address
+            sellerAddress: address,
+            sellerAddressLat: addressLat,
+            sellerAddressLng: addressLng,
+            titleCondition: titleCond,
+            titleConditionOther: titleCondOther
         )
     }
 
     private func buildBuyerPatch() -> UpdateBillOfSaleBuyerFieldsAPIRequest {
         var name: String? = nil
         var address: String? = nil
+        var addressLat: Double? = nil
+        var addressLng: Double? = nil
         if buyerName != lastServer?.buyerName { name = buyerName }
-        if buyerAddress != lastServer?.buyerAddress { address = buyerAddress }
+        if buyerAddress != lastServer?.buyerAddress
+            || buyerAddressLat != lastServer?.buyerAddressLat
+            || buyerAddressLng != lastServer?.buyerAddressLng {
+            address = buyerAddress
+            addressLat = buyerAddressLat
+            addressLng = buyerAddressLng
+        }
         return UpdateBillOfSaleBuyerFieldsAPIRequest(
             buyerName: name,
-            buyerAddress: address
+            buyerAddress: address,
+            buyerAddressLat: addressLat,
+            buyerAddressLng: addressLng
         )
     }
 
     private func submitSignature(data: Data) async {
         guard !isSigning else { return }
+        // Defensive: the pad is already withheld until canSign, but never let a
+        // signature POST fire for an incomplete section (empty address/name/VIN)
+        // — the backend would 400 with SELLER_ADDRESS_REQUIRED anyway.
+        guard canSign else {
+            errorMessage = isSeller
+                ? "Add your name, address, and the vehicle details before signing."
+                : "Add your name and address before signing."
+            return
+        }
         isSigning = true
         defer { isSigning = false }
 
@@ -1011,8 +1459,14 @@ struct BillOfSaleFlowView: View {
     }
 
     private func seedInitialState() {
+        // One-shot: a re-entrant .onAppear must never clobber state the first
+        // GET already loaded (which would drop a cold-start-loaded server row
+        // back to the initialBoS/purchase fallbacks while still reading as
+        // seeded). loadBoS owns all refreshes after the first seed.
+        guard !hasSeeded else { return }
+
         // Prefer the caller-hinted start step if provided.
-        if let initialStep, hasSeeded == false {
+        if let initialStep {
             currentStep = initialStep
         }
 
@@ -1022,10 +1476,16 @@ struct BillOfSaleFlowView: View {
         bos = existing
         lastServer = existing
 
-        vehicleYear = existing.map { String($0.vehicleYear) } ?? extractYear(purchaseRequest.carTitle)
-        vehicleMake = existing?.vehicleMake ?? ""
-        vehicleModel = existing?.vehicleModel ?? ""
-        vin = existing?.vin ?? ""
+        // Seed vehicle identity from the BoS row when present, else fall back
+        // to the vehicle fields now mirrored onto the purchase response (and
+        // only then to a best-effort year parse from the car title).
+        vehicleYear = existing.map { String($0.vehicleYear) }
+            ?? (purchaseRequest.vehicleYear > 0
+                ? String(purchaseRequest.vehicleYear)
+                : extractYear(purchaseRequest.carTitle))
+        vehicleMake = existing?.vehicleMake ?? purchaseRequest.vehicleMake
+        vehicleModel = existing?.vehicleModel ?? purchaseRequest.vehicleModel
+        vin = existing?.vin ?? purchaseRequest.vehicleVin
 
         let cents = existing?.saleAmountCents ?? purchaseRequest.offerAmountCents
         saleAmountString = format(cents: cents)
@@ -1034,8 +1494,14 @@ struct BillOfSaleFlowView: View {
             ?? "Vehicle is sold as-is, where-is, with no warranties unless otherwise stated in writing."
         sellerName = existing?.sellerName ?? purchaseRequest.sellerName
         sellerAddress = existing?.sellerAddress ?? ""
+        sellerAddressLat = existing?.sellerAddressLat
+        sellerAddressLng = existing?.sellerAddressLng
         buyerName = existing?.buyerName ?? purchaseRequest.buyerName
         buyerAddress = existing?.buyerAddress ?? ""
+        buyerAddressLat = existing?.buyerAddressLat
+        buyerAddressLng = existing?.buyerAddressLng
+        selectedTitleCondition = existing?.titleCondition
+        titleConditionOther = existing?.titleConditionOther ?? ""
 
         if existing != nil { hasSeeded = true }
     }
@@ -1048,17 +1514,87 @@ struct BillOfSaleFlowView: View {
         return Int(leading4) != nil ? leading4 : ""
     }
 
-    private func reviewRow(_ label: String, _ value: String) -> some View {
+    /// Shown for an empty required field so the Review never renders a bare
+    /// "—" for a value the seller still has to complete.
+    private var missingSellerHint: String { "Missing — seller must complete" }
+    private var missingBuyerHint: String { "Missing — buyer must complete" }
+
+    private func reviewRow(_ label: String, _ value: String, requiredMissingHint: String? = nil) -> some View {
         HStack(alignment: .top) {
             Text(label)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .frame(width: 90, alignment: .leading)
-            Text(value.isEmpty ? "—" : value)
-                .font(.subheadline)
-                .foregroundColor(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if value.isEmpty, let hint = requiredMissingHint {
+                Text(hint)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(value.isEmpty ? "—" : value)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+    }
+
+    // MARK: - Not-loaded placeholder + load-error banner
+
+    /// Shown in the Review / Signature steps until we have a seeded BoS row, so
+    /// those steps NEVER render blank make/model/VIN or allow signing a blank.
+    private var notLoadedPlaceholder: some View {
+        VStack(spacing: 14) {
+            if let loadError {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 34))
+                    .foregroundColor(.orange)
+                Text("Couldn't load the Bill of Sale")
+                    .font(.headline)
+                Text(loadError)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                Button {
+                    Task { await loadBoS() }
+                } label: {
+                    Text("Retry")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 10)
+                        .background(Color.driveBaiPrimary)
+                        .cornerRadius(12)
+                }
+            } else {
+                ProgressView()
+                Text("Loading the Bill of Sale…")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 44)
+    }
+
+    private func loadErrorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundColor(.orange)
+            Text("Couldn't load the latest Bill of Sale.")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.primary)
+            Spacer()
+            Button("Retry") {
+                Task { await loadBoS() }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundColor(.orange)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.10))
     }
 
     private func reviewSignatureRow(signed: Bool, label: String) -> some View {
@@ -1110,12 +1646,15 @@ fileprivate extension UpdateBillOfSaleAPIRequest {
         vehicleYear == nil && vehicleMake == nil && vehicleModel == nil
             && vin == nil && termsConditions == nil
             && sellerName == nil && sellerAddress == nil
+            && sellerAddressLat == nil && sellerAddressLng == nil
+            && titleCondition == nil && titleConditionOther == nil
     }
 }
 
 fileprivate extension UpdateBillOfSaleBuyerFieldsAPIRequest {
     var isEmpty: Bool {
         buyerName == nil && buyerAddress == nil
+            && buyerAddressLat == nil && buyerAddressLng == nil
     }
 }
 

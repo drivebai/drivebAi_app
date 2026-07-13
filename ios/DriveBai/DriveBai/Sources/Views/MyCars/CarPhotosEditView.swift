@@ -112,14 +112,17 @@ private struct CarPhotoTileView: View {
     let aspectRatio: CGFloat
     let onPhotoSelected: (Data) -> Void
 
-    // Per-tile picker state (prevents shared state bugs)
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var isLoading: Bool = false
+    // Per-tile chooser state (prevents shared state bugs)
+    @State private var showSourceChooser = false
 
     var body: some View {
         VStack(spacing: 8) {
-            // Photo tile with picker
-            PhotosPicker(selection: $pickerItem, matching: .images) {
+            // Tapping the tile offers Take Photo / Choose from Library (QA pt 4)
+            // instead of the old library-only picker. The chooser hands back
+            // JPEG data, so HEIC/other formats can't slip through here either.
+            Button {
+                showSourceChooser = true
+            } label: {
                 tileContent
                     .aspectRatio(aspectRatio, contentMode: .fit)
                     .frame(maxWidth: .infinity)
@@ -130,9 +133,8 @@ private struct CarPhotoTileView: View {
                     )
             }
             .buttonStyle(PlainButtonStyle())
-            .onChange(of: pickerItem) { _, newItem in
-                guard let newItem = newItem else { return }
-                loadPhoto(from: newItem)
+            .photoSourcePicker(isPresented: $showSourceChooser) { data in
+                onPhotoSelected(data)
             }
 
             // Label with fixed height for alignment
@@ -166,14 +168,6 @@ private struct CarPhotoTileView: View {
                     // Empty state
                     emptyPlaceholder
                 }
-
-                // Loading overlay
-                if isLoading {
-                    Color.black.opacity(0.4)
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.2)
-                }
             }
         }
     }
@@ -192,42 +186,6 @@ private struct CarPhotoTileView: View {
                         .foregroundColor(Color.driveBaiPrimary)
                 }
             )
-    }
-
-    private var loadingPlaceholder: some View {
-        Rectangle()
-            .fill(Color(.systemGray6))
-            .overlay(
-                ProgressView()
-                    .tint(Color.driveBaiPrimary)
-            )
-    }
-
-    private func loadPhoto(from item: PhotosPickerItem) {
-        isLoading = true
-        print("[CarPhotoTileView] Loading photo for slot: \(slot.slotType.rawValue)")
-
-        Task {
-            do {
-                if let data = try await item.loadTransferable(type: Data.self) {
-                    await MainActor.run {
-                        print("[CarPhotoTileView] Loaded \(data.count) bytes for slot: \(slot.slotType.rawValue)")
-                        onPhotoSelected(data)
-                        isLoading = false
-                    }
-                } else {
-                    print("[CarPhotoTileView] No data for slot: \(slot.slotType.rawValue)")
-                    await MainActor.run {
-                        isLoading = false
-                    }
-                }
-            } catch {
-                print("[CarPhotoTileView] Error loading photo: \(error.localizedDescription)")
-                await MainActor.run {
-                    isLoading = false
-                }
-            }
-        }
     }
 }
 

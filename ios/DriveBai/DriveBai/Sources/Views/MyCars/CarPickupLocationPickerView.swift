@@ -2,29 +2,8 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-// MARK: - Resolved Address
-
-struct ResolvedAddress: Equatable {
-    var area: String
-    var street: String
-    var block: String
-    var zip: String
-    var addressLine: String
-
-    static let empty = ResolvedAddress(area: "", street: "", block: "", zip: "", addressLine: "")
-
-    var isEmpty: Bool {
-        area.isEmpty && street.isEmpty && addressLine.isEmpty
-    }
-
-    var displaySummary: String {
-        if !addressLine.isEmpty { return addressLine }
-        var parts: [String] = []
-        if !area.isEmpty { parts.append(area) }
-        if !street.isEmpty { parts.append(street) }
-        return parts.isEmpty ? "Unknown location" : parts.joined(separator: ", ")
-    }
-}
+// `ResolvedAddress` now lives in LocationManager.swift alongside the shared
+// reverse-geocode helper (so the wizard and BoS/handover flows can reuse both).
 
 // MARK: - Picker View
 
@@ -314,56 +293,21 @@ struct CarPickupLocationPickerView: View {
         isGeocoding = true
         geocodeError = nil
 
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let geocoder = CLGeocoder()
-
         Task {
-            do {
-                let placemarks = try await geocoder.reverseGeocodeLocation(location)
-                await MainActor.run {
-                    // Drop stale responses so a slow geocode from a previous
-                    // coordinate can't overwrite a newer one.
-                    guard requestID == geocodeRequestID else { return }
+            let resolved = await LocationGeocoder.reverseGeocode(coordinate)
+            await MainActor.run {
+                // Drop stale responses so a slow geocode from a previous
+                // coordinate can't overwrite a newer one.
+                guard requestID == geocodeRequestID else { return }
 
-                    if let placemark = placemarks.first {
-                        let area = placemark.subLocality ?? placemark.locality ?? placemark.administrativeArea ?? ""
-                        let thoroughfare = placemark.thoroughfare ?? ""
-                        let subThoroughfare = placemark.subThoroughfare ?? ""
-                        let street = [thoroughfare, subThoroughfare].filter { !$0.isEmpty }.joined(separator: " ")
-                        let zip = placemark.postalCode ?? ""
-
-                        // Build a human-readable address line
-                        var parts: [String] = []
-                        if !street.isEmpty { parts.append(street) }
-                        if !area.isEmpty { parts.append(area) }
-                        if !zip.isEmpty { parts.append(zip) }
-                        let addressLine = parts.joined(separator: ", ")
-
-                        resolvedAddress = ResolvedAddress(
-                            area: area,
-                            street: street,
-                            block: "",
-                            zip: zip,
-                            addressLine: addressLine
-                        )
-                        lastGeocodedCoordinate = coordinate
-                    } else if resolvedAddress.isEmpty {
-                        geocodeError = "Could not resolve address"
-                    }
-                    isGeocoding = false
-                }
-            } catch {
-                await MainActor.run {
-                    guard requestID == geocodeRequestID else { return }
+                if let resolved {
+                    resolvedAddress = resolved
+                    lastGeocodedCoordinate = coordinate
+                } else if resolvedAddress.isEmpty {
                     // Keep any previously resolved address visible on failure.
-                    if resolvedAddress.isEmpty {
-                        geocodeError = "Address lookup failed. Try again."
-                    }
-                    isGeocoding = false
-                    #if DEBUG
-                    print("[CarPickupLocationPicker] Geocode error: \(error.localizedDescription)")
-                    #endif
+                    geocodeError = "Could not resolve address"
                 }
+                isGeocoding = false
             }
         }
     }

@@ -87,26 +87,32 @@ func (h *PurchaseRequestHandler) buildBOSResponse(b *models.PurchaseBillOfSale) 
 		return nil
 	}
 	resp := &models.PurchaseBillOfSaleResponse{
-		ID:                b.ID,
-		PurchaseRequestID: b.PurchaseRequestID,
-		VehicleYear:       b.VehicleYear,
-		VehicleMake:       b.VehicleMake,
-		VehicleModel:      b.VehicleModel,
-		VIN:               b.VIN,
-		SaleAmountCents:   b.SaleAmountCents,
-		Currency:          b.Currency,
-		TermsConditions:   b.TermsConditions,
-		SellerName:        b.SellerName,
-		SellerAddress:     b.SellerAddress,
-		SellerSignedAt:    models.NewRFC3339TimePtr(b.SellerSignedAt),
-		BuyerName:         b.BuyerName,
-		BuyerAddress:      b.BuyerAddress,
-		BuyerSignedAt:     models.NewRFC3339TimePtr(b.BuyerSignedAt),
-		FinalizedAt:       models.NewRFC3339TimePtr(b.FinalizedAt),
-		Locked:            b.SellerSigned() || b.BuyerSigned(),
-		FullySigned:       b.FullySigned(),
-		CreatedAt:         models.RFC3339Time(b.CreatedAt),
-		UpdatedAt:         models.RFC3339Time(b.UpdatedAt),
+		ID:                  b.ID,
+		PurchaseRequestID:   b.PurchaseRequestID,
+		VehicleYear:         b.VehicleYear,
+		VehicleMake:         b.VehicleMake,
+		VehicleModel:        b.VehicleModel,
+		VIN:                 b.VIN,
+		SaleAmountCents:     b.SaleAmountCents,
+		Currency:            b.Currency,
+		TermsConditions:     b.TermsConditions,
+		SellerName:          b.SellerName,
+		SellerAddress:       b.SellerAddress,
+		SellerAddressLat:    b.SellerAddressLat,
+		SellerAddressLng:    b.SellerAddressLng,
+		SellerSignedAt:      models.NewRFC3339TimePtr(b.SellerSignedAt),
+		BuyerName:           b.BuyerName,
+		BuyerAddress:        b.BuyerAddress,
+		BuyerAddressLat:     b.BuyerAddressLat,
+		BuyerAddressLng:     b.BuyerAddressLng,
+		BuyerSignedAt:       models.NewRFC3339TimePtr(b.BuyerSignedAt),
+		TitleCondition:      b.TitleCondition,
+		TitleConditionOther: b.TitleConditionOther,
+		FinalizedAt:         models.NewRFC3339TimePtr(b.FinalizedAt),
+		Locked:              b.SellerSigned() || b.BuyerSigned(),
+		FullySigned:         b.FullySigned(),
+		CreatedAt:           models.RFC3339Time(b.CreatedAt),
+		UpdatedAt:           models.RFC3339Time(b.UpdatedAt),
 	}
 	if b.SellerSignatureURL != nil {
 		signed := h.urlSigner.Sign(*b.SellerSignatureURL)
@@ -121,6 +127,48 @@ func (h *PurchaseRequestHandler) buildBOSResponse(b *models.PurchaseBillOfSale) 
 		resp.FinalizedPDFURL = &signed
 	}
 	return resp
+}
+
+// enrichBOSDocuments joins the title car_document + each party's driver-license
+// document onto a BoS response. Title URL + ID URLs are SIGNED private URLs;
+// ID docs are show-if-on-file (nil when absent — never a hard requirement).
+// title_uploaded is the presence flag the buyer-Accept gate keys on.
+func (h *PurchaseRequestHandler) enrichBOSDocuments(ctx context.Context, resp *models.PurchaseBillOfSaleResponse, carID, sellerID, buyerID uuid.UUID) {
+	if resp == nil {
+		return
+	}
+	if titleURL, err := h.repo.GetCarTitleDocumentURL(ctx, carID); err == nil && titleURL != nil {
+		signed := h.urlSigner.Sign(*titleURL)
+		resp.TitleDocumentURL = &signed
+		resp.TitleUploaded = true
+	}
+	if sellerLic, err := h.repo.GetUserLicenseDocumentURL(ctx, sellerID); err == nil && sellerLic != nil {
+		signed := h.urlSigner.Sign(*sellerLic)
+		resp.SellerIDDocumentURL = &signed
+	}
+	if buyerLic, err := h.repo.GetUserLicenseDocumentURL(ctx, buyerID); err == nil && buyerLic != nil {
+		signed := h.urlSigner.Sign(*buyerLic)
+		resp.BuyerIDDocumentURL = &signed
+	}
+}
+
+// buildChecklistResponse maps a persisted inspection checklist to its response
+// shape. Returns nil for a nil checklist (tolerated for pre-migration rows).
+func buildChecklistResponse(c *models.PurchaseInspectionChecklist) *models.PurchaseInspectionChecklistResponse {
+	if c == nil {
+		return nil
+	}
+	return &models.PurchaseInspectionChecklistResponse{
+		VINMatches:            c.VINMatches,
+		OdometerReviewed:      c.OdometerReviewed,
+		ExteriorOK:            c.ExteriorOK,
+		InteriorOK:            c.InteriorOK,
+		MechanicalTestDriveOK: c.MechanicalTestDriveOK,
+		TitleReviewed:         c.TitleReviewed,
+		KeysHandedOver:        c.KeysHandedOver,
+		BuyerUnderstandsAcceptanceCompletesPayment: c.BuyerUnderstandsAcceptanceCompletesPayment,
+		CreatedAt: models.RFC3339Time(c.CreatedAt),
+	}
 }
 
 func (h *PurchaseRequestHandler) buildRejectionResponse(ctx context.Context, rej *models.PurchaseRejection) *models.PurchaseRejectionResponse {
@@ -191,8 +239,17 @@ func (h *PurchaseRequestHandler) buildResponse(ctx context.Context, p *models.Pu
 	if buyer, err := h.userRepo.GetByID(ctx, p.BuyerID); err == nil {
 		resp.BuyerName = buyer.FullName()
 	}
-	if car, err := h.carRepo.GetByID(ctx, p.CarID); err == nil && car != nil {
+	car, _ := h.carRepo.GetByID(ctx, p.CarID)
+	if car != nil {
 		resp.CarTitle = car.Title
+		// Fall back to the live car row for the structured vehicle fields; the
+		// BoS row (seeded at Accept) overrides below when present.
+		resp.VehicleYear = car.Year
+		resp.VehicleMake = car.Make
+		resp.VehicleModel = car.Model
+		if car.VIN.Valid {
+			resp.VehicleVIN = car.VIN.String
+		}
 	}
 	switch viewerID {
 	case p.SellerID:
@@ -206,10 +263,92 @@ func (h *PurchaseRequestHandler) buildResponse(ctx context.Context, p *models.Pu
 	}
 	if bos, err := h.repo.GetBillOfSale(ctx, p.ID); err == nil && bos != nil {
 		resp.BillOfSale = h.buildBOSResponse(bos)
+		h.enrichBOSDocuments(ctx, resp.BillOfSale, p.CarID, p.SellerID, p.BuyerID)
+		// The BoS snapshot is the authoritative legal record — prefer it over
+		// the live car row for the top-level vehicle fields.
+		resp.VehicleYear = bos.VehicleYear
+		resp.VehicleMake = bos.VehicleMake
+		resp.VehicleModel = bos.VehicleModel
+		resp.VehicleVIN = bos.VIN
 	}
 	if rej, err := h.repo.GetRejection(ctx, p.ID); err == nil && rej != nil {
 		resp.Rejection = h.buildRejectionResponse(ctx, rej)
 	}
+	if cl, err := h.repo.GetInspectionChecklist(ctx, p.ID); err == nil && cl != nil {
+		resp.InspectionChecklist = buildChecklistResponse(cl)
+	}
+	return resp
+}
+
+// buildAdminResponse wraps buildResponse and attaches the admin-only detail
+// block (DESIGN SPEC item 24): car specs + all photos + SIGNED car documents,
+// buyer/seller contact + address, buyer/seller SIGNED ID documents (show-if-
+// present), the inspection checklist, and refund/cancellation reasons. Reuses
+// the existing urlSigner. Callers MUST gate this to the admin role.
+func (h *PurchaseRequestHandler) buildAdminResponse(ctx context.Context, p *models.PurchaseRequest) models.PurchaseRequestResponse {
+	resp := h.buildResponse(ctx, p, p.SellerID)
+	detail := &models.PurchaseAdminDetailResponse{
+		CarPhotos:           []string{},
+		CarDocuments:        []models.PurchaseAdminCarDocumentResponse{},
+		RefundFailureReason: p.RefundFailureReason,
+		CancellationReason:  p.CancellationReason,
+		InspectionChecklist: resp.InspectionChecklist,
+	}
+	if car, err := h.carRepo.GetByID(ctx, p.CarID); err == nil && car != nil {
+		detail.CarMake = car.Make
+		detail.CarModel = car.Model
+		detail.CarYear = car.Year
+		if car.VIN.Valid {
+			detail.CarVIN = car.VIN.String
+		}
+	}
+	// Car photos are PUBLIC (Sign passes them through); car documents are
+	// PRIVATE (Sign appends ?sig=&exp=).
+	if cover, err := h.repo.GetCarCoverPhotoURL(ctx, p.CarID); err == nil && cover != nil {
+		signed := h.urlSigner.Sign(*cover)
+		detail.CoverPhotoURL = &signed
+	}
+	if photos, err := h.repo.GetCarPhotoURLs(ctx, p.CarID); err == nil {
+		for _, u := range photos {
+			detail.CarPhotos = append(detail.CarPhotos, h.urlSigner.Sign(u))
+		}
+	}
+	if docs, err := h.repo.GetCarDocumentBriefs(ctx, p.CarID); err == nil {
+		for _, d := range docs {
+			detail.CarDocuments = append(detail.CarDocuments, models.PurchaseAdminCarDocumentResponse{
+				DocumentType: d.DocumentType,
+				FileName:     d.FileName,
+				FileURL:      h.urlSigner.Sign(d.FileURL),
+			})
+		}
+	}
+	if buyer, err := h.userRepo.GetByID(ctx, p.BuyerID); err == nil && buyer != nil {
+		detail.BuyerEmail = buyer.Email
+		detail.BuyerPhone = buyer.Phone
+	}
+	if seller, err := h.userRepo.GetByID(ctx, p.SellerID); err == nil && seller != nil {
+		detail.SellerEmail = seller.Email
+		detail.SellerPhone = seller.Phone
+	}
+	if resp.BillOfSale != nil {
+		// Addresses live on the BoS; ID doc URLs were already signed by
+		// enrichBOSDocuments — reuse them rather than re-joining/re-signing.
+		detail.BuyerAddress = resp.BillOfSale.BuyerAddress
+		detail.SellerAddress = resp.BillOfSale.SellerAddress
+		detail.BuyerIDDocumentURL = resp.BillOfSale.BuyerIDDocumentURL
+		detail.SellerIDDocumentURL = resp.BillOfSale.SellerIDDocumentURL
+	} else {
+		// No BoS yet (offer pre-accept): join licenses directly.
+		if sellerLic, err := h.repo.GetUserLicenseDocumentURL(ctx, p.SellerID); err == nil && sellerLic != nil {
+			signed := h.urlSigner.Sign(*sellerLic)
+			detail.SellerIDDocumentURL = &signed
+		}
+		if buyerLic, err := h.repo.GetUserLicenseDocumentURL(ctx, p.BuyerID); err == nil && buyerLic != nil {
+			signed := h.urlSigner.Sign(*buyerLic)
+			detail.BuyerIDDocumentURL = &signed
+		}
+	}
+	resp.AdminDetail = detail
 	return resp
 }
 
@@ -617,6 +756,7 @@ func (h *PurchaseRequestHandler) UpdateBOS(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	resp := h.buildBOSResponse(bos)
+	h.enrichBOSDocuments(r.Context(), resp, existing.CarID, existing.SellerID, existing.BuyerID)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 	// Broadcast so the buyer's live BoS view refreshes.
 	h.wsHub.Broadcast(&ws.Event{
@@ -668,6 +808,7 @@ func (h *PurchaseRequestHandler) UpdateBOSBuyerFields(w http.ResponseWriter, r *
 		return
 	}
 	resp := h.buildBOSResponse(bos)
+	h.enrichBOSDocuments(r.Context(), resp, existing.CarID, existing.SellerID, existing.BuyerID)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 	h.wsHub.Broadcast(&ws.Event{
 		Type:          "purchase_bill_of_sale_updated",
@@ -710,6 +851,23 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 	}
 	if role == "buyer" && userID != existing.BuyerID {
 		httputil.WriteError(w, http.StatusForbidden, models.ErrInvalidRoleField)
+		return
+	}
+
+	// Required-address gate (DESIGN SPEC items 15/16): the signer's OWN address
+	// string must be non-empty before they can sign. Never blocks on the
+	// counterparty's address. Checked before the file touches disk.
+	curBOS, err := h.repo.GetBillOfSale(r.Context(), id)
+	if err != nil || curBOS == nil {
+		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidPurchaseAction)
+		return
+	}
+	if role == "seller" && strings.TrimSpace(curBOS.SellerAddress) == "" {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrSellerAddressRequired)
+		return
+	}
+	if role == "buyer" && strings.TrimSpace(curBOS.BuyerAddress) == "" {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrBuyerAddressRequired)
 		return
 	}
 
@@ -771,6 +929,7 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 	// sign by comparing seller_signed_at / buyer_signed_at to what it
 	// already had.
 	resp := h.buildBOSResponse(bos)
+	h.enrichBOSDocuments(r.Context(), resp, p.CarID, p.SellerID, p.BuyerID)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 	// Broadcast purchase + BoS updates so both sides refresh.
 	h.wsHub.Broadcast(&ws.Event{
@@ -899,20 +1058,64 @@ func (h *PurchaseRequestHandler) uploadRelToDiskPath(rel string) string {
 // buildBOSData maps a canonical BoS row to the renderer's presentation data,
 // resolving each signature URL to its on-disk PNG path.
 func (h *PurchaseRequestHandler) buildBOSData(b *models.PurchaseBillOfSale) billofsale.Data {
+	// Map the seller-declared title enum to a human label. Kept inline (a local
+	// closure) so the whole model→renderer mapping lives in this one function.
+	titleLabel := func() string {
+		if b.TitleCondition == nil {
+			return ""
+		}
+		switch models.TitleCondition(*b.TitleCondition) {
+		case models.TitleConditionClean:
+			return "Clean"
+		case models.TitleConditionLienRecorded:
+			return "Lien recorded"
+		case models.TitleConditionSalvage:
+			return "Salvage"
+		case models.TitleConditionRebuilt:
+			return "Rebuilt"
+		case models.TitleConditionLemonBuyback:
+			return "Lemon buyback"
+		case models.TitleConditionFlood:
+			return "Flood"
+		case models.TitleConditionManufacturerBuyback:
+			return "Manufacturer buyback"
+		case models.TitleConditionOther:
+			other := ""
+			if b.TitleConditionOther != nil {
+				other = strings.TrimSpace(*b.TitleConditionOther)
+			}
+			if other == "" {
+				return "Other"
+			}
+			return "Other: " + other
+		default:
+			// Unknown/legacy value — surface it verbatim rather than dropping it.
+			return strings.TrimSpace(*b.TitleCondition)
+		}
+	}()
+
 	d := billofsale.Data{
-		ReferenceID:    b.PurchaseRequestID.String(),
-		GeneratedDate:  time.Now().UTC().Format("2006-01-02"),
-		VehicleYear:    b.VehicleYear,
-		VehicleMake:    b.VehicleMake,
-		VehicleModel:   b.VehicleModel,
-		VIN:            b.VIN,
-		SalePriceCents: b.SaleAmountCents,
-		Currency:       b.Currency,
-		Terms:          b.TermsConditions,
-		SellerName:     b.SellerName,
-		SellerAddress:  b.SellerAddress,
-		BuyerName:      b.BuyerName,
-		BuyerAddress:   b.BuyerAddress,
+		ReferenceID:         b.PurchaseRequestID.String(),
+		GeneratedDate:       time.Now().UTC().Format("2006-01-02"),
+		VehicleYear:         b.VehicleYear,
+		VehicleMake:         b.VehicleMake,
+		VehicleModel:        b.VehicleModel,
+		VIN:                 b.VIN,
+		TitleConditionLabel: titleLabel,
+		SalePriceCents:      b.SaleAmountCents,
+		Currency:            b.Currency,
+		Terms:               b.TermsConditions,
+		SellerName:          b.SellerName,
+		SellerAddress:       b.SellerAddress,
+		BuyerName:           b.BuyerName,
+		BuyerAddress:        b.BuyerAddress,
+		// ID-on-file acknowledgement. The canonical BoS row does not itself carry
+		// an ID-document presence flag (party ID docs live on the user profile
+		// and are exposed only via signed in-app URLs), so this stays false here.
+		// The renderer supports the "Government ID: on file" line the moment a
+		// presence signal is threaded into this mapping.
+		SellerIDOnFile: false,
+		BuyerIDOnFile:  false,
 	}
 	if b.SellerSignatureURL != nil {
 		d.SellerSignaturePath = h.uploadRelToDiskPath(*b.SellerSignatureURL)
@@ -1041,9 +1244,13 @@ func (h *PurchaseRequestHandler) finalizeBillOfSale(ctx context.Context, purchas
 		h.logger.Error("purchase: finalize bos: refetch", "error", err, "purchase_id", purchaseID)
 		return
 	}
+	freshResp := h.buildBOSResponse(fresh)
+	if pr, perr := h.repo.GetByID(ctx, purchaseID); perr == nil && pr != nil {
+		h.enrichBOSDocuments(ctx, freshResp, pr.CarID, sellerID, buyerID)
+	}
 	h.wsHub.Broadcast(&ws.Event{
 		Type:          "purchase_bill_of_sale_updated",
-		Payload:       h.buildBOSResponse(fresh),
+		Payload:       freshResp,
 		TargetUserIDs: []uuid.UUID{sellerID, buyerID},
 	})
 }
@@ -1105,6 +1312,7 @@ func (h *PurchaseRequestHandler) FinalizeBOS(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	resp := h.buildBOSResponse(b)
+	h.enrichBOSDocuments(r.Context(), resp, p.CarID, p.SellerID, p.BuyerID)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 	h.wsHub.Broadcast(&ws.Event{
 		Type:          "purchase_bill_of_sale_updated",
@@ -1119,7 +1327,8 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, err := h.repo.GetByIDForUser(r.Context(), id, userID); err != nil {
+	pr, err := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if err != nil {
 		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
 		return
 	}
@@ -1143,13 +1352,11 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 	// NULL-guarded UPDATE keeps this idempotent; the response shape is
 	// unchanged (the URL simply appears on a subsequent fetch).
 	if bos.FullySigned() && bos.FinalizedPDFURL == nil {
-		p, sellerID, buyerID := id, uuid.Nil, uuid.Nil
-		if pr, perr := h.repo.GetByID(r.Context(), p); perr == nil && pr != nil {
-			sellerID, buyerID = pr.SellerID, pr.BuyerID
-		}
-		go h.finalizeBillOfSale(context.Background(), id, sellerID, buyerID)
+		go h.finalizeBillOfSale(context.Background(), id, pr.SellerID, pr.BuyerID)
 	}
-	httputil.WriteJSON(w, http.StatusOK, h.buildBOSResponse(bos))
+	resp := h.buildBOSResponse(bos)
+	h.enrichBOSDocuments(r.Context(), resp, pr.CarID, pr.SellerID, pr.BuyerID)
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 // ─── Payment ────────────────────────────────────────────────────────────────
@@ -1352,11 +1559,76 @@ func (h *PurchaseRequestHandler) KeysHandedOver(w http.ResponseWriter, r *http.R
 }
 
 // InspectAccept — POST /api/v1/purchase-requests/{id}/inspect/accept
+//
+// SAFETY CRITICAL ordering (DESIGN SPEC items 11 + 22): the vehicle title must
+// be on file, the buyer's inspection checklist must be fully confirmed, and the
+// seller-declared title condition must be set — ALL validated and the checklist
+// PERSISTED BEFORE the status flip and BEFORE any Stripe capture. Strict order:
+// validate → persist checklist → InspectionAccept flip → capture.
 func (h *PurchaseRequestHandler) InspectAccept(w http.ResponseWriter, r *http.Request) {
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
 		return
 	}
+	existing, err := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
+		return
+	}
+	if userID != existing.BuyerID {
+		httputil.WriteError(w, http.StatusForbidden, models.NewAPIError("FORBIDDEN", "Only the buyer can accept the vehicle"))
+		return
+	}
+	var body models.InspectVehicleAcceptBody
+	if err := httputil.DecodeJSON(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+
+	// (11) Title-on-file gate — reject BEFORE any status flip or capture.
+	titleURL, err := h.repo.GetCarTitleDocumentURL(r.Context(), existing.CarID)
+	if err != nil {
+		h.logger.Error("purchase: title lookup", "error", err, "id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if titleURL == nil {
+		httputil.WriteError(w, http.StatusConflict, models.ErrTitleRequired)
+		return
+	}
+
+	// (22) Inspection checklist: every item + the payment-completion ack must
+	// be true, and the seller-declared title condition must be set.
+	if !body.AllConfirmed() {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrInspectionChecklistIncomplete)
+		return
+	}
+	bos, err := h.repo.GetBillOfSale(r.Context(), id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if bos == nil || bos.TitleCondition == nil || strings.TrimSpace(*bos.TitleCondition) == "" {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrTitleConditionRequired)
+		return
+	}
+
+	// Persist the checklist BEFORE the status flip + capture.
+	if _, err := h.repo.SaveInspectionChecklist(r.Context(), id, models.PurchaseInspectionChecklist{
+		VINMatches:            body.VINMatches,
+		OdometerReviewed:      body.OdometerReviewed,
+		ExteriorOK:            body.ExteriorOK,
+		InteriorOK:            body.InteriorOK,
+		MechanicalTestDriveOK: body.MechanicalTestDriveOK,
+		TitleReviewed:         body.TitleReviewed,
+		KeysHandedOver:        body.KeysHandedOver,
+		BuyerUnderstandsAcceptanceCompletesPayment: body.BuyerUnderstandsAcceptanceCompletesPayment,
+	}); err != nil {
+		h.logger.Error("purchase: save inspection checklist", "error", err, "id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
 	p, err := h.repo.InspectionAccept(r.Context(), id, userID)
 	if err != nil {
 		if apiErr := models.GetAPIError(err); apiErr != nil {
@@ -1752,7 +2024,7 @@ func (h *PurchaseRequestHandler) AdminGet(w http.ResponseWriter, r *http.Request
 		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
 		return
 	}
-	httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), p, p.SellerID))
+	httputil.WriteJSON(w, http.StatusOK, h.buildAdminResponse(r.Context(), p))
 }
 
 // AdminListRejections — GET /api/v1/admin/purchase-rejections
@@ -1944,6 +2216,10 @@ func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventTyp
 			priorStatus := p.Status
 			if updated, err := h.repo.MarkCaptured(ctx, p.ID); err == nil {
 				h.broadcast("purchase_payment_updated", updated, map[string]any{"payment_status": "succeeded"})
+				// (23) Sale completion must always emit purchase_request_updated
+				// with the completed status so both clients settle their UI even
+				// when capture lands via the webhook rather than InspectAccept.
+				h.broadcast("purchase_request_updated", updated, nil)
 				if priorStatus != models.PurchaseStatusCompleted {
 					amount := formatMoney(updated.OfferAmountCents)
 					h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchasePayment,
@@ -2073,10 +2349,13 @@ func statusForPurchaseErr(apiErr *models.APIError) int {
 		models.ErrCodeInvalidPurchaseAction, models.ErrCodeBOSLocked,
 		models.ErrCodeBOSNotSigned, models.ErrCodeAlreadySigned,
 		models.ErrCodeNotAwaitingInspection, models.ErrCodeNotHandoverScheduled,
-		models.ErrCodePurchaseNotCancellable:
+		models.ErrCodePurchaseNotCancellable, models.ErrCodeTitleRequired:
 		return http.StatusConflict
 	case models.ErrCodePurchaseOfferTooLow, models.ErrCodePurchaseEvidenceRequired,
-		models.ErrCodeInvalidInput:
+		models.ErrCodeInvalidInput,
+		models.ErrCodeSellerAddressRequired, models.ErrCodeBuyerAddressRequired,
+		models.ErrCodeInvalidTitleCondition, models.ErrCodeTitleConditionOtherRequired,
+		models.ErrCodeInspectionChecklistIncomplete, models.ErrCodeTitleConditionRequired:
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError

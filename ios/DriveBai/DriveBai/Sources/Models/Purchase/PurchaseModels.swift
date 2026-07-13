@@ -124,8 +124,8 @@ No funds are transferred to the seller yet — your bank simply reserves the amo
 When you accept the vehicle after inspection, the held amount is charged and paid to the seller. If you reject the \
 vehicle with valid evidence and DrivaBai support agrees, the hold is released and you are not charged.
 
-DrivaBai is not a licensed escrow agent, does not hold funds on the seller's behalf, and does not guarantee \
-the sale. Title transfer, registration, and any additional DMV or state-required paperwork are the \
+DrivaBai does not hold or transmit funds on behalf of the buyer or seller and does not guarantee the sale. \
+Title transfer, registration, and any additional DMV or state-required paperwork are the \
 responsibility of the buyer and seller — requirements vary by state, and the in-app Bill of Sale may not be \
 sufficient on its own.
 """
@@ -143,6 +143,14 @@ struct PurchaseRequest: Identifiable, Equatable, Hashable {
     let sellerName: String
     let buyerName: String
     let carTitle: String
+
+    // Vehicle identity — mirrored onto the purchase response so the BoS
+    // wizard can seed reliable make/model/year/VIN even before the BoS row
+    // has been fetched. Empty (year 0 / "") when the server omits them.
+    let vehicleYear: Int
+    let vehicleMake: String
+    let vehicleModel: String
+    let vehicleVin: String
 
     let offerAmountCents: Int64
     let currency: String

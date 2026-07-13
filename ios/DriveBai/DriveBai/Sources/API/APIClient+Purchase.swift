@@ -47,10 +47,17 @@ extension APIClient {
     }
 
     /// POST /purchase-requests/{id}/inspect/accept — buyer confirms the car.
-    /// This triggers the Stripe capture pipeline on the backend.
-    func buyerAcceptVehicle(purchaseRequestId: UUID) async throws -> PurchaseRequestAPIResponse {
-        try await purchasePostEmpty(
-            path: "purchase-requests/\(purchaseRequestId.uuidString)/inspect/accept"
+    /// Requires the full inspection checklist (every field true); the server
+    /// additionally gates on a title document (409 TITLE_REQUIRED) and a BoS
+    /// title_condition (400 INSPECTION_CHECKLIST_INCOMPLETE) before it
+    /// captures payment.
+    func buyerAcceptVehicle(
+        purchaseRequestId: UUID,
+        checklist: InspectVehicleAcceptAPIRequest
+    ) async throws -> PurchaseRequestAPIResponse {
+        try await purchasePost(
+            path: "purchase-requests/\(purchaseRequestId.uuidString)/inspect/accept",
+            body: checklist
         )
     }
 

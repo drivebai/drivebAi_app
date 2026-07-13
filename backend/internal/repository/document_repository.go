@@ -169,17 +169,20 @@ func (r *DocumentRepository) DeleteByUserIDAndType(ctx context.Context, userID u
 	return err
 }
 
-// HasRequiredDocuments checks if driver has uploaded required documents
+// HasRequiredDocuments reports whether the driver has the only REQUIRED
+// personal document on file: a driver's license. Registration and the other
+// document types are optional supporting docs and must NEVER gate a driver —
+// a license alone lets them proceed.
 func (r *DocumentRepository) HasRequiredDocuments(ctx context.Context, userID uuid.UUID) (bool, error) {
 	query := `
-		SELECT COUNT(DISTINCT type)
+		SELECT COUNT(*)
 		FROM documents
-		WHERE user_id = $1 AND type IN ($2, $3)
+		WHERE user_id = $1 AND type = $2
 	`
 	var count int
-	err := r.db.Pool.QueryRow(ctx, query, userID, models.DocumentDriversLicense, models.DocumentRegistration).Scan(&count)
+	err := r.db.Pool.QueryRow(ctx, query, userID, models.DocumentDriversLicense).Scan(&count)
 	if err != nil {
 		return false, err
 	}
-	return count >= 2, nil
+	return count >= 1, nil
 }

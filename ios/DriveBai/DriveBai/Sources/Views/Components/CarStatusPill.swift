@@ -55,6 +55,8 @@ struct CarStatusPill: View {
             return "Currently rented"
         case .available:
             return style == .hero ? "Available now!" : "Available"
+        case .awaitingApproval:
+            return "Awaiting approval"
         case .pendingReview:
             return "Pending approval"
         case .paused:
@@ -74,6 +76,7 @@ struct CarStatusPill: View {
         switch state {
         case .available: return .green
         case .rented: return .orange
+        case .awaitingApproval: return .orange
         case .pendingReview: return .orange
         case .paused: return .gray
         case .sold: return .blue
@@ -84,6 +87,7 @@ struct CarStatusPill: View {
         switch state {
         case .available: return "checkmark.circle.fill"
         case .rented: return "key.fill"
+        case .awaitingApproval: return "clock.fill"
         case .pendingReview: return "clock.fill"
         case .paused: return "pause.circle.fill"
         case .sold: return "checkmark.seal.fill"
@@ -118,7 +122,7 @@ struct CarStatusPill: View {
             style: .compact
         )
         CarStatusPill(state: .rented(nil), style: .compact)
-        CarStatusPill(state: .pendingReview, style: .compact)
+        CarStatusPill(state: .awaitingApproval, style: .compact)
         CarStatusPill(state: .paused, style: .compact)
         CarStatusPill(state: .sold, style: .compact)
     }
@@ -129,7 +133,7 @@ struct CarStatusPill: View {
     VStack(alignment: .leading, spacing: 8) {
         CarStatusPill(state: .available, style: .hero)
         CarStatusPill(state: .rented(nil), style: .hero)
-        CarStatusPill(state: .pendingReview, style: .hero)
+        CarStatusPill(state: .awaitingApproval, style: .hero)
         CarStatusPill(state: .paused, style: .hero)
         CarStatusPill(state: .sold, style: .hero)
     }

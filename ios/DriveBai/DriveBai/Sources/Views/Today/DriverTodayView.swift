@@ -3,10 +3,19 @@ import SwiftUI
 /// Today tab view for Drivers
 /// Displays active rentals, quick actions/reminders, and notifications bell
 struct DriverTodayView: View {
+    /// Tab selection owned by `DriverTabView`. Tapping the empty "Your rental"
+    /// card drives this to the Discover tab (QA pt 2) instead of a dead print.
+    @Binding var selectedTab: Int
+
     @StateObject private var viewModel = DriverTodayViewModel()
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var tour = ProductTourCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
+    /// Buyer taps "Authorize payment" on the Today purchase card → present the
+    /// payment screen INLINE (no Chats deep-link). Direct-present mirrors the
+    /// in-chat purchase card.
+    @State private var choosePaymentPurchase: PurchaseRequest?
     /// Local mirror of the Getting-started card's collapse state (persisted
     /// best-effort into the tour cache).
     @State private var checklistCollapsed = false
@@ -153,6 +162,33 @@ struct DriverTodayView: View {
             .refreshable {
                 await viewModel.refresh()
             }
+            // Inline payment presentation for the buyer's Today purchase card
+            // (issue 14/18). ChoosePaymentOptionView owns its own error alert,
+            // so a failed payment-intent create surfaces a real message rather
+            // than a silent no-op. Refetch on update/close to keep the card's
+            // status truthful.
+            .sheet(item: $choosePaymentPurchase) { purchase in
+                ChoosePaymentOptionView(
+                    purchaseRequest: purchase,
+                    onPurchaseUpdated: { updated in
+                        if let idx = viewModel.purchaseRequests.firstIndex(where: { $0.id == updated.id }) {
+                            viewModel.purchaseRequests[idx] = updated
+                        }
+                        Task { await viewModel.fetchPurchaseRequests() }
+                    },
+                    onDismiss: {
+                        Task { await viewModel.fetchPurchaseRequests() }
+                    }
+                )
+            }
+            // Foreground reconciliation (issue 23): a sale can complete while
+            // the buyer is backgrounded (during the in-person handover), so a
+            // missed purchase_request_updated WS event would leave the card
+            // stale. Re-fetch the purchase list when the scene reactivates.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await viewModel.fetchPurchaseRequests() }
+            }
         }
     }
 
@@ -187,9 +223,10 @@ struct DriverTodayView: View {
                     .padding(.horizontal, TodayLayout.horizontalPadding)
                 }
             } else {
-                // Empty state for driver
+                // Empty state for driver — tap switches the tab bar to
+                // Discover (index 1) so the driver can browse cars to rent.
                 EmptyListingCard(isOwner: false) {
-                    print("Discover rental tapped - navigate to discover flow")
+                    selectedTab = 1
                 }
                 .padding(.horizontal, TodayLayout.horizontalPadding)
             }
@@ -276,6 +313,9 @@ struct DriverTodayView: View {
                                     counterpartyId: purchase.sellerId,
                                     counterpartyName: purchase.sellerName
                                 )
+                            },
+                            onAuthorizePayment: {
+                                choosePaymentPurchase = purchase
                             }
                         )
                     }
@@ -444,9 +484,9 @@ extension DriverTodayView {
 }
 
 #Preview("Empty Listings") {
-    DriverTodayView()
+    DriverTodayView(selectedTab: .constant(0))
 }
 
 #Preview("With Active Rental") {
-    DriverTodayView()
+    DriverTodayView(selectedTab: .constant(0))
 }

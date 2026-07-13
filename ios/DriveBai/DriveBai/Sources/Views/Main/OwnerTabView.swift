@@ -12,6 +12,9 @@ struct OwnerTabView: View {
     private static let myCarsTabIndex = 1
 
     @State private var selectedTab = 0
+    /// Drives the universal Help & Support sheet (QA pt 0). One tap from every
+    /// tab, in both driver and owner modes.
+    @State private var showSupport = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -46,6 +49,24 @@ struct OwnerTabView: View {
                 .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
+        // Universal Help & Support entry point (QA pt 0). A persistent button
+        // floating above the tab bar — reachable in one tap from every tab —
+        // presents the existing SupportChatView, which creates/opens the
+        // support conversation on first appearance. Routes to admins; no
+        // hardcoded email.
+        .overlay(alignment: .bottomTrailing) {
+            SupportFloatingButton(unreadCount: supportInboxStore.unreadCount) {
+                showSupport = true
+            }
+        }
+        .sheet(isPresented: $showSupport, onDismiss: {
+            supportInboxStore.isSupportChatVisible = false
+            Task { await supportInboxStore.markRead() }
+        }) {
+            SupportChatView()
+                .environmentObject(authStore)
+                .environmentObject(supportInboxStore)
+        }
         // Product-tour coach-mark overlay (see DriverTabView for the rationale).
         .onboardingOverlayHost(tour)
         .task { tour.handle(.roleActivated(.owner)) }

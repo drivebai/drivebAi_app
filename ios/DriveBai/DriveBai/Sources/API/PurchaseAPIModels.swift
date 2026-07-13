@@ -16,6 +16,13 @@ struct PurchaseRequestAPIResponse: Codable, Identifiable {
     let buyerName: String?
     let carTitle: String?
 
+    // Vehicle identity (present on the response; decoded defensively as
+    // optional so older payloads without these keys still decode).
+    let vehicleYear: Int?
+    let vehicleMake: String?
+    let vehicleModel: String?
+    let vehicleVin: String?
+
     let offerAmountCents: Int64
     let currency: String
     let buyerMessage: String?
@@ -52,6 +59,10 @@ struct PurchaseRequestAPIResponse: Codable, Identifiable {
         case sellerName = "seller_name"
         case buyerName = "buyer_name"
         case carTitle = "car_title"
+        case vehicleYear = "vehicle_year"
+        case vehicleMake = "vehicle_make"
+        case vehicleModel = "vehicle_model"
+        case vehicleVin = "vehicle_vin"
         case offerAmountCents = "offer_amount_cents"
         case currency
         case buyerMessage = "buyer_message"
@@ -86,6 +97,10 @@ struct PurchaseRequestAPIResponse: Codable, Identifiable {
             sellerName: sellerName ?? "Seller",
             buyerName: buyerName ?? "Buyer",
             carTitle: carTitle ?? "Car",
+            vehicleYear: vehicleYear ?? 0,
+            vehicleMake: vehicleMake ?? "",
+            vehicleModel: vehicleModel ?? "",
+            vehicleVin: vehicleVin ?? "",
             offerAmountCents: offerAmountCents,
             currency: currency,
             buyerMessage: buyerMessage,
@@ -126,12 +141,22 @@ struct BillOfSaleAPIResponse: Codable, Identifiable {
     let termsConditions: String
     let sellerName: String
     let sellerAddress: String
+    let sellerAddressLat: Double?
+    let sellerAddressLng: Double?
     let sellerSignatureUrl: String?
     let sellerSignedAt: Date?
     let buyerName: String
     let buyerAddress: String
+    let buyerAddressLat: Double?
+    let buyerAddressLng: Double?
     let buyerSignatureUrl: String?
     let buyerSignedAt: Date?
+    let titleCondition: String?
+    let titleConditionOther: String?
+    let sellerIdDocumentUrl: String?
+    let buyerIdDocumentUrl: String?
+    let titleDocumentUrl: String?
+    let titleUploaded: Bool?
     let finalizedPdfUrl: String?
     let finalizedAt: Date?
     let createdAt: Date
@@ -149,12 +174,22 @@ struct BillOfSaleAPIResponse: Codable, Identifiable {
         case termsConditions = "terms_conditions"
         case sellerName = "seller_name"
         case sellerAddress = "seller_address"
+        case sellerAddressLat = "seller_address_lat"
+        case sellerAddressLng = "seller_address_lng"
         case sellerSignatureUrl = "seller_signature_url"
         case sellerSignedAt = "seller_signed_at"
         case buyerName = "buyer_name"
         case buyerAddress = "buyer_address"
+        case buyerAddressLat = "buyer_address_lat"
+        case buyerAddressLng = "buyer_address_lng"
         case buyerSignatureUrl = "buyer_signature_url"
         case buyerSignedAt = "buyer_signed_at"
+        case titleCondition = "title_condition"
+        case titleConditionOther = "title_condition_other"
+        case sellerIdDocumentUrl = "seller_id_document_url"
+        case buyerIdDocumentUrl = "buyer_id_document_url"
+        case titleDocumentUrl = "title_document_url"
+        case titleUploaded = "title_uploaded"
         case finalizedPdfUrl = "finalized_pdf_url"
         case finalizedAt = "finalized_at"
         case createdAt = "created_at"
@@ -174,12 +209,22 @@ struct BillOfSaleAPIResponse: Codable, Identifiable {
             termsConditions: termsConditions,
             sellerName: sellerName,
             sellerAddress: sellerAddress,
+            sellerAddressLat: sellerAddressLat,
+            sellerAddressLng: sellerAddressLng,
             sellerSignatureUrl: sellerSignatureUrl,
             sellerSignedAt: sellerSignedAt,
             buyerName: buyerName,
             buyerAddress: buyerAddress,
+            buyerAddressLat: buyerAddressLat,
+            buyerAddressLng: buyerAddressLng,
             buyerSignatureUrl: buyerSignatureUrl,
             buyerSignedAt: buyerSignedAt,
+            titleCondition: titleCondition.flatMap { TitleCondition(rawValue: $0) },
+            titleConditionOther: titleConditionOther,
+            sellerIdDocumentUrl: sellerIdDocumentUrl,
+            buyerIdDocumentUrl: buyerIdDocumentUrl,
+            titleDocumentUrl: titleDocumentUrl,
+            titleUploaded: titleUploaded ?? false,
             finalizedPdfUrl: finalizedPdfUrl,
             finalizedAt: finalizedAt,
             createdAt: createdAt,
@@ -310,6 +355,10 @@ struct UpdateBillOfSaleAPIRequest: Codable {
     let termsConditions: String?
     let sellerName: String?
     let sellerAddress: String?
+    let sellerAddressLat: Double?
+    let sellerAddressLng: Double?
+    let titleCondition: String?
+    let titleConditionOther: String?
 
     enum CodingKeys: String, CodingKey {
         case vehicleYear = "vehicle_year"
@@ -319,6 +368,10 @@ struct UpdateBillOfSaleAPIRequest: Codable {
         case termsConditions = "terms_conditions"
         case sellerName = "seller_name"
         case sellerAddress = "seller_address"
+        case sellerAddressLat = "seller_address_lat"
+        case sellerAddressLng = "seller_address_lng"
+        case titleCondition = "title_condition"
+        case titleConditionOther = "title_condition_other"
     }
 }
 
@@ -327,10 +380,40 @@ struct UpdateBillOfSaleAPIRequest: Codable {
 struct UpdateBillOfSaleBuyerFieldsAPIRequest: Codable {
     let buyerName: String?
     let buyerAddress: String?
+    let buyerAddressLat: Double?
+    let buyerAddressLng: Double?
 
     enum CodingKeys: String, CodingKey {
         case buyerName = "buyer_name"
         case buyerAddress = "buyer_address"
+        case buyerAddressLat = "buyer_address_lat"
+        case buyerAddressLng = "buyer_address_lng"
+    }
+}
+
+/// Buyer inspection-accept body — mirrors backend's InspectVehicleAcceptBody.
+/// Every field must be `true`; the server also requires a title document on
+/// file (409 TITLE_REQUIRED) and a BoS title_condition set (400
+/// INSPECTION_CHECKLIST_INCOMPLETE) before it will capture payment.
+struct InspectVehicleAcceptAPIRequest: Codable {
+    let vinMatches: Bool
+    let odometerReviewed: Bool
+    let exteriorOk: Bool
+    let interiorOk: Bool
+    let mechanicalTestDriveOk: Bool
+    let titleReviewed: Bool
+    let keysHandedOver: Bool
+    let buyerUnderstandsAcceptanceCompletesPayment: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case vinMatches = "vin_matches"
+        case odometerReviewed = "odometer_reviewed"
+        case exteriorOk = "exterior_ok"
+        case interiorOk = "interior_ok"
+        case mechanicalTestDriveOk = "mechanical_test_drive_ok"
+        case titleReviewed = "title_reviewed"
+        case keysHandedOver = "keys_handed_over"
+        case buyerUnderstandsAcceptanceCompletesPayment = "buyer_understands_acceptance_completes_payment"
     }
 }
 

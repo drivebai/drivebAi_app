@@ -1,8 +1,13 @@
 import SwiftUI
 
 /// Screen the buyer opens after the seller confirms keys-handed-over. Two
-/// primary CTAs: "Accept vehicle" (green) captures payment; "I do not
+/// primary CTAs: "Accept vehicle" (green) completes payment; "I do not
 /// accept the car" (red) pushes into `RejectionEvidenceFormView`.
+///
+/// Accepting is gated behind a REQUIRED interactive checklist — every item
+/// must be ticked before the green CTA enables. The full checklist is sent to
+/// the backend on accept; the server additionally refuses to capture unless a
+/// title document is on file and the seller set the BoS title condition.
 struct InspectionView: View {
     let purchaseRequest: PurchaseRequest
     let onPurchaseUpdated: (PurchaseRequest) -> Void
@@ -13,7 +18,38 @@ struct InspectionView: View {
     @State private var errorMessage: String?
     @State private var now = Date()
 
+    // Loaded so we can display the seller-declared title condition read-only
+    // and offer a "View Title" affordance next to the "Title reviewed" item.
+    @State private var bos: BillOfSale?
+    @State private var showTitlePreview = false
+
+    // Required inspection checklist (spec §22). Every one must be true before
+    // "Accept vehicle" enables; the same booleans are sent to the backend.
+    @State private var vinMatches = false
+    @State private var odometerReviewed = false
+    @State private var exteriorOk = false
+    @State private var interiorOk = false
+    @State private var mechanicalTestDriveOk = false
+    @State private var titleReviewed = false
+    @State private var keysHandedOver = false
+    @State private var buyerUnderstands = false
+
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var allChecked: Bool {
+        vinMatches && odometerReviewed && exteriorOk && interiorOk
+            && mechanicalTestDriveOk && titleReviewed && keysHandedOver && buyerUnderstands
+    }
+
+    /// The server refuses Accept (TITLE_REQUIRED / INSPECTION_CHECKLIST_INCOMPLETE)
+    /// unless the seller has uploaded the title AND declared its condition. When
+    /// the loaded BoS already tells us that isn't the case, block Accept on the
+    /// client so the buyer isn't sent into a guaranteed round-trip rejection.
+    /// Only enforced once the BoS has loaded (nil bos → let the server backstop).
+    private var titleBlocksAccept: Bool {
+        guard let bos else { return false }
+        return bos.titleUploaded != true || bos.titleConditionDisplay == nil
+    }
 
     var body: some View {
         NavigationStack {
@@ -56,7 +92,13 @@ struct InspectionView: View {
                     }
                 )
             }
+            .sheet(isPresented: $showTitlePreview) {
+                if let url = bos?.titleDocumentUrl {
+                    DocumentPreviewSheet(source: .remoteURL(url, filename: "Vehicle Title"))
+                }
+            }
             .onReceive(ticker) { now = $0 }
+            .task { await loadBoS() }
         }
         // Product-tour host lives inside the inspection sheet; re-inject the
         // shared coordinator because a sheet gets a fresh environment.
@@ -107,13 +149,27 @@ struct InspectionView: View {
     }
 
     private var checklistCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Before you accept, verify:")
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Confirm every item before you accept")
                 .font(.subheadline.weight(.semibold))
-            checklistRow("VIN matches the Bill of Sale")
-            checklistRow("Keys, spare, and remote received")
-            checklistRow("Title and paperwork handed over")
-            checklistRow("Vehicle condition matches description")
+            Text("Accepting completes your payment, so check each item honestly. All are required.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            checkRow("VIN matches the Bill of Sale", isOn: $vinMatches)
+            checkRow("Odometer / mileage reviewed", isOn: $odometerReviewed)
+            checkRow("Exterior condition checked", isOn: $exteriorOk)
+            checkRow("Interior condition checked", isOn: $interiorOk)
+            checkRow("Mechanical / test drive checked", isOn: $mechanicalTestDriveOk)
+
+            titleReviewRow
+
+            checkRow("Seller handed over keys", isOn: $keysHandedOver)
+
+            Divider().padding(.vertical, 2)
+
+            checkRow("I understand accepting completes my payment", isOn: $buyerUnderstands,
+                     emphasized: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
@@ -123,6 +179,37 @@ struct InspectionView: View {
                 .stroke(Color(.systemGray5), lineWidth: 1)
         )
         .cornerRadius(14)
+    }
+
+    /// "Title reviewed" — carries the seller-declared title condition read-only
+    /// plus a "View Title" affordance when the document is on file.
+    private var titleReviewRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            checkRow("Title reviewed", isOn: $titleReviewed,
+                     subtitle: titleConditionSubtitle)
+            HStack(spacing: 14) {
+                if bos?.titleUploaded == true, bos?.titleDocumentUrl != nil {
+                    Button {
+                        showTitlePreview = true
+                    } label: {
+                        Label("View Title", systemImage: "doc.text.magnifyingglass")
+                            .font(.caption.weight(.semibold))
+                    }
+                } else if bos != nil {
+                    Label("Seller hasn't uploaded the title yet", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.orange)
+                }
+            }
+            .padding(.leading, 30)
+        }
+    }
+
+    private var titleConditionSubtitle: String {
+        if let display = bos?.titleConditionDisplay {
+            return "Seller-declared title: \(display)"
+        }
+        return "Seller-declared title: not set yet"
     }
 
     private var paymentHeldCard: some View {
@@ -145,6 +232,17 @@ struct InspectionView: View {
 
     private var ctaBar: some View {
         VStack(spacing: 10) {
+            if titleBlocksAccept {
+                Text("The seller still needs to upload the vehicle title and set its condition before you can accept.")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else if !allChecked {
+                Text("Tick every item above to accept the vehicle.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
             Button(action: acceptVehicle) {
                 HStack(spacing: 8) {
                     if isAccepting { ProgressView().tint(.white).scaleEffect(0.85) }
@@ -155,10 +253,10 @@ struct InspectionView: View {
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .background(Color.green)
+                .background((isAccepting || !allChecked || titleBlocksAccept) ? Color.green.opacity(0.5) : Color.green)
                 .cornerRadius(12)
             }
-            .disabled(isAccepting)
+            .disabled(isAccepting || !allChecked || titleBlocksAccept)
             .onboardingTarget(.inspectionCTA)
 
             Button {
@@ -176,34 +274,87 @@ struct InspectionView: View {
         }
     }
 
-    private func checklistRow(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "checkmark.circle")
-                .foregroundColor(.driveBaiPrimary)
-            Text(text)
-                .font(.subheadline)
-                .foregroundColor(.primary)
+    /// Interactive, tappable checklist row backed by a `Bool` binding.
+    private func checkRow(
+        _ text: String,
+        isOn: Binding<Bool>,
+        subtitle: String? = nil,
+        emphasized: Bool = false
+    ) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isOn.wrappedValue ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundColor(isOn.wrappedValue ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(text)
+                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.leading)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(isAccepting)
     }
 
     // MARK: - Actions
 
+    private func loadBoS() async {
+        bos = try? await APIClient.shared.getBillOfSale(
+            purchaseRequestId: purchaseRequest.id
+        ).toDomain()
+    }
+
     private func acceptVehicle() {
-        guard !isAccepting else { return }
+        guard !isAccepting, allChecked else { return }
         isAccepting = true
         Task {
             defer { isAccepting = false }
             do {
+                let checklist = InspectVehicleAcceptAPIRequest(
+                    vinMatches: vinMatches,
+                    odometerReviewed: odometerReviewed,
+                    exteriorOk: exteriorOk,
+                    interiorOk: interiorOk,
+                    mechanicalTestDriveOk: mechanicalTestDriveOk,
+                    titleReviewed: titleReviewed,
+                    keysHandedOver: keysHandedOver,
+                    buyerUnderstandsAcceptanceCompletesPayment: buyerUnderstands
+                )
                 let response = try await APIClient.shared.buyerAcceptVehicle(
-                    purchaseRequestId: purchaseRequest.id
+                    purchaseRequestId: purchaseRequest.id,
+                    checklist: checklist
                 )
                 onPurchaseUpdated(response.toDomain())
                 dismiss()
             } catch let apiError as APIError {
-                errorMessage = apiError.errorDescription
+                errorMessage = friendlyAcceptError(apiError)
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    /// Maps the server's accept gates to clear buyer-facing copy.
+    private func friendlyAcceptError(_ error: APIError) -> String {
+        switch error.errorCode {
+        case "TITLE_REQUIRED":
+            return "The seller hasn't uploaded the title yet. Ask them to upload the vehicle title before you accept."
+        case "INSPECTION_CHECKLIST_INCOMPLETE":
+            return "The seller hasn't set the title condition on the Bill of Sale yet. Ask them to complete it before you accept."
+        default:
+            return error.errorDescription ?? "Couldn't complete the acceptance."
         }
     }
 

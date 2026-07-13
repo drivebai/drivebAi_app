@@ -2,9 +2,22 @@ import SwiftUI
 
 struct ChatBubbleView: View {
     let message: ChatMessage
+    /// Invoked when the user taps a `.failed` (retriable) outgoing bubble.
+    /// The re-send reuses the message's existing `clientMessageId`, which the
+    /// send path dedupes server-side, so a double-commit lands as one row.
+    var onRetry: ((ChatMessage) -> Void)? = nil
 
     @State private var previewAttachment: ChatAttachment?
     @State private var pdfAttachment: ChatAttachment?
+
+    /// A failed *text* bubble can be re-sent (we still hold its body +
+    /// clientMessageId). Failed attachment bubbles are not retriable here —
+    /// the picked file bytes aren't retained after the optimistic append —
+    /// so they keep the plain error glyph.
+    private var isRetriable: Bool {
+        if case .failed = message.status { return message.messageType == "text" }
+        return false
+    }
 
     var body: some View {
         if message.isSystem {
@@ -136,9 +149,25 @@ struct ChatBubbleView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
         case .failed:
-            Image(systemName: "exclamationmark.circle")
-                .font(.caption2)
-                .foregroundColor(.red)
+            if isRetriable, let onRetry {
+                Button {
+                    onRetry(message)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.caption2)
+                        Text("Tap to retry")
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Message failed to send. Tap to retry.")
+            } else {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+            }
         }
     }
 

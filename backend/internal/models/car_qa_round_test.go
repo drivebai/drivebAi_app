@@ -12,13 +12,17 @@ import (
 // ── Required-documents gate (QA pt-10 / D5) ─────────────────────────────────
 
 func TestRequiredCarDocumentTypes(t *testing.T) {
+	want := []CarDocumentType{CarDocRegistration, CarDocInspection, CarDocInsurance}
 	rent := RequiredCarDocumentTypes(false)
-	if !reflect.DeepEqual(rent, []CarDocumentType{CarDocRegistration, CarDocInspection, CarDocInsurance}) {
+	if !reflect.DeepEqual(rent, want) {
 		t.Fatalf("rental-only required set wrong: %v", rent)
 	}
+	// Decision C: title is no longer required at listing/approval — the
+	// for-sale set is identical to the rental set (title enforced later at
+	// the Bill-of-Sale Accept gate).
 	sale := RequiredCarDocumentTypes(true)
-	if len(sale) != 4 || sale[3] != CarDocTitle {
-		t.Fatalf("for-sale must additionally require title: %v", sale)
+	if !reflect.DeepEqual(sale, want) {
+		t.Fatalf("for-sale set must not add title (decision C): %v", sale)
 	}
 }
 
@@ -40,10 +44,12 @@ func TestMissingRequiredCarDocuments(t *testing.T) {
 			want:   []string{},
 		},
 		{
-			name:      "all 3 on file but for sale without title",
+			// Decision C: title is not a listing/approval requirement, so a
+			// for-sale car with the 3 core docs has nothing missing here.
+			name:      "all 3 on file, for sale — title not required at listing",
 			isForSale: true,
 			onFile:    []string{"registration", "inspection", "insurance"},
-			want:      []string{"title"},
+			want:      []string{},
 		},
 		{
 			name:      "for sale, everything on file",

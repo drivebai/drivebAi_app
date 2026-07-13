@@ -86,18 +86,23 @@ const (
 	CarDocTitle CarDocumentType = "title"
 )
 
+// ErrCodeInvalidVIN is returned (400) when CreateCar/UpdateCar is given a
+// missing or malformed VIN. A valid 17-char VIN is required for ALL new
+// listings (rent + sale); legacy NULL/empty-VIN rows are grandfathered and
+// only re-validated when the owner actually supplies a VIN.
+const ErrCodeInvalidVIN = "INVALID_VIN"
+
 // RequiredCarDocumentTypes returns the document types a car must have on
-// file before it can be approved (admin ApproveCar) — registration,
-// inspection and insurance always; title additionally when the car is
-// listed for sale. Single definition shared by the admin approve guard,
+// file before it can be approved (admin ApproveCar): registration,
+// inspection and insurance. Title is intentionally NOT required here
+// (decision C) — the title requirement moved off the listing/approval stage
+// and is enforced later at the Bill-of-Sale Accept gate. The isForSale
+// parameter is retained so the many call sites don't churn, but no longer
+// changes the result. Single definition shared by the admin approve guard,
 // the admin list/detail "missing docs" badge, and UpdateCar's
 // sale-readiness check.
 func RequiredCarDocumentTypes(isForSale bool) []CarDocumentType {
-	required := []CarDocumentType{CarDocRegistration, CarDocInspection, CarDocInsurance}
-	if isForSale {
-		required = append(required, CarDocTitle)
-	}
-	return required
+	return []CarDocumentType{CarDocRegistration, CarDocInspection, CarDocInsurance}
 }
 
 // MissingRequiredCarDocuments computes which required document types are
@@ -159,6 +164,12 @@ type Car struct {
 	// Status
 	Status   CarListingStatus `json:"status"`
 	IsPaused bool             `json:"is_paused"`
+
+	// IsApproved is the admin moderation gate (migration 000015). New
+	// listings default FALSE and go live only after an admin approves;
+	// grandfathered pre-000015 rows were backfilled to TRUE. Not emitted on
+	// the raw Car JSON — surfaced to clients via CarResponse.IsApproved.
+	IsApproved bool `json:"-"`
 
 	// Stats
 	RentedWeeks int     `json:"rented_weeks"`
@@ -258,6 +269,11 @@ type CarResponse struct {
 	// Status
 	Status   CarListingStatus `json:"status"`
 	IsPaused bool             `json:"is_paused"`
+	// IsApproved lets the client render an "Awaiting approval" state: false
+	// means the listing is still in the admin moderation queue and is not
+	// yet visible in Discover; true means approved (and, when status is
+	// available and not paused, live).
+	IsApproved bool `json:"is_approved"`
 
 	// Stats
 	RentedWeeks int     `json:"rented_weeks"`
@@ -376,6 +392,7 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 		},
 		Status:      c.Status,
 		IsPaused:    c.IsPaused,
+		IsApproved:  c.IsApproved,
 		RentedWeeks: c.RentedWeeks,
 		TotalEarned: c.TotalEarned,
 		Photos:      make([]CarPhotoResponse, 0),

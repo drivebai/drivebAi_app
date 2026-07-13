@@ -52,9 +52,11 @@ struct PriceEditorSheet: View {
 
             Spacer(minLength: 20)
 
-            // Primary CTA
+            // Primary CTA — commits the typed/nudged amount and closes the
+            // sheet. Named "Save" (not "Done") so it never reads as a twin of
+            // the keyboard toolbar's "Done", which only dismisses the keypad.
             Button(action: commitAndDismiss) {
-                Text("Done")
+                Text("Save")
             }
             .buttonStyle(DriveBaiButtonStyle())
             .padding(.horizontal, 20)

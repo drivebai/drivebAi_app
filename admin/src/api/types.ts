@@ -68,9 +68,25 @@ export interface AdminCarPhoto {
   file_url: string
 }
 
+/**
+ * One car document (title / registration / inspection / insurance) surfaced in
+ * the admin car-detail response. `file_url` is a SIGNED private URL — the
+ * backend runs every document path through PrivateURLSigner before emitting,
+ * so it is safe to render inline (<img>) or link (<a>) directly. Never
+ * construct a raw private path from this.
+ */
+export interface AdminCarDocument {
+  id: string
+  document_type: string
+  file_name: string
+  file_url: string
+}
+
 export interface AdminCarDetail extends AdminCar {
   description?: string | null
   photos: AdminCarPhoto[]
+  /** Signed title/registration/inspection/insurance documents. */
+  documents: AdminCarDocument[]
 }
 
 export interface AdminChat {
@@ -379,6 +395,17 @@ export interface PurchaseRejection {
   evidence?: PurchaseRejectionEvidence[]
 }
 
+/** Title-brand enum declared by the seller on the Bill of Sale (W1). */
+export type PurchaseTitleCondition =
+  | 'clean'
+  | 'lien_recorded'
+  | 'salvage'
+  | 'rebuilt'
+  | 'lemon_buyback'
+  | 'flood'
+  | 'manufacturer_buyback'
+  | 'other'
+
 export interface PurchaseBillOfSale {
   id: string
   purchase_request_id: string
@@ -397,6 +424,8 @@ export interface PurchaseBillOfSale {
   // Seller identity + signature
   seller_name?: string | null
   seller_address?: string | null
+  seller_address_lat?: number | null
+  seller_address_lng?: number | null
   /** Signed URL for the seller's signature PNG. */
   seller_signature_url?: string | null
   seller_signed_at?: string | null
@@ -404,16 +433,98 @@ export interface PurchaseBillOfSale {
   // Buyer identity + signature
   buyer_name?: string | null
   buyer_address?: string | null
+  buyer_address_lat?: number | null
+  buyer_address_lng?: number | null
   /** Signed URL for the buyer's signature PNG. */
   buyer_signature_url?: string | null
   buyer_signed_at?: string | null
 
+  // Seller-declared title brand (single source of truth on the BoS).
+  title_condition?: PurchaseTitleCondition | string | null
+  title_condition_other?: string | null
+
+  // Party ID documents (driver's license), SIGNED + show-if-on-file.
+  seller_id_document_url?: string | null
+  buyer_id_document_url?: string | null
+
+  // Vehicle title document, joined from the car's 'title' car_document.
+  // title_document_url is SIGNED; title_uploaded is the presence flag the
+  // buyer-Accept gate keys on.
+  title_document_url?: string | null
+  title_uploaded?: boolean | null
+
   // Rendered artifact
   finalized_pdf_url?: string | null
   finalized_at?: string | null
+  locked?: boolean | null
+  fully_signed?: boolean | null
 
   created_at: string
   updated_at: string
+}
+
+/**
+ * Buyer's pre-capture safety checklist (W1). Every field is all-true when the
+ * buyer accepts the vehicle. Nil until the buyer accepts (or for pre-migration
+ * in-flight purchases).
+ */
+export interface PurchaseInspectionChecklist {
+  vin_matches: boolean
+  odometer_reviewed: boolean
+  exterior_ok: boolean
+  interior_ok: boolean
+  mechanical_test_drive_ok: boolean
+  title_reviewed: boolean
+  keys_handed_over: boolean
+  buyer_understands_acceptance_completes_payment: boolean
+  created_at: string
+}
+
+/**
+ * One car document (title/registration/…) inside the admin purchase-detail
+ * block. `file_url` is a SIGNED private URL. Distinct from AdminCarDocument
+ * (no id/slot) — this is the purchase-scoped projection.
+ */
+export interface PurchaseAdminCarDocument {
+  document_type: string
+  file_name: string
+  file_url: string
+}
+
+/**
+ * Admin-only enrichment block returned by GET /admin/purchase-requests/{id}
+ * under `admin_detail` (W1). Car photos are PUBLIC (pass-through) URLs; car
+ * documents and ID documents are SIGNED private URLs. Addresses originate on
+ * the Bill of Sale — the UI labels them "from Bill of Sale".
+ */
+export interface PurchaseAdminDetail {
+  car_make: string
+  car_model: string
+  car_year: number
+  car_vin: string
+
+  /** Signed cover photo (public pass-through). */
+  cover_photo_url?: string | null
+  /** All car photo URLs (public pass-through). */
+  car_photos: string[]
+  /** Signed car documents (title/registration/inspection/insurance). */
+  car_documents: PurchaseAdminCarDocument[]
+
+  buyer_email: string
+  buyer_phone?: string | null
+  buyer_address: string
+  seller_email: string
+  seller_phone?: string | null
+  seller_address: string
+
+  /** Signed driver's-license / ID document URLs (show-if-on-file). */
+  buyer_id_document_url?: string | null
+  seller_id_document_url?: string | null
+
+  inspection_checklist?: PurchaseInspectionChecklist | null
+
+  refund_failure_reason?: string | null
+  cancellation_reason?: string | null
 }
 
 /**
@@ -427,25 +538,27 @@ export interface PurchaseRequest {
   id: string
   car_id: string
   car_title?: string | null
-  car_year?: number | null
-  car_make?: string | null
-  car_model?: string | null
-  vin?: string | null
-  cover_photo_url?: string | null
+  chat_id?: string | null
 
   seller_id: string
-  seller_name?: string | null
-  seller_email?: string | null
-
   buyer_id: string
-  buyer_name?: string | null
-  buyer_email?: string | null
 
-  chat_id?: string | null
+  seller_name?: string | null
+  buyer_name?: string | null
+  viewer_role?: 'seller' | 'buyer' | 'admin' | string
+  counterparty_name?: string | null
 
   offer_amount_cents: number
   currency: string
   buyer_message?: string | null
+
+  // Structured vehicle snapshot (sourced from the BoS legal snapshot, falling
+  // back to the live car row). These are the canonical top-level names — NOT
+  // car_make/car_year, which only exist inside `admin_detail`.
+  vehicle_year?: number | null
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vehicle_vin?: string | null
 
   status: PurchaseRequestStatus | string
   expires_at?: string | null
@@ -465,18 +578,11 @@ export interface PurchaseRequest {
   refund_status?: PurchaseRefundStatus | null
   refund_id?: string | null
   refunded_at?: string | null
-  refund_failure_reason?: string | null
 
-  /** Convenience roll-up so list tables can render a single "BoS" column. */
-  bos_status?:
-    | 'not_started'
-    | 'pending_seller'
-    | 'pending_buyer'
-    | 'signed'
-    | string
-    | null
-
-  cancellation_reason?: string | null
+  // Attached by both the list (buildResponse) and detail endpoints.
+  bill_of_sale?: PurchaseBillOfSale | null
+  rejection?: PurchaseRejection | null
+  inspection_checklist?: PurchaseInspectionChecklist | null
 
   created_at: string
   updated_at: string
@@ -485,4 +591,11 @@ export interface PurchaseRequest {
 export interface PurchaseRequestDetail extends PurchaseRequest {
   bill_of_sale?: PurchaseBillOfSale | null
   rejection?: PurchaseRejection | null
+  /**
+   * Admin-only enrichment. Present only on GET /admin/purchase-requests/{id}
+   * (never on list rows). Carries car photos + signed car/ID documents,
+   * buyer/seller contact + address, the inspection checklist, and the
+   * refund/cancellation reasons.
+   */
+  admin_detail?: PurchaseAdminDetail | null
 }

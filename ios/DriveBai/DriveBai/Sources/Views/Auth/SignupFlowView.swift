@@ -745,13 +745,14 @@ struct SignupDocumentsStepView: View {
 ///   - REQUIRED section: drivers_license only. Continue is gated on this
 ///     being uploaded (AuthStore.hasRequiredDocuments).
 ///   - OPTIONAL section: any DocumentType in `optionalDriverDocs` that
-///     either already has an upload (legacy registration counts here) or
-///     was explicitly added via "+ Add another document".
+///     either already has an upload or was explicitly added via
+///     "+ Add another document".
 ///
 /// Drivers do NOT need a vehicle registration to complete onboarding —
-/// registration is a vehicle-owner concern. Existing users with a
-/// previously-uploaded registration doc still see it under "Optional"
-/// (rendered identically) so nothing visually breaks for them.
+/// registration is a vehicle-owner concern, so it is no longer part of
+/// `optionalDriverDocs` and is never offered in the "Add a supporting
+/// document" menu. Continue is gated only on the driver's license
+/// (AuthStore.hasRequiredDocuments), and Back is always available.
 struct EmbeddedDocumentUploadContent: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var signupFlow: SignupFlowState
