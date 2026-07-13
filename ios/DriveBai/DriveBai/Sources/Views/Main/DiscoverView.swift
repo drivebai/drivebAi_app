@@ -7,6 +7,10 @@ struct ChatNavigationData: Identifiable, Hashable {
     let currentUserId: UUID
     let counterpartyId: UUID
     let counterpartyName: String
+    /// Tab to land on when the chat opens. Defaults to nil (Messages). The
+    /// "View purchase" affordance passes `.requests` so the buyer lands on the
+    /// existing purchase card.
+    var initialTab: ChatTab? = nil
 
     var id: UUID { chatId }
 }
@@ -672,6 +676,12 @@ struct ListingDetailView: View {
     /// Present the "Buy this car" offer sheet.  Non-nil while it's on
     /// screen so we can hand the Car through by identity binding.
     @State private var buyRequestCar: Car?
+    /// The current user's existing non-terminal purchase for THIS car, if any.
+    /// When set, the "Buy this car" CTA is replaced with a status pill + a
+    /// "View purchase" action so the buyer can't dead-end into a backend 409
+    /// ("Offer failed"). Cross-referenced against the buyer's Today purchase
+    /// list; the 409 stays the authoritative backstop.
+    @State private var activePurchase: PurchaseRequest?
 
     private var isLiked: Bool {
         likedStore.isLiked(car.id)
@@ -840,6 +850,12 @@ struct ListingDetailView: View {
             // whether the coach mark was eligible to run.
             ProductTourCoordinator.shared.recordMilestone(.viewedCarDetail)
         }
+        .task {
+            // Suppress the Buy CTA when the current user already has an active
+            // purchase for this car. Re-runs on every appearance, so returning
+            // from the offer sheet / chat re-reconciles the button state.
+            await loadActivePurchase()
+        }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [shareText])
         }
@@ -851,7 +867,8 @@ struct ListingDetailView: View {
                 chatId: data.chatId,
                 currentUserId: data.currentUserId,
                 counterpartyId: data.counterpartyId,
-                counterpartyName: data.counterpartyName
+                counterpartyName: data.counterpartyName,
+                initialTab: data.initialTab
             )
         }
         .sheet(item: $buyRequestCar) { car in
@@ -873,6 +890,25 @@ struct ListingDetailView: View {
             if let error = leaseRequestError {
                 Text(error)
             }
+        }
+    }
+
+    /// Cross-reference the buyer's Today purchase list to find an in-flight
+    /// purchase for this exact car. Reuses the same `/today/purchase-requests`
+    /// endpoint the Today tab already consumes. Silent on failure — the
+    /// backend 409 remains the authoritative guard.
+    private func loadActivePurchase() async {
+        guard car.isForSale, let userId = authStore.state.user?.id else { return }
+        do {
+            let response = try await APIClient.shared.fetchPurchaseRequestsToday()
+            let purchases = response.purchaseRequests.map { $0.toDomain() }
+            activePurchase = purchases.first { pr in
+                pr.carId == car.id && pr.buyerId == userId && !pr.status.isTerminal
+            }
+        } catch {
+            #if DEBUG
+            print("[ListingDetailView] loadActivePurchase error: \(error)")
+            #endif
         }
     }
 
@@ -1099,40 +1135,87 @@ struct ListingDetailView: View {
                 }
 
                 if car.isForSale {
-                    Button {
-                        // Explain buying *before* opening the offer form: the
-                        // intro's first card spotlights this very button, which
-                        // only exists on this screen. The sheet then presents
-                        // when the intro finishes (or immediately, if it's
-                        // already been seen).
-                        ProductTourCoordinator.shared.updateContext { $0.carIsForSale = true }
-                        ProductTourCoordinator.shared.startOrRun(.purchaseIntro) {
-                            buyRequestCar = car
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "cart.fill")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Buy this car")
-                                    .font(.headline)
-                                if let price = car.salePrice {
-                                    Text("Sale price \(price.formatted)")
-                                        .font(.caption)
-                                        .foregroundColor(.white.opacity(0.9))
-                                }
-                            }
-                        }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color.green)
-                        .cornerRadius(12)
+                    if let purchase = activePurchase {
+                        purchaseInProgressCTA(purchase)
+                    } else {
+                        buyThisCarButton
                     }
-                    .onboardingTarget(.buyThisCarCTA)
                 }
             }
             .padding(16)
             .background(Color(.systemBackground))
+        }
+    }
+
+    /// The default green "Buy this car" CTA (no active purchase yet).
+    private var buyThisCarButton: some View {
+        Button {
+            // Explain buying *before* opening the offer form: the
+            // intro's first card spotlights this very button, which
+            // only exists on this screen. The sheet then presents
+            // when the intro finishes (or immediately, if it's
+            // already been seen).
+            ProductTourCoordinator.shared.updateContext { $0.carIsForSale = true }
+            ProductTourCoordinator.shared.startOrRun(.purchaseIntro) {
+                buyRequestCar = car
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "cart.fill")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Buy this car")
+                        .font(.headline)
+                    if let price = car.salePrice {
+                        Text("Sale price \(price.formatted)")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.9))
+                    }
+                }
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color.green)
+            .cornerRadius(12)
+        }
+        .onboardingTarget(.buyThisCarCTA)
+    }
+
+    /// Replacement CTA shown when the buyer already has a non-terminal
+    /// purchase for this car: a status pill + a "View purchase" action that
+    /// routes to the existing purchase card in Chat → Requests.
+    private func purchaseInProgressCTA(_ purchase: PurchaseRequest) -> some View {
+        let waitingOnSeller = purchase.status == .requested
+        return VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: waitingOnSeller ? "hourglass" : "checkmark.seal.fill")
+                Text(waitingOnSeller ? "Waiting for seller" : "Purchase in progress")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.driveBaiPrimary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(Color.driveBaiPrimary.opacity(0.12))
+            .cornerRadius(12)
+
+            Button {
+                guard let user = authStore.state.user else { return }
+                navigateToChat = ChatNavigationData(
+                    chatId: purchase.chatId,
+                    currentUserId: user.id,
+                    counterpartyId: purchase.sellerId,
+                    counterpartyName: purchase.sellerName,
+                    initialTab: .requests
+                )
+            } label: {
+                Text("View purchase")
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.driveBaiPrimary)
+                    .cornerRadius(12)
+            }
         }
     }
 }

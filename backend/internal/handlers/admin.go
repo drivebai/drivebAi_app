@@ -41,11 +41,15 @@ type AdminHandler struct {
 	// the reset flow (the endpoint then 500s cleanly).
 	tokenRepo *repository.TokenRepository
 	emailSvc  email.Sender
+	// urlSigner signs private car-document URLs (title/registration/
+	// inspection/insurance) returned by GetCar. Photos are public/unsigned.
+	// Sign is nil-safe, so a nil signer degrades to passthrough in tests.
+	urlSigner *PrivateURLSigner
 	logger    *slog.Logger
 }
 
-func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, logger *slog.Logger) *AdminHandler {
-	return &AdminHandler{adminRepo: adminRepo, userRepo: userRepo, wsHub: wsHub, logger: logger}
+func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, urlSigner *PrivateURLSigner, logger *slog.Logger) *AdminHandler {
+	return &AdminHandler{adminRepo: adminRepo, userRepo: userRepo, wsHub: wsHub, urlSigner: urlSigner, logger: logger}
 }
 
 // SetNotificationHandler wires the central NotificationHandler so admin
@@ -342,6 +346,12 @@ func (h *AdminHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	// Car documents are private uploads — sign each URL per response so the
+	// admin can open them, but never emit an unsigned private path. Photos
+	// are public and returned as-is by the repo.
+	for i := range c.Documents {
+		c.Documents[i].FileURL = h.urlSigner.Sign(c.Documents[i].FileURL)
+	}
 	httputil.WriteJSON(w, http.StatusOK, c)
 }
 
@@ -363,8 +373,10 @@ func (h *AdminHandler) ApproveCar(w http.ResponseWriter, r *http.Request) {
 
 	// Required-documents gate (QA pt-10 / D5). Enforced ONLY on the
 	// false→true transition: registration + inspection + insurance must be
-	// on file (+ title when the car is for sale). Already-approved legacy
-	// cars are grandfathered — un-approving or re-listing them is untouched.
+	// on file (title is NO LONGER required here — decision C moved it to the
+	// Bill-of-Sale stage). Already-approved legacy cars are grandfathered —
+	// un-approving or re-listing them is untouched.
+	var wasApproved bool
 	if body.IsApproved {
 		info, err := h.adminRepo.GetCarApprovalInfo(r.Context(), id)
 		if err != nil {
@@ -376,21 +388,54 @@ func (h *AdminHandler) ApproveCar(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 			return
 		}
-		if missing := models.MissingRequiredCarDocuments(info.IsForSale, info.DocumentTypes); len(missing) > 0 {
-			httputil.WriteError(w, http.StatusUnprocessableEntity,
-				models.NewAPIError(models.ErrCodeMissingRequiredDocuments,
-					"This listing is missing required documents").
-					WithDetails(map[string]interface{}{"missing": missing}))
-			return
+		wasApproved = info.IsApproved
+		// Enforce the required-documents gate ONLY on the false→true transition.
+		// Re-approving an already-approved car (e.g. a grandfathered pre-gate
+		// row) must not 422 for docs that were never required when it was first
+		// approved — that would strand it out of the marketplace on a no-op
+		// re-approve. Matches the publish side-effects below, which also fire
+		// only on the transition.
+		if !wasApproved {
+			if missing := models.MissingRequiredCarDocuments(info.IsForSale, info.DocumentTypes); len(missing) > 0 {
+				httputil.WriteError(w, http.StatusUnprocessableEntity,
+					models.NewAPIError(models.ErrCodeMissingRequiredDocuments,
+						"This listing is missing required documents").
+						WithDetails(map[string]interface{}{"missing": missing}))
+				return
+			}
 		}
 	}
 
-	if err := h.adminRepo.SetCarApproved(r.Context(), id, body.IsApproved); err != nil {
+	ownerID, newStatus, err := h.adminRepo.SetCarApproved(r.Context(), id, body.IsApproved)
+	if err != nil {
 		h.logger.Error("admin approve car", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "is_approved": body.IsApproved})
+
+	// Publish side-effects fire only on the false→true approval transition —
+	// admin approval is the SINGLE publish gate. SetCarApproved already moved
+	// status pending→available in the same UPDATE; broadcast car_updated so
+	// open owner clients refresh their My Cars grid, and push the owner that
+	// their listing is live (mirrors the notifHandler.Notify calls elsewhere).
+	if body.IsApproved && !wasApproved {
+		h.wsHub.Broadcast(&ws.Event{
+			Type: "car_updated",
+			Payload: map[string]any{
+				"id":          id,
+				"status":      newStatus,
+				"is_approved": true,
+			},
+			TargetUserIDs: []uuid.UUID{ownerID},
+		})
+		if h.notifHandler != nil && ownerID != uuid.Nil {
+			go h.notifHandler.Notify(ownerID, models.NotificationTypeSystem,
+				"Listing approved",
+				"Your car listing has been approved and is now live.",
+				nil, nil)
+		}
+	}
 }
 
 // ===== CHATS =====

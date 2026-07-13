@@ -11,6 +11,10 @@ struct ChatView: View {
 
     @StateObject private var viewModel: ChatViewModel
     @EnvironmentObject private var authStore: AuthStore
+    /// Observed so the illustrative Requests dot appears and self-clears in
+    /// step with the chatSegments coach mark. Read-only — no tour is started
+    /// or mutated from here.
+    @ObservedObject private var tourCoordinator = ProductTourCoordinator.shared
     @State private var showRequestComposer = false
     @State private var showDetails = false
     @State private var showProfile = false
@@ -60,6 +64,19 @@ struct ChatView: View {
         _viewModel = StateObject(wrappedValue: ChatViewModel(chatId: chatId, currentUserId: currentUserId))
     }
 
+    /// Purely illustrative red dot shown next to the Requests segment ONLY
+    /// while the chatSegments coach mark is on its "dot" step, so the user
+    /// sees exactly what the real attention dot looks like. It is derived live
+    /// from the coordinator, so it appears when that step is reached and
+    /// self-clears the instant the step advances. It never sets unread /
+    /// attention state, never mutates the ChatViewModel, and never touches
+    /// backend counts. If the real Requests badge is already showing it wins —
+    /// the single `showBadge` Circle draws once regardless.
+    private var tutorialRequestsDot: Bool {
+        tourCoordinator.activeTour == .chatSegments
+            && tourCoordinator.currentStep?.id == "dot"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Tab picker. Custom segmented control instead of SwiftUI's
@@ -69,7 +86,7 @@ struct ChatView: View {
             // screen used before.
             ChatTabsBar(
                 selection: $viewModel.selectedTab,
-                requestsHasBadge: viewModel.hasRequestsAttentionBadge,
+                requestsHasBadge: viewModel.hasRequestsAttentionBadge || tutorialRequestsDot,
                 messagesHasBadge: viewModel.hasMessagesAttentionBadge
             )
             .padding(.horizontal)
@@ -187,13 +204,13 @@ struct ChatView: View {
         .sheet(item: $scheduleHandoverPurchase) { purchase in
             ScheduleHandoverSheet(
                 purchaseRequest: purchase,
-                onSubmit: { scheduledAt, location in
+                onSubmit: { scheduledAt, location, latitude, longitude in
                     await viewModel.scheduleHandover(
                         purchaseRequestId: purchase.id,
                         scheduledAt: scheduledAt,
                         location: location,
-                        latitude: nil,
-                        longitude: nil
+                        latitude: latitude,
+                        longitude: longitude
                     )
                 }
             )
@@ -297,8 +314,13 @@ struct ChatView: View {
                         }
 
                         ForEach(viewModel.messages) { message in
-                            ChatBubbleView(message: message)
-                                .id(message.id)
+                            ChatBubbleView(
+                                message: message,
+                                onRetry: { failed in
+                                    Task { await viewModel.retrySend(message: failed) }
+                                }
+                            )
+                            .id(message.id)
                         }
                     }
                     .padding(.horizontal)

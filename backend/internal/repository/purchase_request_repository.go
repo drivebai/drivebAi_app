@@ -437,8 +437,9 @@ func (r *PurchaseRequestRepository) GetBillOfSale(ctx context.Context, purchaseI
 		       vehicle_year, vehicle_make, vehicle_model, vin,
 		       sale_amount_cents, currency,
 		       terms_conditions,
-		       seller_name, seller_address, seller_signature_url, seller_signed_at,
-		       buyer_name, buyer_address, buyer_signature_url, buyer_signed_at,
+		       seller_name, seller_address, seller_address_lat, seller_address_lng, seller_signature_url, seller_signed_at,
+		       buyer_name, buyer_address, buyer_address_lat, buyer_address_lng, buyer_signature_url, buyer_signed_at,
+		       title_condition, title_condition_other,
 		       finalized_pdf_url, finalized_at,
 		       created_at, updated_at
 		FROM purchase_bill_of_sales
@@ -449,8 +450,9 @@ func (r *PurchaseRequestRepository) GetBillOfSale(ctx context.Context, purchaseI
 		&b.VehicleYear, &b.VehicleMake, &b.VehicleModel, &b.VIN,
 		&b.SaleAmountCents, &b.Currency,
 		&b.TermsConditions,
-		&b.SellerName, &b.SellerAddress, &b.SellerSignatureURL, &b.SellerSignedAt,
-		&b.BuyerName, &b.BuyerAddress, &b.BuyerSignatureURL, &b.BuyerSignedAt,
+		&b.SellerName, &b.SellerAddress, &b.SellerAddressLat, &b.SellerAddressLng, &b.SellerSignatureURL, &b.SellerSignedAt,
+		&b.BuyerName, &b.BuyerAddress, &b.BuyerAddressLat, &b.BuyerAddressLng, &b.BuyerSignatureURL, &b.BuyerSignedAt,
+		&b.TitleCondition, &b.TitleConditionOther,
 		&b.FinalizedPDFURL, &b.FinalizedAt,
 		&b.CreatedAt, &b.UpdatedAt,
 	); err != nil {
@@ -486,6 +488,174 @@ func (r *PurchaseRequestRepository) SetFinalizedPDF(ctx context.Context, purchas
 	return tag.RowsAffected() > 0, nil
 }
 
+// ─── Document + inspection-checklist joins ──────────────────────────────────
+
+// CarDocumentBrief is a minimal car-document projection for the admin detail
+// view. FileURL is the BARE relative path — the handler signs it before
+// emitting.
+type CarDocumentBrief struct {
+	DocumentType string
+	FileName     string
+	FileURL      string
+}
+
+// GetCarTitleDocumentURL returns the BARE relative URL of the car's 'title'
+// car_document, or nil when none is on file. The seller uploads the title via
+// the existing car-document upload flow; this is the join the Bill-of-Sale
+// response + the buyer-Accept gate (DESIGN SPEC item 11) key on.
+func (r *PurchaseRequestRepository) GetCarTitleDocumentURL(ctx context.Context, carID uuid.UUID) (*string, error) {
+	var url *string
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT file_url FROM car_documents
+		WHERE car_id = $1 AND document_type = 'title'
+		ORDER BY created_at DESC
+		LIMIT 1`, carID).Scan(&url)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return url, nil
+}
+
+// GetUserLicenseDocumentURL returns the BARE relative URL of the user's
+// drivers_license document, or nil when none is on file. The served path must
+// match how documents are actually written on disk + served: the upload
+// handler writes to {uploadDir}/{userID}/{docType}_{uuid}{ext} and the static
+// server exposes it at /uploads/{userID}/{onDiskName} — exactly what
+// publicURLForDocument(userID, file_path) derives. We therefore key on the
+// on-disk basename of file_path, NOT documents.file_name (the client-supplied
+// original name, which is not the on-disk name). Show-if-on-file only.
+func (r *PurchaseRequestRepository) GetUserLicenseDocumentURL(ctx context.Context, userID uuid.UUID) (*string, error) {
+	var url *string
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT '/uploads/' || user_id || '/' || regexp_replace(file_path, '^.*/', '')
+		FROM documents
+		WHERE user_id = $1 AND type = 'drivers_license'
+		ORDER BY created_at DESC
+		LIMIT 1`, userID).Scan(&url)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return url, nil
+}
+
+// GetCarCoverPhotoURL returns the BARE relative URL of the car's cover photo
+// (cover_front slot), or nil when none. Car photos are PUBLIC.
+func (r *PurchaseRequestRepository) GetCarCoverPhotoURL(ctx context.Context, carID uuid.UUID) (*string, error) {
+	var url *string
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT file_url FROM car_photos
+		WHERE car_id = $1 AND slot_type = 'cover_front'
+		LIMIT 1`, carID).Scan(&url)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return url, nil
+}
+
+// GetCarPhotoURLs returns every car photo's BARE relative URL (public).
+func (r *PurchaseRequestRepository) GetCarPhotoURLs(ctx context.Context, carID uuid.UUID) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT file_url FROM car_photos WHERE car_id = $1 ORDER BY slot_type`, carID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+// GetCarDocumentBriefs returns all car documents (type + name + BARE url) for
+// the admin detail view. The handler signs each file_url before emitting.
+func (r *PurchaseRequestRepository) GetCarDocumentBriefs(ctx context.Context, carID uuid.UUID) ([]CarDocumentBrief, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT document_type, file_name, file_url
+		FROM car_documents WHERE car_id = $1 ORDER BY document_type`, carID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []CarDocumentBrief{}
+	for rows.Next() {
+		var d CarDocumentBrief
+		if err := rows.Scan(&d.DocumentType, &d.FileName, &d.FileURL); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// SaveInspectionChecklist upserts the buyer's pre-capture checklist (one row
+// per purchase). Called BEFORE the inspection_accepted status flip and BEFORE
+// Stripe capture (DESIGN SPEC item 22, SAFETY CRITICAL).
+func (r *PurchaseRequestRepository) SaveInspectionChecklist(ctx context.Context, purchaseID uuid.UUID, c models.PurchaseInspectionChecklist) (*models.PurchaseInspectionChecklist, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO purchase_inspection_checklists
+			(id, purchase_request_id, vin_matches, odometer_reviewed, exterior_ok, interior_ok,
+			 mechanical_test_drive_ok, title_reviewed, keys_handed_over,
+			 buyer_understands_acceptance_completes_payment, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		ON CONFLICT (purchase_request_id) DO UPDATE SET
+			vin_matches = EXCLUDED.vin_matches,
+			odometer_reviewed = EXCLUDED.odometer_reviewed,
+			exterior_ok = EXCLUDED.exterior_ok,
+			interior_ok = EXCLUDED.interior_ok,
+			mechanical_test_drive_ok = EXCLUDED.mechanical_test_drive_ok,
+			title_reviewed = EXCLUDED.title_reviewed,
+			keys_handed_over = EXCLUDED.keys_handed_over,
+			buyer_understands_acceptance_completes_payment = EXCLUDED.buyer_understands_acceptance_completes_payment
+		RETURNING id, purchase_request_id, vin_matches, odometer_reviewed, exterior_ok, interior_ok,
+			 mechanical_test_drive_ok, title_reviewed, keys_handed_over,
+			 buyer_understands_acceptance_completes_payment, created_at`,
+		purchaseID, c.VINMatches, c.OdometerReviewed, c.ExteriorOK, c.InteriorOK,
+		c.MechanicalTestDriveOK, c.TitleReviewed, c.KeysHandedOver, c.BuyerUnderstandsAcceptanceCompletesPayment)
+	var out models.PurchaseInspectionChecklist
+	if err := row.Scan(
+		&out.ID, &out.PurchaseRequestID, &out.VINMatches, &out.OdometerReviewed, &out.ExteriorOK, &out.InteriorOK,
+		&out.MechanicalTestDriveOK, &out.TitleReviewed, &out.KeysHandedOver, &out.BuyerUnderstandsAcceptanceCompletesPayment, &out.CreatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("save inspection checklist: %w", err)
+	}
+	return &out, nil
+}
+
+// GetInspectionChecklist returns the checklist row (if any) for a purchase. A
+// NULL result is tolerated (pre-migration in-flight purchases).
+func (r *PurchaseRequestRepository) GetInspectionChecklist(ctx context.Context, purchaseID uuid.UUID) (*models.PurchaseInspectionChecklist, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT id, purchase_request_id, vin_matches, odometer_reviewed, exterior_ok, interior_ok,
+		       mechanical_test_drive_ok, title_reviewed, keys_handed_over,
+		       buyer_understands_acceptance_completes_payment, created_at
+		FROM purchase_inspection_checklists WHERE purchase_request_id = $1`, purchaseID)
+	var out models.PurchaseInspectionChecklist
+	if err := row.Scan(
+		&out.ID, &out.PurchaseRequestID, &out.VINMatches, &out.OdometerReviewed, &out.ExteriorOK, &out.InteriorOK,
+		&out.MechanicalTestDriveOK, &out.TitleReviewed, &out.KeysHandedOver, &out.BuyerUnderstandsAcceptanceCompletesPayment, &out.CreatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &out, nil
+}
+
 // validateNonBlankPatch returns a 400 APIError when the caller sent an
 // explicit empty (or all-whitespace) string for a field that must remain
 // populated. nil pointers (field omitted from JSON) are always allowed.
@@ -493,7 +663,7 @@ func (r *PurchaseRequestRepository) SetFinalizedPDF(ctx context.Context, purchas
 // This is the last line of defence against the iOS "send-all-fields-every-
 // time" pattern — if the wizard @State happens to be empty when the user
 // taps Save (e.g. a fresh open before rehydration lands), the API rejects
-// it instead of silently clobbering the seeded value with `''`.
+// it instead of silently clobbering the seeded value with `”`.
 func validateNonBlankPatch(field string, p *string) *models.APIError {
 	if p == nil {
 		return nil
@@ -545,6 +715,27 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleFields(ctx context.Context, 
 		return nil, models.ErrBOSSelfLocked
 	}
 
+	// Title condition (seller-declared) enum + other-text validation. When
+	// 'other' is selected the detail text must be present, either in this
+	// patch or already on the row.
+	if patch.TitleCondition != nil {
+		tc := models.TitleCondition(strings.TrimSpace(*patch.TitleCondition))
+		if !tc.IsValid() {
+			return nil, models.ErrInvalidTitleCondition
+		}
+		if tc == models.TitleConditionOther {
+			otherText := ""
+			if patch.TitleConditionOther != nil {
+				otherText = strings.TrimSpace(*patch.TitleConditionOther)
+			} else if b.TitleConditionOther != nil {
+				otherText = strings.TrimSpace(*b.TitleConditionOther)
+			}
+			if otherText == "" {
+				return nil, models.ErrTitleConditionOtherRequired
+			}
+		}
+	}
+
 	// Build a dynamic SET clause so we only write the columns the caller
 	// actually patched. This prevents a stale @State from re-writing a
 	// column the user hasn't touched, and keeps the UPDATE role-scoped
@@ -588,6 +779,26 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleFields(ctx context.Context, 
 	if patch.SellerAddress != nil {
 		sets = append(sets, fmt.Sprintf("seller_address = $%d", next))
 		args = append(args, *patch.SellerAddress)
+		next++
+	}
+	if patch.SellerAddressLat != nil {
+		sets = append(sets, fmt.Sprintf("seller_address_lat = $%d", next))
+		args = append(args, *patch.SellerAddressLat)
+		next++
+	}
+	if patch.SellerAddressLng != nil {
+		sets = append(sets, fmt.Sprintf("seller_address_lng = $%d", next))
+		args = append(args, *patch.SellerAddressLng)
+		next++
+	}
+	if patch.TitleCondition != nil {
+		sets = append(sets, fmt.Sprintf("title_condition = $%d", next))
+		args = append(args, strings.TrimSpace(*patch.TitleCondition))
+		next++
+	}
+	if patch.TitleConditionOther != nil {
+		sets = append(sets, fmt.Sprintf("title_condition_other = $%d", next))
+		args = append(args, *patch.TitleConditionOther)
 		next++
 	}
 	if len(sets) == 0 {
@@ -636,6 +847,16 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleBuyerFields(ctx context.Cont
 	if patch.BuyerAddress != nil {
 		sets = append(sets, fmt.Sprintf("buyer_address = $%d", next))
 		args = append(args, *patch.BuyerAddress)
+		next++
+	}
+	if patch.BuyerAddressLat != nil {
+		sets = append(sets, fmt.Sprintf("buyer_address_lat = $%d", next))
+		args = append(args, *patch.BuyerAddressLat)
+		next++
+	}
+	if patch.BuyerAddressLng != nil {
+		sets = append(sets, fmt.Sprintf("buyer_address_lng = $%d", next))
+		args = append(args, *patch.BuyerAddressLng)
 		next++
 	}
 	if len(sets) == 0 {
@@ -731,8 +952,9 @@ func (r *PurchaseRequestRepository) MarkSignature(ctx context.Context, purchaseI
 		       vehicle_year, vehicle_make, vehicle_model, vin,
 		       sale_amount_cents, currency,
 		       terms_conditions,
-		       seller_name, seller_address, seller_signature_url, seller_signed_at,
-		       buyer_name, buyer_address, buyer_signature_url, buyer_signed_at,
+		       seller_name, seller_address, seller_address_lat, seller_address_lng, seller_signature_url, seller_signed_at,
+		       buyer_name, buyer_address, buyer_address_lat, buyer_address_lng, buyer_signature_url, buyer_signed_at,
+		       title_condition, title_condition_other,
 		       finalized_pdf_url, finalized_at,
 		       created_at, updated_at
 		FROM purchase_bill_of_sales
@@ -742,8 +964,9 @@ func (r *PurchaseRequestRepository) MarkSignature(ctx context.Context, purchaseI
 		&b.VehicleYear, &b.VehicleMake, &b.VehicleModel, &b.VIN,
 		&b.SaleAmountCents, &b.Currency,
 		&b.TermsConditions,
-		&b.SellerName, &b.SellerAddress, &b.SellerSignatureURL, &b.SellerSignedAt,
-		&b.BuyerName, &b.BuyerAddress, &b.BuyerSignatureURL, &b.BuyerSignedAt,
+		&b.SellerName, &b.SellerAddress, &b.SellerAddressLat, &b.SellerAddressLng, &b.SellerSignatureURL, &b.SellerSignedAt,
+		&b.BuyerName, &b.BuyerAddress, &b.BuyerAddressLat, &b.BuyerAddressLng, &b.BuyerSignatureURL, &b.BuyerSignedAt,
+		&b.TitleCondition, &b.TitleConditionOther,
 		&b.FinalizedPDFURL, &b.FinalizedAt,
 		&b.CreatedAt, &b.UpdatedAt,
 	); err != nil {
@@ -873,11 +1096,16 @@ func (r *PurchaseRequestRepository) MarkCaptured(ctx context.Context, id uuid.UU
 		return nil, models.ErrCarSold
 	}
 
-	// Terminal side-effects: mark the car as sold, unreserve.
+	// Terminal side-effects: mark the car as sold, unreserve, and
+	// auto-archive (DESIGN SPEC item 25). Archiving makes the sold row inert
+	// everywhere and frees its VIN (the partial unique index excludes
+	// archived_at IS NOT NULL) so a new owner can relist under a fresh review.
+	// COALESCE preserves a pre-existing archived_at on idempotent re-captures.
 	if _, err := tx.Exec(ctx, `
 		UPDATE cars
 		SET status = 'sold', is_paused = TRUE, is_for_sale = FALSE, is_for_rent = FALSE,
 		    reserved_by_purchase_request_id = NULL,
+		    archived_at = COALESCE(archived_at, NOW()),
 		    updated_at = NOW()
 		WHERE id = $1
 	`, p.CarID); err != nil {

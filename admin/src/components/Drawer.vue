@@ -50,5 +50,32 @@ h2 { margin: 0; font-size: 18px; }
   padding: 20px;
   overflow-y: auto;
   flex: 1;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Phones: take the full viewport so wide content (tables, doc grids, photo
+   galleries) has room, and give the close control a comfortable tap target. */
+@media (max-width: 640px) {
+  .drawer {
+    width: 100vw;
+    box-shadow: none;
+  }
+  header {
+    padding: 12px 14px;
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    z-index: 1;
+  }
+  h2 { font-size: 16px; }
+  .close {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .body { padding: 14px; }
 }
 </style>

@@ -20,6 +20,7 @@
  */
 
 import { computed, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import DataTable from '../components/DataTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -31,11 +32,14 @@ import type {
   PurchaseRequestDetail,
   PurchaseRequestStatus,
   PurchaseRejectionEvidence,
+  PurchaseInspectionChecklist,
+  PurchaseAdminCarDocument,
 } from '../api/types'
 import { useToastStore } from '../stores/toast'
 import { fmtDate, fmtDateTime, fmtMoney, imgUrl } from '../utils/format'
 
 const toast = useToastStore()
+const router = useRouter()
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -263,20 +267,10 @@ function paymentLabel(row: PurchaseRequest): string {
   return row.payment_status || '—'
 }
 
-/** BoS status roll-up. Prefer the backend-provided field; fall back to the
- *  BoS signature timestamps or the purchase status. */
+/** BoS status roll-up derived from the BoS signature timestamps (attached to
+ *  both list + detail responses) with the purchase status as a fallback. */
 function bosStatus(r: PurchaseRequest | PurchaseRequestDetail): { label: string, tone: 'success' | 'warning' | 'neutral' } {
-  const explicit = (r as PurchaseRequest).bos_status
-  if (explicit) {
-    switch (explicit) {
-      case 'signed': return { label: 'Signed', tone: 'success' }
-      case 'pending_seller': return { label: 'Seller to sign', tone: 'warning' }
-      case 'pending_buyer': return { label: 'Buyer to sign', tone: 'warning' }
-      case 'not_started': return { label: 'Not started', tone: 'neutral' }
-      default: return { label: String(explicit), tone: 'neutral' }
-    }
-  }
-  const bos = (r as PurchaseRequestDetail).bill_of_sale
+  const bos = r.bill_of_sale
   if (bos?.seller_signed_at && bos?.buyer_signed_at) return { label: 'Signed', tone: 'success' }
   if (bos?.seller_signed_at) return { label: 'Buyer to sign', tone: 'warning' }
   if (bos?.buyer_signed_at) return { label: 'Seller to sign', tone: 'warning' }
@@ -318,12 +312,14 @@ function hasRejection(row: PurchaseRequest | PurchaseRequestDetail): boolean {
 
 /**
  * A purchase is "refund-attention" when Stripe is stuck: refund failed,
- * pending_manual, or an authorized payment expired without capture.
+ * pending_manual, or (in the detail view) a refund failure reason is on record.
+ * The list projection only carries refund_status; refund_failure_reason lives
+ * on the admin_detail block returned by the detail endpoint.
  */
-function refundNeedsAttention(row: PurchaseRequest): boolean {
+function refundNeedsAttention(row: PurchaseRequest | PurchaseRequestDetail): boolean {
   const rf = row.refund_status
   if (rf === 'failed' || rf === 'pending_manual') return true
-  if (row.refund_failure_reason) return true
+  if ((row as PurchaseRequestDetail).admin_detail?.refund_failure_reason) return true
   return false
 }
 
@@ -349,15 +345,77 @@ function fmtOffer(row: PurchaseRequest): string {
 }
 
 function buyerLabel(row: PurchaseRequest): string {
-  return row.buyer_email || row.buyer_name || row.buyer_id
+  return row.buyer_name || row.buyer_id
 }
 function sellerLabel(row: PurchaseRequest): string {
-  return row.seller_email || row.seller_name || row.seller_id
+  return row.seller_name || row.seller_id
 }
 function carLabel(row: PurchaseRequest): string {
-  const t = row.car_title || [row.car_make, row.car_model].filter(Boolean).join(' ')
+  const t = row.car_title || [row.vehicle_make, row.vehicle_model].filter(Boolean).join(' ')
   if (!t) return row.car_id
-  return row.car_year ? `${t} · ${row.car_year}` : t
+  return row.vehicle_year ? `${t} · ${row.vehicle_year}` : t
+}
+
+// ── Inspection checklist ────────────────────────────────────────────────────
+function checklistItems(c: PurchaseInspectionChecklist): { label: string; ok: boolean }[] {
+  return [
+    { label: 'VIN matches', ok: c.vin_matches },
+    { label: 'Odometer reviewed', ok: c.odometer_reviewed },
+    { label: 'Exterior OK', ok: c.exterior_ok },
+    { label: 'Interior OK', ok: c.interior_ok },
+    { label: 'Mechanical / test drive OK', ok: c.mechanical_test_drive_ok },
+    { label: 'Title reviewed', ok: c.title_reviewed },
+    { label: 'Keys handed over', ok: c.keys_handed_over },
+    { label: 'Buyer understands acceptance completes payment', ok: c.buyer_understands_acceptance_completes_payment },
+  ]
+}
+
+// ── Car documents (signed) ──────────────────────────────────────────────────
+const CAR_DOC_TYPES = ['title', 'registration', 'inspection', 'insurance']
+const CAR_DOC_LABELS: Record<string, string> = {
+  title: 'Title', registration: 'Registration', inspection: 'Inspection', insurance: 'Insurance',
+}
+function carDocLabel(t: string): string { return CAR_DOC_LABELS[t] || t }
+function carDocGroups(docs: PurchaseAdminCarDocument[]): { type: string; label: string; docs: PurchaseAdminCarDocument[] }[] {
+  const present = docs ?? []
+  const extra = [...new Set(present.map((d) => d.document_type))].filter((t) => !CAR_DOC_TYPES.includes(t))
+  return [...CAR_DOC_TYPES, ...extra].map((type) => ({
+    type,
+    label: carDocLabel(type),
+    docs: present.filter((d) => d.document_type === type),
+  }))
+}
+/** Detect image documents by extension (signed URLs carry a ?sig=&exp= tail). */
+function isImageUrl(url?: string | null, name?: string | null): boolean {
+  const s = (name || url || '').split('?')[0].toLowerCase()
+  return /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/.test(s)
+}
+
+// ── Status timeline ─────────────────────────────────────────────────────────
+// Collapse the request's timestamp columns into a chronological event list.
+function timeline(r: PurchaseRequestDetail): { label: string; at: string }[] {
+  const bos = r.bill_of_sale
+  const pairs: { label: string; at?: string | null }[] = [
+    { label: 'Requested', at: r.created_at },
+    { label: 'Seller signed Bill of Sale', at: bos?.seller_signed_at },
+    { label: 'Buyer signed Bill of Sale', at: bos?.buyer_signed_at },
+    { label: 'Bill of Sale finalized', at: bos?.finalized_at },
+    { label: 'Handover scheduled', at: r.handover_scheduled_at },
+    { label: 'Keys handed over', at: r.keys_handed_over_at },
+    { label: 'Inspection accepted', at: r.inspection_accepted_at },
+    { label: 'Completed', at: r.completed_at },
+    { label: 'Refunded', at: r.refunded_at },
+  ]
+  return pairs
+    .filter((p): p is { label: string; at: string } => !!p.at)
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+}
+
+// ── Chat link ───────────────────────────────────────────────────────────────
+// Jump to the Chats console pre-seeded with the chat id in the search box.
+function openChat(chatId?: string | null) {
+  if (!chatId) return
+  router.push({ name: 'chats', query: { q: chatId } })
 }
 
 // ── Rejection reason mapping ──────────────────────────────────────────────────
@@ -374,6 +432,25 @@ const REJECTION_REASON_LABELS: Record<string, string> = {
 function reasonLabel(r?: string | null): string {
   if (!r) return '—'
   return REJECTION_REASON_LABELS[r] || r
+}
+
+const TITLE_CONDITION_LABELS: Record<string, string> = {
+  clean: 'Clean',
+  lien_recorded: 'Lien recorded',
+  salvage: 'Salvage',
+  rebuilt: 'Rebuilt',
+  lemon_buyback: 'Lemon buyback',
+  flood: 'Flood',
+  manufacturer_buyback: 'Manufacturer buyback',
+  other: 'Other',
+}
+function titleConditionLabel(bos: { title_condition?: string | null; title_condition_other?: string | null }): string {
+  const tc = bos.title_condition
+  if (!tc) return '—'
+  if (tc === 'other') {
+    return bos.title_condition_other ? `Other — ${bos.title_condition_other}` : 'Other'
+  }
+  return TITLE_CONDITION_LABELS[tc] || tc
 }
 
 function isImage(mime: string) { return mime.startsWith('image/') }
@@ -430,8 +507,7 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
       <template #row="{ row }">
         <td>{{ fmtDate(row.created_at) }}</td>
         <td class="car-cell">
-          <img v-if="row.cover_photo_url" :src="imgUrl(row.cover_photo_url)" alt="" class="thumb" />
-          <div v-else class="thumb thumb-placeholder" />
+          <div class="thumb thumb-placeholder" />
           <span>{{ carLabel(row) }}</span>
         </td>
         <td>{{ buyerLabel(row) }}</td>
@@ -467,8 +543,7 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
     <div v-else-if="!rows.length" class="card-state">No purchase requests yet.</div>
     <article v-for="row in rows" :key="row.id" class="purchase-card" @click="openDetails(row)">
       <div class="card-top">
-        <img v-if="row.cover_photo_url" :src="imgUrl(row.cover_photo_url)" alt="" class="card-thumb" />
-        <div v-else class="card-thumb card-thumb-placeholder" />
+        <div class="card-thumb card-thumb-placeholder" />
         <div class="card-meta">
           <div class="card-title">{{ carLabel(row) }}</div>
           <div class="card-sub">{{ fmtDate(row.created_at) }} · {{ fmtOffer(row) }}</div>
@@ -522,8 +597,6 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
           <dt>Status</dt>
           <dd><StatusBadge :label="statusLabel(detailRow.status)" :tone="statusTone(detailRow.status)" /></dd>
           <dt>Car</dt><dd>{{ carLabel(detailRow) }}</dd>
-          <dt>Buyer</dt><dd>{{ detailRow.buyer_name || '—' }} <em class="muted">({{ detailRow.buyer_email || detailRow.buyer_id }})</em></dd>
-          <dt>Seller</dt><dd>{{ detailRow.seller_name || '—' }} <em class="muted">({{ detailRow.seller_email || detailRow.seller_id }})</em></dd>
           <dt>Offer</dt><dd>{{ fmtOffer(detailRow) }}</dd>
           <dt v-if="detailRow.buyer_message">Buyer message</dt>
           <dd v-if="detailRow.buyer_message" class="wrap">{{ detailRow.buyer_message }}</dd>
@@ -538,15 +611,151 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
             {{ fmtDateTime(detailRow.handover_scheduled_at) }}
             <span v-if="detailRow.handover_location">— {{ detailRow.handover_location }}</span>
           </dd>
-          <dt v-if="detailRow.keys_handed_over_at">Keys handed over</dt>
-          <dd v-if="detailRow.keys_handed_over_at">{{ fmtDateTime(detailRow.keys_handed_over_at) }}</dd>
           <dt v-if="detailRow.inspection_deadline_at">Inspection deadline</dt>
           <dd v-if="detailRow.inspection_deadline_at">{{ fmtDateTime(detailRow.inspection_deadline_at) }}</dd>
-          <dt v-if="detailRow.completed_at">Completed</dt>
-          <dd v-if="detailRow.completed_at">{{ fmtDateTime(detailRow.completed_at) }}</dd>
-          <dt v-if="detailRow.cancellation_reason">Cancellation reason</dt>
-          <dd v-if="detailRow.cancellation_reason" class="wrap">{{ detailRow.cancellation_reason }}</dd>
+          <dt v-if="detailRow.admin_detail?.cancellation_reason">Cancellation reason</dt>
+          <dd v-if="detailRow.admin_detail?.cancellation_reason" class="wrap">{{ detailRow.admin_detail.cancellation_reason }}</dd>
         </dl>
+        <div v-if="detailRow.chat_id" class="summary-actions">
+          <button class="btn-secondary" @click="openChat(detailRow.chat_id)">Open chat</button>
+        </div>
+      </section>
+
+      <!-- Status timeline -->
+      <section v-if="timeline(detailRow).length" class="detail-section">
+        <h4 class="section-title">Timeline</h4>
+        <ol class="timeline">
+          <li v-for="(ev, i) in timeline(detailRow)" :key="i" class="timeline-item">
+            <span class="timeline-dot" />
+            <div class="timeline-body">
+              <div class="timeline-label">{{ ev.label }}</div>
+              <div class="timeline-at">{{ fmtDateTime(ev.at) }}</div>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <!-- Car (photos + signed documents) -->
+      <section v-if="detailRow.admin_detail" class="detail-section">
+        <h4 class="section-title">Car</h4>
+        <dl class="kv">
+          <dt>Vehicle</dt>
+          <dd>
+            {{ detailRow.admin_detail.car_year || '—' }}
+            {{ detailRow.admin_detail.car_make }} {{ detailRow.admin_detail.car_model }}
+          </dd>
+          <dt>VIN</dt><dd class="mono">{{ detailRow.admin_detail.car_vin || '—' }}</dd>
+        </dl>
+
+        <div v-if="detailRow.admin_detail.car_photos?.length" class="photo-grid">
+          <a
+            v-for="(url, i) in detailRow.admin_detail.car_photos"
+            :key="i"
+            :href="imgUrl(url)"
+            target="_blank"
+            rel="noopener"
+            class="photo-link"
+          >
+            <img :src="imgUrl(url)" alt="Car photo" />
+          </a>
+        </div>
+        <p v-else class="muted">No photos on file.</p>
+
+        <div class="doc-subhead">Documents</div>
+        <div class="doc-grid">
+          <div v-for="g in carDocGroups(detailRow.admin_detail.car_documents)" :key="g.type" class="doc-card">
+            <div class="doc-card-head">{{ g.label }}</div>
+            <template v-if="g.docs.length">
+              <div v-for="(doc, di) in g.docs" :key="di" class="doc-entry">
+                <a
+                  v-if="isImageUrl(doc.file_url, doc.file_name)"
+                  :href="imgUrl(doc.file_url)"
+                  target="_blank"
+                  rel="noopener"
+                  class="doc-thumb-link"
+                  :title="doc.file_name || g.label"
+                >
+                  <img :src="imgUrl(doc.file_url)" :alt="`${g.label} document`" class="doc-thumb" />
+                </a>
+                <a :href="imgUrl(doc.file_url)" target="_blank" rel="noopener" class="doc-open">
+                  <span v-if="!isImageUrl(doc.file_url, doc.file_name)" class="doc-icon">📄</span>
+                  <span class="doc-open-label">{{ doc.file_name || 'Open / download' }}</span>
+                </a>
+              </div>
+            </template>
+            <div v-else class="doc-missing">Not uploaded</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Buyer & seller profiles -->
+      <section v-if="detailRow.admin_detail" class="detail-section">
+        <h4 class="section-title">Buyer &amp; Seller</h4>
+        <div class="party-grid">
+          <div class="party-card">
+            <div class="party-role">Buyer</div>
+            <dl class="kv party-kv">
+              <dt>Name</dt><dd>{{ detailRow.buyer_name || '—' }}</dd>
+              <dt>Email</dt><dd class="wrap">{{ detailRow.admin_detail.buyer_email || '—' }}</dd>
+              <dt>Phone</dt><dd>{{ detailRow.admin_detail.buyer_phone || '—' }}</dd>
+              <dt>Address</dt>
+              <dd class="wrap">
+                {{ detailRow.admin_detail.buyer_address || '—' }}
+                <span v-if="detailRow.admin_detail.buyer_address" class="source-tag">from Bill of Sale</span>
+              </dd>
+            </dl>
+            <div class="id-doc">
+              <div class="id-doc-label">ID document</div>
+              <a
+                v-if="detailRow.admin_detail.buyer_id_document_url"
+                :href="imgUrl(detailRow.admin_detail.buyer_id_document_url)"
+                target="_blank"
+                rel="noopener"
+                class="id-doc-preview"
+              >
+                <img
+                  v-if="isImageUrl(detailRow.admin_detail.buyer_id_document_url)"
+                  :src="imgUrl(detailRow.admin_detail.buyer_id_document_url)"
+                  alt="Buyer ID document"
+                />
+                <span v-else class="doc-open"><span class="doc-icon">📄</span><span class="doc-open-label">Open ID document</span></span>
+              </a>
+              <div v-else class="doc-missing">Not on file</div>
+            </div>
+          </div>
+
+          <div class="party-card">
+            <div class="party-role">Seller</div>
+            <dl class="kv party-kv">
+              <dt>Name</dt><dd>{{ detailRow.seller_name || '—' }}</dd>
+              <dt>Email</dt><dd class="wrap">{{ detailRow.admin_detail.seller_email || '—' }}</dd>
+              <dt>Phone</dt><dd>{{ detailRow.admin_detail.seller_phone || '—' }}</dd>
+              <dt>Address</dt>
+              <dd class="wrap">
+                {{ detailRow.admin_detail.seller_address || '—' }}
+                <span v-if="detailRow.admin_detail.seller_address" class="source-tag">from Bill of Sale</span>
+              </dd>
+            </dl>
+            <div class="id-doc">
+              <div class="id-doc-label">ID document</div>
+              <a
+                v-if="detailRow.admin_detail.seller_id_document_url"
+                :href="imgUrl(detailRow.admin_detail.seller_id_document_url)"
+                target="_blank"
+                rel="noopener"
+                class="id-doc-preview"
+              >
+                <img
+                  v-if="isImageUrl(detailRow.admin_detail.seller_id_document_url)"
+                  :src="imgUrl(detailRow.admin_detail.seller_id_document_url)"
+                  alt="Seller ID document"
+                />
+                <span v-else class="doc-open"><span class="doc-icon">📄</span><span class="doc-open-label">Open ID document</span></span>
+              </a>
+              <div v-else class="doc-missing">Not on file</div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Bill of Sale -->
@@ -567,6 +776,18 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
             <dt>Seller address</dt><dd class="wrap">{{ detailRow.bill_of_sale.seller_address || '—' }}</dd>
             <dt>Buyer name</dt><dd>{{ detailRow.bill_of_sale.buyer_name || '—' }}</dd>
             <dt>Buyer address</dt><dd class="wrap">{{ detailRow.bill_of_sale.buyer_address || '—' }}</dd>
+            <dt>Title condition</dt><dd>{{ titleConditionLabel(detailRow.bill_of_sale) }}</dd>
+            <dt>Title document</dt>
+            <dd>
+              <a
+                v-if="detailRow.bill_of_sale.title_document_url"
+                :href="imgUrl(detailRow.bill_of_sale.title_document_url)"
+                target="_blank"
+                rel="noopener"
+                class="inline-link"
+              >Open title document</a>
+              <span v-else class="muted">Not uploaded</span>
+            </dd>
             <dt>Terms</dt><dd class="wrap">{{ detailRow.bill_of_sale.terms_conditions || '—' }}</dd>
           </dl>
 
@@ -647,14 +868,35 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
           <template v-if="detailRow.refunded_at">
             <dt>Refunded at</dt><dd>{{ fmtDateTime(detailRow.refunded_at) }}</dd>
           </template>
-          <template v-if="detailRow.refund_failure_reason">
+          <template v-if="detailRow.admin_detail?.refund_failure_reason">
             <dt>Refund error</dt>
-            <dd class="danger-text wrap">{{ detailRow.refund_failure_reason }}</dd>
+            <dd class="danger-text wrap">{{ detailRow.admin_detail.refund_failure_reason }}</dd>
           </template>
         </dl>
         <div v-if="refundNeedsAttention(detailRow)" class="admin-actions">
           <button class="btn-danger" @click="retryRefund">Retry refund</button>
         </div>
+      </section>
+
+      <!-- Inspection checklist -->
+      <section
+        v-if="detailRow.admin_detail?.inspection_checklist || detailRow.inspection_checklist"
+        class="detail-section"
+      >
+        <h4 class="section-title">Buyer Inspection Checklist</h4>
+        <ul class="checklist">
+          <li
+            v-for="(item, i) in checklistItems((detailRow.admin_detail?.inspection_checklist || detailRow.inspection_checklist)!)"
+            :key="i"
+            class="checklist-item"
+          >
+            <span class="check-icon" :class="{ ok: item.ok }">{{ item.ok ? '✓' : '—' }}</span>
+            <span class="check-label">{{ item.label }}</span>
+          </li>
+        </ul>
+        <p class="muted checklist-at">
+          Accepted {{ fmtDateTime((detailRow.admin_detail?.inspection_checklist || detailRow.inspection_checklist)!.created_at) }}
+        </p>
       </section>
 
       <!-- Rejection -->
@@ -842,6 +1084,177 @@ const detailRow = computed<PurchaseRequestDetail | null>(() => detail.value)
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 10px 16px; margin: 0; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.inline-link { color: var(--accent-strong); font-size: 13px; }
+.source-tag {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-subtle);
+  font-style: italic;
+}
+
+/* ---- Summary actions ---- */
+.summary-actions { margin-top: 12px; }
+.btn-secondary {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  min-height: 40px;
+}
+.btn-secondary:hover { border-color: var(--border-strong); }
+
+/* ---- Timeline ---- */
+.timeline { list-style: none; margin: 0; padding: 0; }
+.timeline-item { display: flex; gap: 12px; padding: 0 0 14px; position: relative; }
+.timeline-item:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 4px; top: 12px; bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.timeline-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  margin-top: 3px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+.timeline-label { font-size: 13.5px; color: var(--text); }
+.timeline-at { font-size: 12px; color: var(--text-muted); }
+
+/* ---- Car photos ---- */
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.photo-link { display: block; }
+.photo-grid img {
+  width: 100%; height: 100px; object-fit: cover;
+  border-radius: 6px; border: 1px solid var(--border);
+  display: block;
+}
+
+/* ---- Documents ---- */
+.doc-subhead {
+  margin: 12px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.doc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.doc-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.doc-card-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.doc-entry { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.doc-thumb-link { display: block; }
+.doc-thumb {
+  width: 100%; height: 120px; object-fit: cover;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: #fff; display: block;
+}
+.doc-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  min-width: 0;
+}
+.doc-icon { flex-shrink: 0; }
+.doc-open-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-missing {
+  font-size: 13px;
+  color: var(--text-subtle);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+/* ---- Buyer/seller party cards ---- */
+.party-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.party-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.party-role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.party-kv { grid-template-columns: 64px 1fr; gap: 6px 12px; }
+.id-doc { display: flex; flex-direction: column; gap: 6px; }
+.id-doc-label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+.id-doc-preview { display: block; }
+.id-doc-preview img {
+  max-width: 100%;
+  max-height: 160px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  display: block;
+}
+
+/* ---- Inspection checklist ---- */
+.checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.checklist-item { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; }
+.check-icon {
+  flex-shrink: 0;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+  background: var(--bg); color: var(--text-subtle);
+  border: 1px solid var(--border);
+}
+.check-icon.ok { background: #d1fae5; color: #047857; border-color: #a7f3d0; }
+.check-label { padding-top: 1px; }
+.checklist-at { margin: 10px 0 0; font-size: 12px; }
 
 /* ---- Signatures ---- */
 .sig-row {
@@ -1024,8 +1437,12 @@ textarea {
 @media (max-width: 640px) {
   .mobile-only { display: block; }
   .desktop-only { display: none; }
-  .kv { grid-template-columns: 100px 1fr; }
+  .kv { grid-template-columns: 104px 1fr; }
+  .party-kv { grid-template-columns: 64px 1fr; }
   .sig-row { grid-template-columns: 1fr; }
+  .party-grid { grid-template-columns: 1fr; }
+  .photo-grid { grid-template-columns: repeat(2, 1fr); }
+  .doc-grid { grid-template-columns: 1fr; }
 }
 
 /* ---- Card list (mobile) ---- */

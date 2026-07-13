@@ -181,9 +181,10 @@ type AdminCarRow struct {
 	Address         *string    `json:"address,omitempty"`
 	CoverPhotoURL   *string    `json:"cover_photo_url,omitempty"`
 	// MissingRequiredDocuments is server-computed (QA pt-10): the required
-	// doc types (registration/inspection/insurance, +title when for sale)
-	// this car does NOT yet have on file. The admin UI badges rows with a
-	// non-empty list, and ApproveCar 422s on the same computation.
+	// doc types (registration/inspection/insurance) this car does NOT yet
+	// have on file. Title is no longer required at approval (decision C —
+	// enforced at the Bill-of-Sale stage instead). The admin UI badges rows
+	// with a non-empty list, and ApproveCar 422s on the same computation.
 	MissingRequiredDocuments []string  `json:"missing_required_documents"`
 	CreatedAt                time.Time `json:"created_at"`
 }
@@ -204,7 +205,12 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 	}
 
 	args := []interface{}{}
-	where := []string{"1=1"}
+	// Exclude soft-archived rows from the default active approval queue: a
+	// sold car auto-archives, and an owner-deleted listing is archived too —
+	// neither belongs in the moderation list. FOLLOW-UP: there is no explicit
+	// history/archived filter param today; when one is added, gate this
+	// predicate on it so admins can still inspect archived rows on demand.
+	where := []string{"c.archived_at IS NULL"}
 	if q := strings.TrimSpace(query); q != "" {
 		args = append(args, "%"+strings.ToLower(q)+"%")
 		where = append(where, fmt.Sprintf(
@@ -267,10 +273,22 @@ type AdminCarPhoto struct {
 	FileURL  string    `json:"file_url"`
 }
 
+// AdminCarDocument is one car document (title/registration/inspection/
+// insurance) surfaced in the admin car detail. FileURL is the RAW private
+// path as stored in the DB — the AdminHandler signs it per response before
+// emitting, so a private path is never returned unsigned.
+type AdminCarDocument struct {
+	ID           uuid.UUID `json:"id"`
+	DocumentType string    `json:"document_type"`
+	FileName     string    `json:"file_name"`
+	FileURL      string    `json:"file_url"`
+}
+
 type AdminCarDetail struct {
 	AdminCarRow
-	Description *string         `json:"description,omitempty"`
-	Photos      []AdminCarPhoto `json:"photos"`
+	Description *string            `json:"description,omitempty"`
+	Photos      []AdminCarPhoto    `json:"photos"`
+	Documents   []AdminCarDocument `json:"documents"`
 }
 
 func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*AdminCarDetail, error) {
@@ -317,6 +335,24 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		}
 		c.Photos = append(c.Photos, p)
 	}
+	rows.Close()
+
+	// Documents (title/registration/inspection/insurance). Raw private URLs
+	// here; the handler signs them before responding.
+	docRows, err := r.db.Pool.Query(ctx,
+		`SELECT id, document_type::text, file_name, file_url FROM car_documents WHERE car_id = $1 ORDER BY document_type`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer docRows.Close()
+	c.Documents = []AdminCarDocument{}
+	for docRows.Next() {
+		var d AdminCarDocument
+		if err := docRows.Scan(&d.ID, &d.DocumentType, &d.FileName, &d.FileURL); err != nil {
+			return nil, err
+		}
+		c.Documents = append(c.Documents, d)
+	}
 	return &c, nil
 }
 
@@ -345,16 +381,36 @@ func (r *AdminRepository) GetCarApprovalInfo(ctx context.Context, id uuid.UUID) 
 	return &info, nil
 }
 
-func (r *AdminRepository) SetCarApproved(ctx context.Context, id uuid.UUID, approved bool) error {
-	res, err := r.db.Pool.Exec(ctx,
-		`UPDATE cars SET is_approved = $2, updated_at = NOW() WHERE id = $1`, id, approved)
+// SetCarApproved sets is_approved on a car. Admin approval is the SINGLE
+// publish gate: when approval flips to TRUE and the car is still in the
+// 'pending' moderation state, the SAME update publishes the listing by
+// moving status 'pending' → 'available'. rented/sold/paused are deliberately
+// left untouched so approval can never resurrect a sold car or unpause a
+// paused one.
+//
+// Returns the owner_id (so the caller can target the WS/push that tells the
+// owner their listing is live) and the resulting status.
+func (r *AdminRepository) SetCarApproved(ctx context.Context, id uuid.UUID, approved bool) (uuid.UUID, models.CarListingStatus, error) {
+	var (
+		ownerID    uuid.UUID
+		statusText string
+	)
+	err := r.db.Pool.QueryRow(ctx, `
+		UPDATE cars
+		SET is_approved = $2,
+		    status = CASE
+		                 WHEN $2 = true AND status = 'pending'
+		                 THEN 'available'::car_listing_status
+		                 ELSE status
+		             END,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING owner_id, status::text
+	`, id, approved).Scan(&ownerID, &statusText)
 	if err != nil {
-		return err
+		return uuid.Nil, "", err
 	}
-	if res.RowsAffected() == 0 {
-		return fmt.Errorf("car not found")
-	}
-	return nil
+	return ownerID, models.CarListingStatus(statusText), nil
 }
 
 // ========== CHATS (request chats: driver↔owner) ==========

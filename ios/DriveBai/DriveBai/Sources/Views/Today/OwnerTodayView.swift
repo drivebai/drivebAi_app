@@ -8,6 +8,7 @@ struct OwnerTodayView: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var tour = ProductTourCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var checklistCollapsed = false
     @State private var showNotifications = false
     @State private var showCreateListing = false
@@ -171,6 +172,15 @@ struct OwnerTodayView: View {
             .refreshable {
                 await viewModel.refresh()
                 await carsStore.fetchCars()
+            }
+            // Foreground reconciliation (issue 23): after a buyer accepts the
+            // vehicle the sale completes, but the seller can be backgrounded
+            // through the handover. A missed purchase_request_updated WS event
+            // would otherwise leave the card stuck on "Awaiting inspection", so
+            // re-fetch the purchase list whenever the scene reactivates.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await viewModel.fetchPurchaseRequests() }
             }
         }
     }

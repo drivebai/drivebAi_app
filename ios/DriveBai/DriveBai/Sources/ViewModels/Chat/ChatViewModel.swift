@@ -315,6 +315,38 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Re-sends a bubble that previously landed in `.failed`. Reuses the
+    /// ORIGINAL `clientMessageId` so the backend's per-(chat, sender,
+    /// clientMessageId) idempotency key dedupes a re-POST whose first attempt
+    /// actually committed but whose HTTP response was lost. No status gate:
+    /// messaging stays available through and after the sale — this is purely a
+    /// transient-failure recovery affordance. Text bubbles only (attachment
+    /// bytes aren't retained after the optimistic append).
+    func retrySend(message: ChatMessage) async {
+        guard case .failed = message.status else { return }
+        guard message.messageType == "text" else { return }
+        let clientId = message.clientMessageId
+        let text = message.body
+
+        // Flip the existing bubble back to "sending" in place so the user sees
+        // the spinner instead of a second bubble appearing.
+        if let idx = messages.firstIndex(where: { $0.clientMessageId == clientId }) {
+            messages[idx].status = .sending
+        }
+
+        do {
+            let request = SendMessageAPIRequest(body: text, clientMessageId: clientId)
+            let response = try await apiClient.sendMessage(chatId: chatId, request: request)
+            if let idx = messages.firstIndex(where: { $0.clientMessageId == clientId }) {
+                messages[idx] = response.toChatMessage(currentUserId: currentUserId)
+            }
+        } catch {
+            if let idx = messages.firstIndex(where: { $0.clientMessageId == clientId }) {
+                messages[idx].status = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     /// A single file the user has picked but not yet uploaded.
     struct PendingAttachment {
         let data: Data

@@ -26,6 +26,11 @@ struct CarAPIResponse: Codable {
     let currency: String
     let requirements: CarRequirementsResponse
     let status: String
+    /// Admin-approval gate (W1). `true` once an admin has approved the
+    /// listing; `false` while it's still awaiting review. Decoded optionally
+    /// so non-owner / older endpoints that omit the key don't break the whole
+    /// response — a missing value is treated as approved (see `toCar`).
+    let isApproved: Bool?
     let isPaused: Bool
     let rentedWeeks: Int
     let totalEarned: Double
@@ -48,6 +53,7 @@ struct CarAPIResponse: Codable {
         case isForSale = "is_for_sale"
         case salePrice = "sale_price"
         case currency, requirements, status
+        case isApproved = "is_approved"
         case isPaused = "is_paused"
         case rentedWeeks = "rented_weeks"
         case totalEarned = "total_earned"
@@ -448,6 +454,9 @@ extension CarAPIResponse {
             isForSale: isForSale,
             salePrice: salePrice.map { Money(amount: $0, currency: currency) },
             status: carStatus,
+            // A missing `is_approved` (older/non-owner endpoints) is treated
+            // as approved so we never show a false "Awaiting approval" state.
+            isApproved: isApproved ?? true,
             isPaused: isPaused,
             photoSlots: photoSlots,
             documents: carDocuments,

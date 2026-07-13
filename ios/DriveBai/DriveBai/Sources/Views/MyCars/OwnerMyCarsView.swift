@@ -286,7 +286,7 @@ enum MyCarsStatusFilter: String, CaseIterable, Identifiable {
         switch self {
         case .available: return "Available"
         case .rented: return "Rented"
-        case .pending: return "Pending approval"
+        case .pending: return "Awaiting approval"
         case .paused: return "Paused"
         case .sold: return "Sold"
         }
@@ -296,7 +296,7 @@ enum MyCarsStatusFilter: String, CaseIterable, Identifiable {
         switch CarBusinessState.forCar(car) {
         case .available: return .available
         case .rented: return .rented
-        case .pendingReview: return .pending
+        case .awaitingApproval, .pendingReview: return .pending
         case .paused: return .paused
         case .sold: return .sold
         }

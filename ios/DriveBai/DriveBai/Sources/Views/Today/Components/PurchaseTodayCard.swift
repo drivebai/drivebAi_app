@@ -9,6 +9,12 @@ struct PurchaseTodayCard: View {
     /// Tap goes to Chat → Requests for the matching purchase row — the
     /// card itself does not present any modals.
     let onOpen: () -> Void
+    /// Buyer-only: present the payment screen INLINE from the Today host
+    /// instead of deep-linking into Chat. Supplied by DriverTodayView for the
+    /// buyer; nil on the seller side, where it never applies. When set and the
+    /// purchase is at `.bosSigned`, the primary "Authorize payment" CTA (and a
+    /// card tap) open payment directly rather than routing through Chats.
+    var onAuthorizePayment: (() -> Void)? = nil
 
     private var isBuyer: Bool { currentUserId == purchaseRequest.buyerId }
     private var isSeller: Bool { currentUserId == purchaseRequest.sellerId }
@@ -59,7 +65,7 @@ struct PurchaseTodayCard: View {
         )
         .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 2)
         .contentShape(Rectangle())
-        .onTapGesture { onOpen() }
+        .onTapGesture { primaryTap() }
         .task(id: purchaseRequest.status) { await loadBoSIfNeeded() }
         // The PDF is rendered after the second signature, without changing the
         // purchase status — so a status-keyed task alone would leave this card
@@ -153,7 +159,7 @@ struct PurchaseTodayCard: View {
     }
 
     private var openButton: some View {
-        Button(action: onOpen) {
+        Button(action: primaryTap) {
             Text(ctaLabel)
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity)
@@ -163,6 +169,24 @@ struct PurchaseTodayCard: View {
                 .cornerRadius(8)
         }
         .buttonStyle(.plain)
+    }
+
+    /// True when the buyer can pay directly from the Today card: BoS is signed,
+    /// this viewer is the buyer, and the host supplied an inline-payment hook.
+    private var shouldAuthorizeInline: Bool {
+        isBuyer
+            && purchaseRequest.status == .bosSigned
+            && onAuthorizePayment != nil
+    }
+
+    /// The card body and its primary CTA share this handler so a single tap
+    /// opens payment (buyer @ bos_signed) or otherwise routes to Chat.
+    private func primaryTap() {
+        if shouldAuthorizeInline {
+            onAuthorizePayment?()
+        } else {
+            onOpen()
+        }
     }
 
     // MARK: - Copy

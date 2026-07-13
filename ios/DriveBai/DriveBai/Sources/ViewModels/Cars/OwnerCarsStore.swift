@@ -78,6 +78,7 @@ final class OwnerCarsStore: ObservableObject {
     func addCar(_ car: Car) async -> Car? {
         isLoading = true
         error = nil
+        errorCode = nil
 
         do {
             let request = car.toCreateRequest()
@@ -102,13 +103,23 @@ final class OwnerCarsStore: ObservableObject {
             isLoading = false
             return createdCar
         } catch let apiError as APIError {
-            // Surface a clean, fixable message when the backend rejects the
-            // VIN as a duplicate (HTTP 409, body
-            // `{"error":"vin_already_in_use", ...}`). Override the generic
-            // server message so the wizard can show it inline on the VIN
-            // row without string-matching deeper.
-            if case .serverError(let code, _) = apiError, code == "vin_already_in_use" {
-                error = "VIN already in use"
+            // Preserve the machine code so the wizard can branch (INVALID_VIN
+            // / duplicate) without string-matching the human message.
+            errorCode = apiError.errorCode
+            // Surface clean, fixable copy for the VIN-specific rejections so
+            // the wizard can show them inline on the VIN row. The duplicate
+            // 409 arrives as a flat `{"error":"vin_already_in_use", ...}` body;
+            // the malformed-VIN 400 arrives as the nested envelope with code
+            // "INVALID_VIN" (W1). Anything else keeps the server message.
+            if case .serverError(let code, _) = apiError {
+                switch code {
+                case "vin_already_in_use":
+                    error = "VIN already in use"
+                case "INVALID_VIN":
+                    error = "That VIN isn't valid. Please check all 17 characters."
+                default:
+                    error = apiError.errorDescription
+                }
             } else {
                 error = apiError.errorDescription
             }

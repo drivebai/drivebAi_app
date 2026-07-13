@@ -79,10 +79,13 @@ func TestSaleRequirementsMissing(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "no price (NULL), no title",
+			// Decision C: title dropped from the sale-readiness gate — only a
+			// positive sale price is required here (title enforced later at the
+			// Bill-of-Sale Accept gate).
+			name: "no price (NULL), no docs",
 			car:  &models.Car{IsForSale: true},
 			docs: nil,
-			want: []string{"sale_price_min", "title_document"},
+			want: []string{"sale_price_min"},
 		},
 		{
 			// Floor relaxed: any positive amount is accepted. $500 + title = ready.
@@ -111,10 +114,12 @@ func TestSaleRequirementsMissing(t *testing.T) {
 			want: []string{"sale_price_min"},
 		},
 		{
-			name: "price ok, title missing (other docs present)",
+			// Decision C: with a positive price the car is sale-ready even
+			// without a title document on file at this stage.
+			name: "price ok, no title on file — ready (title not gated here)",
 			car:  &models.Car{IsForSale: true, SalePrice: sql.NullFloat64{Float64: 12000, Valid: true}},
 			docs: []models.CarDocument{insuranceDoc},
-			want: []string{"title_document"},
+			want: []string{},
 		},
 		{
 			name: "price 1 cent-equivalent positive with title — ready",

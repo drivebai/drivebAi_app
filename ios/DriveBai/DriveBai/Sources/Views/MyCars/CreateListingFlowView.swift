@@ -135,13 +135,31 @@ class CreateListingState: ObservableObject {
     @Published var isNavigatingForward: Bool = true
     @Published var isLoading: Bool = false
     @Published var error: String?
+    /// Machine-readable code of the last submit failure (mirrors
+    /// `OwnerCarsStore.errorCode`), so the VIN error surfaces branch on the
+    /// code instead of string-matching the human message. Nil for non-server
+    /// failures.
+    @Published var errorCode: String?
 
     /// True when the latest store error is the "VIN already in use" duplicate
     /// conflict. Used by the BasicInfo step to render the message inline
     /// under the VIN field and by Review to color it appropriately.
     var isVINConflictError: Bool {
+        if errorCode == "vin_already_in_use" { return true }
         guard let error = error else { return false }
         return error.localizedCaseInsensitiveContains("vin already in use")
+    }
+
+    /// True when the backend rejected the VIN as malformed (W1: CreateCar
+    /// 400 INVALID_VIN). Surfaced inline under the VIN field just like the
+    /// duplicate-conflict case.
+    var isVINInvalidError: Bool {
+        errorCode == "INVALID_VIN"
+    }
+
+    /// Whether either VIN-specific error should render inline on the VIN row.
+    var showsVINErrorInline: Bool {
+        isVINConflictError || isVINInvalidError
     }
 
     // Computed
@@ -154,6 +172,10 @@ class CreateListingState: ObservableObject {
     }
 
     var isBasicInfoValid: Bool {
+        // VIN is now REQUIRED on every new listing (W1: CreateCar 400
+        // INVALID_VIN without a valid 17-char VIN). Gate Continue on the same
+        // shape check the backend enforces so the field can't be left blank.
+        isVINShapeValid &&
         !make.trimmingCharacters(in: .whitespaces).isEmpty &&
         !model.trimmingCharacters(in: .whitespaces).isEmpty &&
         year >= 1990 && year <= Calendar.current.component(.year, from: Date()) + 1
@@ -177,16 +199,21 @@ class CreateListingState: ObservableObject {
         photoSlots.contains { $0.hasImage }
     }
 
+    /// The front/cover shot is now required before leaving the Photos step:
+    /// it's the listing's primary image and drives auto-publish server-side.
+    var hasCoverPhoto: Bool {
+        photoSlots.first(where: { $0.slotType == .coverFront })?.hasImage ?? false
+    }
+
     // MARK: - Required documents (QA pt 10)
 
-    /// Documents that must be staged before the wizard can continue past
-    /// the Documents step: registration + inspection + insurance always,
-    /// plus title when the car is listed for sale. Mirrors the server's
-    /// admin-approval rules (MISSING_REQUIRED_DOCUMENTS).
+    /// Documents that must be staged before the wizard can continue past the
+    /// Documents step: registration + inspection + insurance. Title is NO
+    /// LONGER required at the listing stage — the backend relaxed the approval
+    /// gate, and title is enforced later at the Bill-of-Sale / buyer-Accept
+    /// step. It stays available as an optional row here.
     var requiredDocumentTypes: [CarDocumentType] {
-        var types: [CarDocumentType] = [.registration, .inspection, .insurance]
-        if isForSale { types.append(.title) }
-        return types
+        [.registration, .inspection, .insurance]
     }
 
     var missingRequiredDocuments: [CarDocumentType] {
@@ -238,6 +265,7 @@ class CreateListingState: ObservableObject {
 
     func clearError() {
         error = nil
+        errorCode = nil
     }
 
     // MARK: - VIN
@@ -519,7 +547,14 @@ struct CreateListingFlowView: View {
 
     private var docUploadFailureMessage: String {
         let names = state.failedDocUploads.map { $0.displayText }.joined(separator: ", ")
-        return "Couldn't attach: \(names). Your listing can't be approved until documents are added from car details."
+        let count = state.failedDocUploads.count
+        let noun = count == 1 ? "document" : "documents"
+        let pronoun = count == 1 ? "it" : "them"
+        let contraction = count == 1 ? "it's" : "they're"
+        // List exactly what failed, and spell out both affordances: Retry
+        // re-attempts the upload in place; Finish anyway defers it to the
+        // car's details screen. The listing stays unapprovable until then.
+        return "\(count) \(noun) didn't upload: \(names). Tap Retry to try again, or Finish anyway and add \(pronoun) later from your car's details — your listing can't be approved until \(contraction) attached."
     }
 
     private func submitListing() {
@@ -572,6 +607,9 @@ struct CreateListingFlowView: View {
             print("[CreateListingFlow] ERROR: Failed to create car on backend")
             print("[CreateListingFlow] Store error: \(store.error ?? "nil")")
             state.error = store.error ?? "Failed to create listing"
+            // Carry the machine code so BasicInfo can surface an INVALID_VIN /
+            // duplicate-VIN 4xx inline on the VIN row.
+            state.errorCode = store.errorCode
             state.isLoading = false
             return
         }
@@ -836,10 +874,10 @@ struct CreateListingBasicInfoStep: View {
                 VINAutofillSection(focus: focus)
                     .onboardingTarget(.wizardVIN)
 
-                // VIN-conflict surface: if addCar() bubbled a 409 about a
-                // duplicate VIN, show it right under the VIN row so the
+                // VIN error surface: if addCar() bubbled a 409 duplicate-VIN
+                // or a 400 INVALID_VIN, show it right under the VIN row so the
                 // user fixes the field without scrolling to Review.
-                if let error = state.error, state.isVINConflictError {
+                if let error = state.error, state.showsVINErrorInline {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.red)
@@ -893,10 +931,11 @@ struct CreateListingBasicInfoStep: View {
 
 // MARK: - VIN Autofill Section
 
-/// Optional VIN field + Search button. Lives at the top of Step 1 because
+/// Required VIN field + Search button. Lives at the top of Step 1 because
 /// hitting Search populates Make / Model / Year / Body / Fuel in one go,
 /// turning the rest of the wizard into review-and-tweak instead of typing
-/// everything from scratch.
+/// everything from scratch. The VIN itself is now mandatory on every listing
+/// (W1: CreateCar 400 INVALID_VIN without one).
 private struct VINAutofillSection: View {
     @EnvironmentObject private var state: CreateListingState
     var focus: FocusState<ListingWizardField?>.Binding
@@ -907,9 +946,9 @@ private struct VINAutofillSection: View {
                 Text("VIN")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
-                Text("optional")
-                    .font(.caption)
-                    .foregroundColor(.secondary.opacity(0.7))
+                Text("required")
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(.driveBaiPrimary)
                 Spacer()
                 if state.vinDecodeSucceeded && state.vinDecodeError == nil && !state.vinUnavailable {
                     HStack(spacing: 4) {
@@ -936,10 +975,10 @@ private struct VINAutofillSection: View {
                         // The availability verdict belongs to the decoded
                         // VIN — editing the field resets it (QA pt 12).
                         state.vinUnavailable = false
-                        // Clear a stale "VIN already in use" conflict so the
+                        // Clear a stale VIN conflict / INVALID_VIN error so the
                         // inline banner disappears as soon as the user starts
                         // typing a different value.
-                        if state.isVINConflictError {
+                        if state.showsVINErrorInline {
                             state.clearError()
                         }
                     }
@@ -991,8 +1030,14 @@ private struct VINAutofillSection: View {
                 Text(warning)
                     .font(.caption)
                     .foregroundColor(.orange)
+            } else if !state.normalizedVIN.isEmpty && !state.isVINShapeValid {
+                // Non-empty but wrong shape — nudge toward the 17-char rule the
+                // backend enforces (INVALID_VIN) so Continue can light up.
+                Text("Enter all 17 characters of the VIN (no I, O, or Q).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } else {
-                Text("Enter your VIN to autofill make, model, year, and more.")
+                Text("Your 17-character VIN is required — enter it to autofill make, model, year, and more.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -1204,6 +1249,9 @@ struct CreateListingPricingStep: View {
 struct CreateListingRequirementsStep: View {
     @EnvironmentObject private var state: CreateListingState
     @State private var showLocationPicker = false
+    // Owned by W2-B (location component). Used only to obtain a real device
+    // fix to seed the default pickup location — never to persist a map center.
+    @StateObject private var locationManager = LocationManager()
 
     var body: some View {
         CreateListingStepContainer(
@@ -1306,6 +1354,53 @@ struct CreateListingRequirementsStep: View {
                 }
             )
         }
+        // Seed the pickup location from the device's current fix the first
+        // time the user lands here with nothing chosen (A). Denial / no fix
+        // leaves it "Not set" so the row still requires a manual pick.
+        .task { await seedDefaultLocationIfNeeded() }
+    }
+
+    /// Best-effort default: request permission, await a REAL device fix, then
+    /// set the location coords + reverse-geocoded address. Never writes a
+    /// default map center — if permission is denied or no fix arrives, the
+    /// location stays "Not set" and the user must pick manually. Idempotent:
+    /// once a location exists (auto-seeded or user-picked) this no-ops.
+    @MainActor
+    private func seedDefaultLocationIfNeeded() async {
+        guard !state.hasSelectedLocation else { return }
+
+        locationManager.requestPermission()
+        locationManager.requestLocation()
+
+        // Poll for a real fix (or an explicit denial) for up to ~5 seconds.
+        for _ in 0..<25 {
+            if Task.isCancelled { return }
+            let status = locationManager.authorizationStatus
+            if status == .denied || status == .restricted { return }
+
+            if let coordinate = locationManager.lastLocation {
+                // Reverse-geocode BEFORE writing so the coordinate + address
+                // land as one guarded, atomic update. If the user opens the
+                // picker and saves a location while we're geocoding, the guard
+                // below aborts and we never clobber their choice.
+                let address = await LocationGeocoder.reverseGeocode(coordinate)
+                guard !state.hasSelectedLocation else { return }
+
+                state.locationLatitude = coordinate.latitude
+                state.locationLongitude = coordinate.longitude
+                if let address {
+                    state.locationArea = address.area
+                    state.locationStreet = address.street
+                    state.locationBlock = address.block
+                    state.locationZip = address.zip
+                    state.locationAddressLine = address.addressLine
+                    state.neighborhood = address.area
+                }
+                return
+            }
+
+            try? await Task.sleep(for: .milliseconds(200))
+        }
     }
 }
 
@@ -1340,12 +1435,29 @@ struct CreateListingPhotosStep: View {
             subtitle: "Photos help renters see your car",
             currentStep: state.currentStepIndex,
             totalSteps: state.totalSteps,
-            canContinue: true, // Photos are optional
-            continueTitle: state.hasAtLeastOnePhoto ? "Continue" : "Skip for now",
+            // A cover (front) photo is now REQUIRED — it's the listing's
+            // primary image and triggers server-side auto-publish. No more
+            // "Skip for now" branch.
+            canContinue: state.hasCoverPhoto,
+            continueTitle: "Continue",
             onBack: { state.goToPreviousStep() },
             onContinue: { state.goToNextStep() }
         ) {
             VStack(spacing: 16) {
+                // Inline gate hint — the front/cover shot specifically must be
+                // added before Continue lights up.
+                if !state.hasCoverPhoto {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Text("Add the front / cover photo to continue")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 // Primary CTA — guided capture walks the owner through all
                 // 8 shots with silhouette overlays (QA pt 4). Batch library
                 // pick and per-slot pickers below remain as fallbacks.
@@ -1527,24 +1639,25 @@ struct CreateListingPhotosStep: View {
     }
 }
 
-/// Each photo slot has its own independent PhotosPicker to avoid shared state issues.
-/// This fixes the bug where selecting images for multiple slots would fail or show same image.
+/// Each photo slot presents the shared per-slot source chooser (camera OR
+/// library — QA pt 4) via W2-B's `.photoSourcePicker`, so add/replace works
+/// independently per slot without the shared-picker bug where two slots
+/// showed the same image.
 struct IndependentPhotoSlotPicker: View {
     let slot: CarPhotoSlot
     var cornerRadius: CGFloat = 16
     var aspectRatio: CGFloat = 1.4
     let onPhotoSelected: (Data) -> Void
 
-    // Each slot has its OWN picker item state - this is the key fix
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var isLoading: Bool = false
+    // Per-slot chooser presentation flag. The chooser returns ready-to-use
+    // image bytes, so no local PhotosPickerItem / async-load bookkeeping here.
+    @State private var showSourceChooser = false
 
     var body: some View {
         VStack(spacing: 8) {
-            PhotosPicker(
-                selection: $pickerItem,
-                matching: .images
-            ) {
+            Button {
+                showSourceChooser = true
+            } label: {
                 tileContent
                     .aspectRatio(aspectRatio, contentMode: .fit)
                     .frame(maxWidth: .infinity)
@@ -1555,9 +1668,10 @@ struct IndependentPhotoSlotPicker: View {
                     )
             }
             .buttonStyle(PlainButtonStyle())
-            .onChange(of: pickerItem) { _, newItem in
-                guard let newItem = newItem else { return }
-                loadPhoto(from: newItem)
+            // Per-slot camera-or-library chooser provided by W2-B. Emits the
+            // selected image's bytes for this slot's add/replace action.
+            .photoSourcePicker(isPresented: $showSourceChooser) { data in
+                onPhotoSelected(data)
             }
 
             // Label below the tile
@@ -1591,14 +1705,6 @@ struct IndependentPhotoSlotPicker: View {
                     // Empty state
                     emptyPlaceholder
                 }
-
-                // Loading overlay
-                if isLoading {
-                    Color.black.opacity(0.4)
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.2)
-                }
             }
         }
     }
@@ -1618,67 +1724,23 @@ struct IndependentPhotoSlotPicker: View {
                 }
             )
     }
-
-    private var loadingPlaceholder: some View {
-        Rectangle()
-            .fill(Color(.systemGray6))
-            .overlay(
-                ProgressView()
-                    .tint(Color.driveBaiPrimary)
-            )
-    }
-
-    private func loadPhoto(from item: PhotosPickerItem) {
-        isLoading = true
-        #if DEBUG
-        print("[IndependentPhotoSlotPicker] Loading photo for slot: \(slot.slotType.rawValue)")
-        #endif
-
-        Task {
-            do {
-                if let data = try await item.loadTransferable(type: Data.self) {
-                    await MainActor.run {
-                        #if DEBUG
-                        print("[IndependentPhotoSlotPicker] Loaded \(data.count) bytes for slot: \(slot.slotType.rawValue)")
-                        #endif
-                        onPhotoSelected(data)
-                        isLoading = false
-                    }
-                } else {
-                    #if DEBUG
-                    print("[IndependentPhotoSlotPicker] Failed to load data for slot: \(slot.slotType.rawValue) - nil data")
-                    #endif
-                    await MainActor.run {
-                        isLoading = false
-                    }
-                }
-            } catch {
-                #if DEBUG
-                print("[IndependentPhotoSlotPicker] Error loading photo for slot: \(slot.slotType.rawValue) - \(error)")
-                #endif
-                await MainActor.run {
-                    isLoading = false
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Step 6: Vehicle Documents
 
 /// Required-documents step (QA pt 10). Registration, inspection and
-/// insurance must be staged before the wizard can continue — plus title
-/// when the car is listed for sale (mirrors the server's admin-approval
-/// and sale-readiness rules). Permit stays optional. Uploads are deferred
-/// until after the car is created; failures there are blocking (Retry /
-/// Finish anyway).
+/// insurance must be staged before the wizard can continue (mirrors the
+/// server's admin-approval rules). Title and permit stay optional here —
+/// title is enforced later at the Bill-of-Sale / buyer-Accept step. Uploads
+/// are deferred until after the car is created; failures there are blocking
+/// (Retry / Finish anyway).
 struct CreateListingDocumentsStep: View {
     @EnvironmentObject private var state: CreateListingState
 
     private var subtitle: String {
-        state.isForSale
-            ? "Registration, inspection, insurance and title are required for approval."
-            : "Registration, inspection and insurance are required for approval."
+        // Title is no longer required at listing time (enforced later at the
+        // Bill-of-Sale / buyer-Accept step); it remains an optional row below.
+        "Registration, inspection and insurance are required for approval."
     }
 
     /// Required types first (in requirement order), optional ones after —

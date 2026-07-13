@@ -206,7 +206,7 @@ struct BuyRequestSheet: View {
             Label(PurchaseCopy.paymentHoldHeadline, systemImage: "lock.shield")
                 .font(.caption.weight(.semibold))
                 .foregroundColor(.primary)
-            Text("DrivaBai is not a licensed escrow agent. Title transfer and DMV paperwork are the responsibility of the buyer and seller — requirements vary by state.")
+            Text("DrivaBai does not hold or transmit funds on behalf of the buyer or seller. Title transfer and DMV paperwork are the responsibility of the buyer and seller — requirements vary by state.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

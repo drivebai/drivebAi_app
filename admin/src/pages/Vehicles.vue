@@ -8,7 +8,7 @@ import Drawer from '../components/Drawer.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { adminApi } from '../api/admin'
 import { ApiError } from '../api/client'
-import type { AdminCar, AdminCarDetail } from '../api/types'
+import type { AdminCar, AdminCarDetail, AdminCarDocument } from '../api/types'
 import { useToastStore } from '../stores/toast'
 import { fmtDate, fmtMoney, imgUrl } from '../utils/format'
 
@@ -135,6 +135,32 @@ function showMissingDocsWarning(car: AdminCar): boolean {
 function pageCount(t: number, l: number) {
   return Math.max(1, Math.ceil(t / l))
 }
+
+// ---- Documents (Point 7) ----
+// The admin car-detail endpoint now returns documents[] with SIGNED file_url.
+// We group them by the canonical required types (title / registration /
+// inspection / insurance) so the admin can eyeball everything BEFORE approving,
+// and show a "Not uploaded" placeholder per missing type. Any document of an
+// unexpected type is appended as its own group so nothing is silently hidden.
+const CAR_DOC_TYPES = ['title', 'registration', 'inspection', 'insurance']
+
+function carDocGroups(d: AdminCarDetail): { type: string; label: string; docs: AdminCarDocument[] }[] {
+  const present = d.documents ?? []
+  const extra = [...new Set(present.map((x) => x.document_type))].filter((t) => !CAR_DOC_TYPES.includes(t))
+  return [...CAR_DOC_TYPES, ...extra].map((type) => ({
+    type,
+    label: docLabel(type),
+    docs: present.filter((x) => x.document_type === type),
+  }))
+}
+
+/** Detect image documents by extension so we can inline-preview them.
+ *  Signed URLs carry a ?sig=&exp= tail, so strip the query first and prefer
+ *  the stored file_name when present. */
+function isImageDoc(doc: { file_name?: string | null; file_url: string }): boolean {
+  const name = (doc.file_name || doc.file_url).split('?')[0].toLowerCase()
+  return /\.(png|jpe?g|gif|webp|heic|heif|bmp)$/.test(name)
+}
 </script>
 
 <template>
@@ -250,9 +276,59 @@ function pageCount(t: number, l: number) {
   <Drawer v-if="detail || detailLoading" :title="detail?.title || 'Vehicle'" @close="detail = null">
     <div v-if="detailLoading" class="loading">Loading…</div>
     <template v-else-if="detail">
-      <div v-if="detail.photos.length" class="photo-grid">
-        <img v-for="p in detail.photos" :key="p.id" :src="imgUrl(p.file_url)" :alt="p.slot_type" />
-      </div>
+      <!-- Photos: tap/click any photo to open it full-size in a new tab. -->
+      <section v-if="detail.photos.length" class="drawer-block">
+        <h4 class="section-title">Photos</h4>
+        <div class="photo-grid">
+          <a
+            v-for="p in detail.photos"
+            :key="p.id"
+            :href="imgUrl(p.file_url)"
+            target="_blank"
+            rel="noopener"
+            class="photo-link"
+          >
+            <img :src="imgUrl(p.file_url)" :alt="p.slot_type" />
+          </a>
+        </div>
+      </section>
+
+      <!-- Documents (Point 7): grouped by required type, inline preview for
+           images + open/download link for everything, "Not uploaded" per
+           missing type. Signed URLs are rendered verbatim. -->
+      <section class="drawer-block">
+        <h4 class="section-title">Documents</h4>
+        <div class="doc-grid">
+          <div v-for="g in carDocGroups(detail)" :key="g.type" class="doc-card">
+            <div class="doc-card-head">{{ g.label }}</div>
+            <template v-if="g.docs.length">
+              <div v-for="doc in g.docs" :key="doc.id" class="doc-entry">
+                <a
+                  v-if="isImageDoc(doc)"
+                  :href="imgUrl(doc.file_url)"
+                  target="_blank"
+                  rel="noopener"
+                  class="doc-thumb-link"
+                  :title="doc.file_name || g.label"
+                >
+                  <img :src="imgUrl(doc.file_url)" :alt="`${g.label} document`" class="doc-thumb" />
+                </a>
+                <a
+                  :href="imgUrl(doc.file_url)"
+                  target="_blank"
+                  rel="noopener"
+                  class="doc-open"
+                >
+                  <span v-if="!isImageDoc(doc)" class="doc-icon">📄</span>
+                  <span class="doc-open-label">{{ doc.file_name || 'Open / download' }}</span>
+                </a>
+              </div>
+            </template>
+            <div v-else class="doc-missing">Not uploaded</div>
+          </div>
+        </div>
+      </section>
+
       <dl class="kv">
         <dt>Make / Model</dt><dd>{{ detail.make }} {{ detail.model }}</dd>
         <dt>Year</dt><dd>{{ detail.year }}</dd>
@@ -321,13 +397,85 @@ function pageCount(t: number, l: number) {
 
 .actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+.drawer-block {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.section-title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
 .photo-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
-  margin-bottom: 20px;
 }
+.photo-link { display: block; }
 .photo-grid img {
   width: 100%; height: 110px; object-fit: cover;
   border-radius: 6px; border: 1px solid var(--border);
+  display: block;
+}
+
+/* ---- Documents ---- */
+.doc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.doc-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.doc-card-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.doc-entry { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.doc-thumb-link { display: block; }
+.doc-thumb {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  display: block;
+}
+.doc-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  min-width: 0;
+}
+.doc-icon { flex-shrink: 0; }
+.doc-open-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-missing {
+  font-size: 13px;
+  color: var(--text-subtle);
+  font-style: italic;
+  padding: 8px 0;
 }
 
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; margin: 0; }
@@ -343,6 +491,12 @@ function pageCount(t: number, l: number) {
 @media (max-width: 640px) {
   .mobile-only { display: block; }
   .desktop-only { display: none; }
+
+  /* Drawer: stack the key/value rows and tighten the grids for phones. */
+  .kv { grid-template-columns: 1fr; gap: 4px 0; }
+  .kv dt { margin-top: 8px; }
+  .photo-grid { grid-template-columns: repeat(2, 1fr); }
+  .doc-grid { grid-template-columns: 1fr; }
 }
 
 /* ---- Card list (mobile) ---- */

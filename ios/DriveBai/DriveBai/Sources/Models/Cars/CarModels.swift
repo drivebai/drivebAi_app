@@ -496,6 +496,11 @@ struct Car: Identifiable, Equatable, Hashable {
 
     // Status
     var status: CarListingStatus
+    /// Admin-approval gate (W1 `is_approved`). `true` once an admin approves
+    /// the listing; `false` while it's still awaiting review. `CarBusinessState`
+    /// (owned by W2-C) reads this to render an "Awaiting approval" state before
+    /// the car goes live. Defaults to `true` for locally-constructed cars.
+    var isApproved: Bool
     var isPaused: Bool
 
     // Media
@@ -550,6 +555,7 @@ struct Car: Identifiable, Equatable, Hashable {
         isForSale: Bool = false,
         salePrice: Money? = nil,
         status: CarListingStatus = .available,
+        isApproved: Bool = true,
         isPaused: Bool = false,
         photoSlots: [CarPhotoSlot] = [],
         documents: [CarDocument] = [],
@@ -572,6 +578,7 @@ struct Car: Identifiable, Equatable, Hashable {
         self.isForSale = isForSale
         self.salePrice = salePrice
         self.status = status
+        self.isApproved = isApproved
         self.isPaused = isPaused
         self.photoSlots = photoSlots
         self.documents = documents

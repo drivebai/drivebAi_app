@@ -80,7 +80,26 @@ struct CarDetailEditView: View {
         self._editedCar = State(initialValue: car)
     }
 
+    /// Sold cars are read-only for the ex-owner (locked decision / QA pt 25):
+    /// every mutation control — Resume/Pause, Edit, Delete, autosave, the
+    /// photo/document editors — is hidden and we present a plain "Sold" view.
+    /// Gated on the RAW sold flag, not `CarBusinessState.forCar(car) == .sold`,
+    /// so the read-only lock can never be defeated by state precedence (e.g. a
+    /// lingering active-rental row resolving to `.rented`). The backend's 409
+    /// CAR_SOLD is the server-side backstop.
+    private var isSold: Bool { car.isSold }
+
     var body: some View {
+        if isSold {
+            soldReadOnlyBody
+        } else {
+            editableBody
+        }
+    }
+
+    // MARK: - Editable body (non-sold)
+
+    private var editableBody: some View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(spacing: 0) {
@@ -251,6 +270,121 @@ struct CarDetailEditView: View {
                     .cornerRadius(16)
                 }
             }
+        }
+    }
+
+    // MARK: - Sold read-only body (QA pt 25)
+
+    /// Read-only presentation for a sold car. Deliberately carries NO
+    /// mutation affordances: no View/Edit toggle, no autosave, no editable
+    /// fields, no photo/document editors, and no Danger Zone (so "Resume
+    /// listing" can never appear on a sold car). The ex-owner can still see
+    /// the car's details and history.
+    private var soldReadOnlyBody: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                soldPhotoHeader
+
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Text(car.displayTitle)
+                            .font(.title3.weight(.semibold))
+                            .foregroundColor(.primary)
+                        Spacer(minLength: 8)
+                        CarStatusPill(state: .sold, style: .compact)
+                    }
+
+                    soldNotice
+
+                    soldFactRow(label: "Sale price", value: car.salePrice?.formatted ?? "—")
+                    soldFactRow(label: "Mileage", value: car.specs.mileageFormatted)
+                    soldFactRow(label: "Body type", value: car.specs.bodyType.displayText)
+                    soldFactRow(label: "Fuel type", value: car.specs.fuelType.rawValue)
+
+                    if !car.description.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Description")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(car.description)
+                                .font(.subheadline)
+                                .foregroundColor(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
+            }
+        }
+        .background(Color(.systemBackground))
+        .navigationTitle("Sold car")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Read-only photo pager for the sold view — reuses `CarPhotoSlotImage`
+    /// but omits CarPhotoCarousel's "Edit photos" button (a mutation control).
+    @ViewBuilder
+    private var soldPhotoHeader: some View {
+        let slots = car.photoSlots
+            .filter { $0.hasImage }
+            .sorted { $0.slotType.sortOrder < $1.slotType.sortOrder }
+
+        if slots.isEmpty {
+            ZStack {
+                Rectangle().fill(Color(.systemGray6))
+                Image(systemName: "car.fill")
+                    .font(.system(size: 48))
+                    .foregroundColor(.secondary)
+            }
+            .frame(height: 240)
+        } else {
+            TabView {
+                ForEach(slots, id: \.id) { slot in
+                    CarPhotoSlotImage(
+                        slot: slot,
+                        showLabel: true,
+                        cornerRadius: 0,
+                        contentMode: .fill
+                    )
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: slots.count > 1 ? .automatic : .never))
+            .frame(height: 240)
+        }
+    }
+
+    private var soldNotice: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundColor(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This car has been sold")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text("Sold listings are read-only. Editing, pausing, resuming and deleting are no longer available.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.08))
+        .cornerRadius(12)
+    }
+
+    private func soldFactRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .foregroundColor(.primary)
         }
     }
 

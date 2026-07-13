@@ -183,12 +183,15 @@ func main() {
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, carDocRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
-	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, logger)
+	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, privateURLSigner, logger)
 	adminHandler.SetNotificationHandler(notifHandler)
 	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
 	// internals: reset-token store + the transactional email sender.
 	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
 	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
+	// Push support replies to backgrounded users (setter owned by W1-C on
+	// support.go). Mirrors the admin/accident/chat notif wiring above.
+	supportHandler.SetNotificationHandler(notifHandler)
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	accidentHandler.SetNotificationHandler(notifHandler)
 	accidentHandler.SetChatRepository(chatRepo)

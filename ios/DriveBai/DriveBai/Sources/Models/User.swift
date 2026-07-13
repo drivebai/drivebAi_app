@@ -281,8 +281,12 @@ enum DocumentType: String, Codable, CaseIterable {
     /// The required document — drivers_license — is handled separately by
     /// AuthStore.hasRequiredDocuments() so this list only enumerates the
     /// slots that should appear under the "Optional" header.
+    ///
+    /// Vehicle registration is deliberately excluded: it's a car-owner
+    /// concern, not a driver's, so the "Add a supporting document" menu must
+    /// never offer it to drivers (the backend's required set is license-only).
     static var optionalDriverDocs: [DocumentType] {
-        [.registration, .commercialLicense, .tlcLicense, .other]
+        [.commercialLicense, .tlcLicense, .other]
     }
 }
 

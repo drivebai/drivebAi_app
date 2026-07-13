@@ -57,19 +57,29 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 	return err
 }
 
-// ExistsByVIN reports whether any NON-ARCHIVED car already has the given VIN
-// (case-insensitive). Empty VINs always return false — the partial unique
-// index `cars_vin_unique_lower_idx` excludes NULL/” and archived rows as
-// well (migration 000032), so the predicates agree in all three places:
-// this query, ExistsByVINExcludingID, and the index. Archiving a listing
-// deliberately frees its VIN so the physical car can be re-listed (D1).
-// Callers should normalize the VIN (trim + uppercase) before invoking
-// to stay aligned with what's written on insert.
+// VIN-uniqueness three-place invariant.
+//
+// The partial unique index `cars_vin_unique_lower_idx` (migration 000035)
+// enforces VIN uniqueness over exactly the set of rows:
+//
+//	vin IS NOT NULL AND vin <> '' AND archived_at IS NULL AND status <> 'sold'
+//
+// ExistsByVIN and ExistsByVINExcludingID below MUST use the same predicate so
+// the pre-flight 409 and the DB constraint agree in all three places. Two
+// escape hatches deliberately free a VIN for a re-reviewed relist by a new
+// owner: archiving a listing (archived_at) and completing a sale (status
+// 'sold', which also auto-archives). Changing any one of the three requires
+// changing the other two in lockstep.
+
+// ExistsByVIN reports whether any live car already holds the given VIN
+// (case-insensitive). Empty VINs always return false. Callers should
+// normalize the VIN (trim + uppercase) before invoking so the comparison
+// matches what's written on insert.
 func (r *CarRepository) ExistsByVIN(ctx context.Context, vin string) (bool, error) {
 	if strings.TrimSpace(vin) == "" {
 		return false, nil
 	}
-	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND archived_at IS NULL)`
+	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND archived_at IS NULL AND status <> 'sold')`
 	var exists bool
 	if err := r.db.Pool.QueryRow(ctx, query, vin).Scan(&exists); err != nil {
 		return false, err
@@ -78,14 +88,14 @@ func (r *CarRepository) ExistsByVIN(ctx context.Context, vin string) (bool, erro
 }
 
 // ExistsByVINExcludingID is the UpdateCar-side companion to ExistsByVIN: it
-// checks for any OTHER non-archived car (id != excludeID) holding this VIN.
-// Lets an owner PATCH unrelated fields on their own listing without
-// false-positive 409s when the VIN field is round-tripped unchanged.
+// checks for any OTHER live car (id != excludeID) holding this VIN. Lets an
+// owner PATCH unrelated fields on their own listing without false-positive
+// 409s when the VIN field is round-tripped unchanged.
 func (r *CarRepository) ExistsByVINExcludingID(ctx context.Context, vin string, excludeID uuid.UUID) (bool, error) {
 	if strings.TrimSpace(vin) == "" {
 		return false, nil
 	}
-	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND archived_at IS NULL AND id <> $2)`
+	const query = `SELECT EXISTS (SELECT 1 FROM cars WHERE LOWER(vin) = LOWER($1) AND vin IS NOT NULL AND vin <> '' AND archived_at IS NULL AND status <> 'sold' AND id <> $2)`
 	var exists bool
 	if err := r.db.Pool.QueryRow(ctx, query, vin, excludeID).Scan(&exists); err != nil {
 		return false, err
@@ -111,7 +121,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 			address, neighborhood, latitude, longitude, area, street, block, zip,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
-			status, is_paused, rented_weeks, total_earned,
+			status, is_paused, is_approved, rented_weeks, total_earned,
 			archived_at, created_at, updated_at
 		FROM cars
 		WHERE id = $1
@@ -124,7 +134,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 		&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 		&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
-		&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
+		&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 		&car.ArchivedAt, &car.CreatedAt, &car.UpdatedAt,
 	)
 
@@ -206,7 +216,7 @@ const ownerCarWithActiveRentalSelect = `
 		c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
 		c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
 		c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
-		c.status, c.is_paused, c.rented_weeks, c.total_earned,
+		c.status, c.is_paused, c.is_approved, c.rented_weeks, c.total_earned,
 		c.archived_at, c.created_at, c.updated_at,
 		lr.id, lr.driver_id, lr.weeks,
 		COALESCE(lr.offered_weekly_price, lr.weekly_price),
@@ -247,7 +257,7 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 		&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
-		&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
+		&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 		&car.ArchivedAt, &car.CreatedAt, &car.UpdatedAt,
 		&leaseID, &driverID, &weeks,
 		&weeklyPriceDollars,
@@ -315,7 +325,7 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 			address, neighborhood, latitude, longitude, area, street, block, zip,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
-			status, is_paused, rented_weeks, total_earned,
+			status, is_paused, is_approved, rented_weeks, total_earned,
 			created_at, updated_at
 		FROM cars
 		WHERE owner_id = $1 AND archived_at IS NULL
@@ -337,7 +347,7 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 			&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 			&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
-			&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
+			&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 			&car.CreatedAt, &car.UpdatedAt,
 		)
 		if err != nil {
@@ -517,7 +527,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 			c.address, c.neighborhood, c.latitude, c.longitude, c.area, c.street, c.block, c.zip,
 			c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
 			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
-			c.status, c.is_paused, c.rented_weeks, c.total_earned,
+			c.status, c.is_paused, c.is_approved, c.rented_weeks, c.total_earned,
 			c.created_at, c.updated_at
 		FROM cars c
 		JOIN users u ON u.id = c.owner_id
@@ -563,7 +573,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 			&car.Address, &car.Neighborhood, &car.Latitude, &car.Longitude, &car.Area, &car.Street, &car.Block, &car.Zip,
 			&car.IsForRent, &car.WeeklyRentPrice, &car.IsForSale, &car.SalePrice, &car.Currency,
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
-			&car.Status, &car.IsPaused, &car.RentedWeeks, &car.TotalEarned,
+			&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 			&car.CreatedAt, &car.UpdatedAt,
 		)
 		if err != nil {

@@ -85,6 +85,7 @@ func TestRender_ValidPDFWithSignatures(t *testing.T) {
 func TestRender_ContentFields(t *testing.T) {
 	dir := t.TempDir()
 	d := sampleData()
+	d.TitleConditionLabel = "Clean"
 	d.SellerSignaturePath = writePNG(t, filepath.Join(dir, "seller.png"))
 	d.BuyerSignaturePath = writePNG(t, filepath.Join(dir, "buyer.png"))
 
@@ -94,22 +95,26 @@ func TestRender_ContentFields(t *testing.T) {
 	}
 	body := string(out)
 	for _, want := range []string{
-		"Vehicle Bill of Sale", // header
-		d.ReferenceID,          // transaction reference = purchase id
-		"Toyota",               // vehicle make
-		"Corolla",              // vehicle model
-		d.VIN,                  // VIN
-		"Alice Seller",         // seller
-		"Bob Buyer",            // buyer
-		"as-is",                // terms substring
-		"500.00",               // sale price
+		"Vehicle Bill of Sale",                    // header
+		"This is not an official government form", // codified disclaimer
+		d.ReferenceID,                             // transaction reference = purchase id
+		"2019",                                    // vehicle year (grid)
+		"Toyota",                                  // vehicle make
+		"Corolla",                                 // vehicle model
+		d.VIN,                                     // VIN
+		"Title condition",                         // title-condition row label
+		"Clean",                                   // title-condition value
+		"Alice Seller",                            // seller
+		"Bob Buyer",                               // buyer
+		"as-is",                                   // terms substring
+		"500.00",                                  // sale price
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("PDF content missing %q", want)
 		}
 	}
-	// Neutral jurisdiction: no MV-912 / state-form references.
-	for _, banned := range []string{"MV-912", "MV912", "MV 912"} {
+	// Neutral document: no MV-912 / state-form / government-site references.
+	for _, banned := range []string{"MV-912", "MV912", "MV 912", "dmv.ny.gov", ".gov"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("PDF must not reference %q", banned)
 		}
