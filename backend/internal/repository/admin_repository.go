@@ -400,7 +400,7 @@ func (r *AdminRepository) SetCarApproved(ctx context.Context, id uuid.UUID, appr
 		SET is_approved = $2,
 		    status = CASE
 		                 WHEN $2 = true AND status = 'pending'
-		                 THEN 'available'::car_listing_status
+		                 THEN 'available'
 		                 ELSE status
 		             END,
 		    updated_at = NOW()
