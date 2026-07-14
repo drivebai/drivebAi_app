@@ -127,7 +127,7 @@ func TestSetCarApproved_PublishesOnApproval(t *testing.T) {
 
 	wants := []string{
 		"WHEN $2 = true AND status = 'pending'", // publish only from pending, only on approve
-		"THEN 'available'::car_listing_status",  // → available
+		"THEN 'available'",                      // → available (cars.status is VARCHAR — no enum cast)
 		"ELSE status",                           // rented/sold/paused left untouched
 		"RETURNING owner_id, status::text",      // owner + resulting status for the notify path
 	}
