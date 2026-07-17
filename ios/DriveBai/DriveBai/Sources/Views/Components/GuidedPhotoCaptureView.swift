@@ -43,7 +43,6 @@ struct GuidedPhotoCaptureView: View {
     @State private var currentIndex = 0
     @State private var captured: [PhotoSlotType: Data] = [:]
     @State private var reviewData: Data?
-    @State private var showLibraryPicker = false
     @State private var libraryItem: PhotosPickerItem?
     @State private var didComplete = false
 
@@ -71,7 +70,12 @@ struct GuidedPhotoCaptureView: View {
         .onDisappear {
             camera.stop()
         }
-        .photosPicker(isPresented: $showLibraryPicker, selection: $libraryItem, matching: .images)
+        // The library picker is the PhotosPicker BUTTON component (see the
+        // two call sites), not the `.photosPicker(isPresented:)` modifier:
+        // the modifier variant's sheet auto-dismisses when presented over
+        // this fullScreenCover (picker flashed open and snapped back to the
+        // camera — client 7/16). The button owns its presentation internally
+        // and is immune to ancestor re-renders.
         .onChange(of: libraryItem) { _, newItem in
             guard let item = newItem else { return }
             libraryItem = nil
@@ -220,9 +224,11 @@ struct GuidedPhotoCaptureView: View {
             .accessibilityLabel("Take photo")
 
             HStack {
-                Button("Choose from library") { showLibraryPicker = true }
-                    .font(.subheadline)
-                    .foregroundColor(.white)
+                PhotosPicker(selection: $libraryItem, matching: .images) {
+                    Text("Choose from library")
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                }
 
                 Spacer()
 
@@ -320,9 +326,7 @@ struct GuidedPhotoCaptureView: View {
                 .foregroundColor(.white)
             }
 
-            Button {
-                showLibraryPicker = true
-            } label: {
+            PhotosPicker(selection: $libraryItem, matching: .images) {
                 Label("Choose from library", systemImage: "photo.on.rectangle")
                     .font(.headline)
                     .foregroundColor(.black)
