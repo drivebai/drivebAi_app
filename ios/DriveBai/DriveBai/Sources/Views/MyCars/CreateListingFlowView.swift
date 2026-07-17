@@ -1356,52 +1356,45 @@ struct CreateListingRequirementsStep: View {
                 }
             )
         }
-        // Seed the pickup location from the device's current fix the first
-        // time the user lands here with nothing chosen (A). Denial / no fix
-        // leaves it "Not set" so the row still requires a manual pick.
-        .task { await seedDefaultLocationIfNeeded() }
+        // Auto-fill the pickup location from the owner's current position so
+        // the field is never empty by default (client 7/16 pt-2). The seed is
+        // EVENT-driven, not a timed poll: whenever the first device fix
+        // arrives — even if the user answers the permission dialog slowly —
+        // it lands here and fills the field. LocationManager already
+        // re-requests a fix the moment permission is granted, and the picker
+        // remains the way to change the location afterwards.
+        .task {
+            guard !state.hasSelectedLocation else { return }
+            locationManager.requestPermission()
+            locationManager.requestLocation()
+        }
+        .onReceive(locationManager.$lastLocation) { coordinate in
+            guard let coordinate else { return }
+            Task { await applySeededLocation(coordinate) }
+        }
     }
 
-    /// Best-effort default: request permission, await a REAL device fix, then
-    /// set the location coords + reverse-geocoded address. Never writes a
-    /// default map center — if permission is denied or no fix arrives, the
-    /// location stays "Not set" and the user must pick manually. Idempotent:
-    /// once a location exists (auto-seeded or user-picked) this no-ops.
+    /// Writes the device fix as the default pickup location (coords +
+    /// reverse-geocoded address). Never writes a default map center — only a
+    /// real fix reaches this. Guarded twice (before and after the async
+    /// geocode) so a manual pick made meanwhile is never clobbered; once any
+    /// location exists this no-ops, so repeated fixes don't fight the user.
     @MainActor
-    private func seedDefaultLocationIfNeeded() async {
+    private func applySeededLocation(_ coordinate: CLLocationCoordinate2D) async {
         guard !state.hasSelectedLocation else { return }
 
-        locationManager.requestPermission()
-        locationManager.requestLocation()
+        let address = await LocationGeocoder.reverseGeocode(coordinate)
+        guard !state.hasSelectedLocation else { return }
 
-        // Poll for a real fix (or an explicit denial) for up to ~5 seconds.
-        for _ in 0..<25 {
-            if Task.isCancelled { return }
-            let status = locationManager.authorizationStatus
-            if status == .denied || status == .restricted { return }
-
-            if let coordinate = locationManager.lastLocation {
-                // Reverse-geocode BEFORE writing so the coordinate + address
-                // land as one guarded, atomic update. If the user opens the
-                // picker and saves a location while we're geocoding, the guard
-                // below aborts and we never clobber their choice.
-                let address = await LocationGeocoder.reverseGeocode(coordinate)
-                guard !state.hasSelectedLocation else { return }
-
-                state.locationLatitude = coordinate.latitude
-                state.locationLongitude = coordinate.longitude
-                if let address {
-                    state.locationArea = address.area
-                    state.locationStreet = address.street
-                    state.locationBlock = address.block
-                    state.locationZip = address.zip
-                    state.locationAddressLine = address.addressLine
-                    state.neighborhood = address.area
-                }
-                return
-            }
-
-            try? await Task.sleep(for: .milliseconds(200))
+        state.locationLatitude = coordinate.latitude
+        state.locationLongitude = coordinate.longitude
+        if let address {
+            state.locationArea = address.area
+            state.locationStreet = address.street
+            state.locationBlock = address.block
+            state.locationZip = address.zip
+            state.locationAddressLine = address.addressLine
+            state.neighborhood = address.area
         }
     }
 }

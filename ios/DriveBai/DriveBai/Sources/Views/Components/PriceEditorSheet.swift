@@ -53,8 +53,9 @@ struct PriceEditorSheet: View {
             Spacer(minLength: 20)
 
             // Primary CTA — commits the typed/nudged amount and closes the
-            // sheet. Named "Save" (not "Done") so it never reads as a twin of
-            // the keyboard toolbar's "Done", which only dismisses the keypad.
+            // sheet. The ONLY button here: the keyboard "Done" toolbar was
+            // removed (client 7/16 pt-1); tapping outside the field dismisses
+            // the keypad, and Save commits regardless of focus.
             Button(action: commitAndDismiss) {
                 Text("Save")
             }
@@ -106,13 +107,15 @@ struct PriceEditorSheet: View {
 
             Spacer(minLength: 0)
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { isTextFieldFocused = false }
-                    .fontWeight(.semibold)
-            }
-        }
+        // No keyboard "Done" toolbar: with a single amount field, Save is the
+        // only affordance this sheet needs (client 7/16 pt-1). Tapping empty
+        // space still dismisses the keypad — as a BACKGROUND gesture so it
+        // never races the field's own focus tap.
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { isTextFieldFocused = false }
+        )
     }
 
     /// Big centered price. Shows a formatted, animated `Text` when idle
