@@ -478,11 +478,17 @@ struct CreateListingFlowView: View {
                     .disabled(state.isLoading)
                 }
                 // Number pads have no Return key — give every text input an
-                // explicit way to drop the keyboard (QA pt 5).
+                // explicit way to drop the keyboard (QA pt 5). Scoped to the
+                // WIZARD's own fields: without the focusedField condition this
+                // toolbar leaks onto keyboards opened from presented sheets
+                // (the price editor), where a stray "Done" pill appeared next
+                // to Save (client 7/16 pt-1).
                 ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { focusedField = nil }
-                        .fontWeight(.semibold)
+                    if focusedField != nil {
+                        Spacer()
+                        Button("Done") { focusedField = nil }
+                            .fontWeight(.semibold)
+                    }
                 }
             }
             .confirmationDialog(
