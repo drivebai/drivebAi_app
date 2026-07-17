@@ -298,7 +298,7 @@ function roleLabel(r: string) {
     :title="pendingBlock?.is_blocked ? 'Unblock user?' : 'Block user?'"
     :message="pendingBlock?.is_blocked
       ? `${pendingBlock?.email} will be able to log in and use the app again.`
-      : `${pendingBlock?.email} will be signed out and unable to log in.`"
+      : `${pendingBlock?.email} will be signed out within seconds — active sessions are cut, refresh tokens revoked — and they will be unable to log back in until unblocked.`"
     :confirm-label="pendingBlock?.is_blocked ? 'Unblock' : 'Block'"
     :destructive="!pendingBlock?.is_blocked"
     @confirm="confirmBlock"

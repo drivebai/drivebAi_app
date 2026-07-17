@@ -18,6 +18,7 @@ const (
 	ErrCodeInvalidRole               = "INVALID_ROLE"
 	ErrCodeInvalidInput              = "INVALID_INPUT"
 	ErrCodeUnauthorized              = "UNAUTHORIZED"
+	ErrCodeAccountBlocked            = "ACCOUNT_BLOCKED"
 	ErrCodeTokenExpired              = "TOKEN_EXPIRED"
 	ErrCodeTokenInvalid              = "TOKEN_INVALID"
 	ErrCodeInternalError             = "INTERNAL_ERROR"
@@ -64,6 +65,7 @@ var (
 	ErrUserNotFound              = &APIError{Code: ErrCodeUserNotFound, Message: "User not found"}
 	ErrInvalidRole               = &APIError{Code: ErrCodeInvalidRole, Message: "Invalid role specified"}
 	ErrUnauthorized              = &APIError{Code: ErrCodeUnauthorized, Message: "Authentication required"}
+	ErrAccountBlocked            = &APIError{Code: ErrCodeAccountBlocked, Message: "Account has been blocked"}
 	ErrTokenExpired              = &APIError{Code: ErrCodeTokenExpired, Message: "Token has expired"}
 	ErrTokenInvalid              = &APIError{Code: ErrCodeTokenInvalid, Message: "Invalid token"}
 	ErrInternalError             = &APIError{Code: ErrCodeInternalError, Message: "An internal error occurred"}

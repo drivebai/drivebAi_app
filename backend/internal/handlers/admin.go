@@ -45,6 +45,10 @@ type AdminHandler struct {
 	// inspection/insurance) returned by GetCar. Photos are public/unsigned.
 	// Sign is nil-safe, so a nil signer degrades to passthrough in tests.
 	urlSigner *PrivateURLSigner
+	// blockList is the auth middleware's cached blocked-flag reader. BlockUser
+	// invalidates the target's entry so a block/unblock takes effect on this
+	// instance immediately instead of after the cache TTL. Nil in tests.
+	blockList *auth.BlockChecker
 	logger    *slog.Logger
 }
 
@@ -65,6 +69,12 @@ func (h *AdminHandler) SetNotificationHandler(n *NotificationHandler) {
 func (h *AdminHandler) SetPasswordResetDependencies(tokenRepo *repository.TokenRepository, emailSvc email.Sender) {
 	h.tokenRepo = tokenRepo
 	h.emailSvc = emailSvc
+}
+
+// SetBlockList wires the auth middleware's block cache so BlockUser can
+// invalidate it for immediate effect. Setter for the same test-compat reason.
+func (h *AdminHandler) SetBlockList(b *auth.BlockChecker) {
+	h.blockList = b
 }
 
 func parsePage(r *http.Request) (page, limit int) {
@@ -139,10 +149,34 @@ func (h *AdminHandler) BlockUser(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+
+	// Make the block bite NOW, not at token expiry:
+	//  1. revoke every refresh token so the user can't mint a new access
+	//     token (the middleware + OTP/refresh handlers reject the rest);
+	//  2. drop the block-cache entry so this instance enforces immediately
+	//     (other instances converge within the cache TTL);
+	//  3. cut any live WebSocket connections.
+	if body.Blocked {
+		if h.tokenRepo != nil {
+			if err := h.tokenRepo.RevokeAllForUser(r.Context(), id); err != nil {
+				h.logger.Error("admin block user: revoke refresh tokens", "error", err, "user_id", id)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+		}
+		if h.wsHub != nil {
+			h.wsHub.DisconnectUser(id)
+		}
+	}
+	if h.blockList != nil {
+		h.blockList.Invalidate(id)
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "blocked": body.Blocked})
 
-	// Notify the user only on UNblock — blocked users have their JWT cut
-	// and can't act on a push anyway; alerting them they're blocked also
+	// Notify the user only on UNblock — a blocked user's sessions are cut
+	// (middleware 403s, refresh tokens revoked, WS disconnected) so they
+	// can't act on a push anyway; alerting them they're blocked also
 	// invites support spam. Unblock is the case worth notifying.
 	if h.notifHandler != nil && !body.Blocked {
 		go h.notifHandler.Notify(id, models.NotificationTypeSystem,

@@ -134,6 +134,11 @@ func main() {
 	authRateLimiter := middleware.NewRateLimiter(10, time.Minute)
 	defer authRateLimiter.Stop()
 
+	// Blocked-account checker used on every authenticated request (and at WS
+	// connect). 30s cache TTL bounds enforcement latency on other instances;
+	// the admin block endpoint invalidates in-process for immediate effect.
+	blockList := auth.NewBlockChecker(userRepo, 30*time.Second, logger)
+
 	// Initialize Stripe service
 	stripeSvc := stripeService.NewService(cfg.StripeSecretKey, cfg.StripePublishableKey, cfg.StripeWebhookSecret, cfg.PlatformFeeBPS, logger)
 
@@ -176,6 +181,7 @@ func main() {
 	// edits, accident submissions. Each handler keeps the notif handler
 	// optional (setter wiring) so test constructors don't need to change.
 	chatHandler.SetNotificationHandler(notifHandler)
+	chatHandler.SetBlockList(blockList)
 	deviceTokenHandler := handlers.NewDeviceTokenHandler(deviceTokenRepo, logger)
 	onboardingHandler := handlers.NewOnboardingHandler(onboardingRepo)
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
@@ -185,6 +191,7 @@ func main() {
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, privateURLSigner, logger)
 	adminHandler.SetNotificationHandler(notifHandler)
+	adminHandler.SetBlockList(blockList)
 	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
 	// internals: reset-token store + the transactional email sender.
 	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
@@ -277,7 +284,7 @@ func main() {
 
 		// Protected routes
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.AuthMiddleware(jwtSvc))
+			r.Use(middleware.AuthMiddleware(jwtSvc, blockList))
 			r.Get("/me", userHandler.GetCurrentUser)
 			r.Patch("/profile", userHandler.UpdateProfile)
 

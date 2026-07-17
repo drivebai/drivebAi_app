@@ -43,6 +43,11 @@ final class AuthStore: ObservableObject {
     // Document state (for onboarding)
     @Published private(set) var documents: [Document] = []
 
+    // Set when the server answers 403 ACCOUNT_BLOCKED (admin blocked this
+    // account). The app root presents it as an alert over the login screen
+    // after the forced sign-out. Cleared when the user dismisses the alert.
+    @Published var accountBlockedMessage: String?
+
     init(
         apiClient: APIClientProtocol = APIClient.shared,
         keychain: KeychainService = .shared
@@ -209,6 +214,40 @@ final class AuthStore: ObservableObject {
         documents = []
 
         // Clear all user-specific stores to prevent data leaking between users
+        OwnerCarsStore.shared.clearAll()
+        DiscoverViewModel.shared.clearAll()
+        LikedListingsStore.shared.clearAll()
+        WebSocketManager.shared.disconnect()
+        ChatsListViewModel.shared.clearAll()
+    }
+
+    // MARK: - Forced sign-out (account blocked)
+
+    /// Called once from the APIClient's global ACCOUNT_BLOCKED intercept.
+    /// Signs the user out locally WITHOUT calling the server (every
+    /// authenticated call — including logout and token refresh — is already
+    /// rejected with 403) and leaves a message for the root view to present.
+    /// Idempotent: concurrent in-flight requests all hitting 403 collapse to
+    /// a single sign-out.
+    func handleAccountBlocked() async {
+        guard case .authenticated = state else {
+            // Already signed out (or mid-signup) — keep the message fresh
+            // but don't tear anything down twice.
+            accountBlockedMessage = accountBlockedMessage
+                ?? "Your account has been blocked. Contact support if you believe this is a mistake."
+            return
+        }
+
+        accountBlockedMessage = "Your account has been blocked. Contact support if you believe this is a mistake."
+
+        keychain.clearTokens()
+        state = .unauthenticated
+        pendingEmail = nil
+        pendingRole = nil
+        pendingRegistrationTokenData = nil
+        error = nil
+        documents = []
+
         OwnerCarsStore.shared.clearAll()
         DiscoverViewModel.shared.clearAll()
         LikedListingsStore.shared.clearAll()

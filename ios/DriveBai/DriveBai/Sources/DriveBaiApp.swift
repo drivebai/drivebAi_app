@@ -142,6 +142,15 @@ struct DriveBaiApp: App {
                         Text(error)
                     }
                 }
+                .alert("Account blocked", isPresented: .constant(authStore.accountBlockedMessage != nil)) {
+                    Button("OK") {
+                        authStore.accountBlockedMessage = nil
+                    }
+                } message: {
+                    if let message = authStore.accountBlockedMessage {
+                        Text(message)
+                    }
+                }
         }
     }
 }

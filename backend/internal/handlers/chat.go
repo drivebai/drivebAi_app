@@ -36,7 +36,16 @@ type ChatHandler struct {
 	// when the recipient is already foregrounded over WS). Nil in tests
 	// that don't care about push wiring.
 	notifHandler *NotificationHandler
-	logger       *slog.Logger
+	// blockList gates the /ws upgrade (which bypasses AuthMiddleware) so a
+	// blocked account can't reconnect with a still-valid token. Nil in tests.
+	blockList *auth.BlockChecker
+	logger    *slog.Logger
+}
+
+// SetBlockList wires the shared blocked-account checker used at WS connect.
+// Setter for the same test-compat reason as SetNotificationHandler.
+func (h *ChatHandler) SetBlockList(b *auth.BlockChecker) {
+	h.blockList = b
 }
 
 func NewChatHandler(chatRepo *repository.ChatRepository, uploadDir string, wsHub *ws.Hub, jwtSvc *auth.JWTService, urlSigner *PrivateURLSigner, logger *slog.Logger) *ChatHandler {
@@ -1083,6 +1092,15 @@ func (h *ChatHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		h.logger.Warn("ws: token rejected", "remote", r.RemoteAddr, "reason", reason)
 		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// /ws bypasses AuthMiddleware (query-param auth), so the blocked-account
+	// gate has to be applied here too — otherwise a blocked user could
+	// reconnect with a still-valid access token.
+	if h.blockList != nil && h.blockList.IsBlocked(r.Context(), claims.UserID) {
+		h.logger.Warn("ws: blocked user rejected", "user_id", claims.UserID, "remote", r.RemoteAddr)
+		http.Error(w, "Account blocked", http.StatusForbidden)
 		return
 	}
 

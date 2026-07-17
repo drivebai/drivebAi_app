@@ -15,10 +15,10 @@ import (
 
 // OTPAuthHandler handles passwordless email-OTP login and registration-completion flows.
 type OTPAuthHandler struct {
-	userRepo    *repository.UserRepository
-	tokenRepo   *repository.TokenRepository
-	otpRepo     *repository.LoginOTPRepository
-	profileRepo *repository.ProfileRepository
+	userRepo    authUserStore
+	tokenRepo   authTokenStore
+	otpRepo     loginOTPStore
+	profileRepo authProfileStore
 	jwtSvc      *auth.JWTService
 	otpSender   email.OTPSender
 	logger      *slog.Logger
@@ -280,6 +280,14 @@ func (h *OTPAuthHandler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user != nil {
+		// A blocked account must not be able to log back in via OTP. The
+		// caller has just proven ownership of the email, so revealing the
+		// blocked state leaks nothing to an attacker.
+		if user.IsBlocked {
+			WriteError(w, http.StatusForbidden, models.ErrAccountBlocked)
+			return
+		}
+
 		// ── Existing user: issue full auth tokens ──────────────────────────
 		tokens, err := h.generateTokens(ctx, user)
 		if err != nil {

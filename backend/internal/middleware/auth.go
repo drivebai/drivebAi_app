@@ -10,8 +10,13 @@ import (
 	"github.com/drivebai/backend/internal/models"
 )
 
-// AuthMiddleware creates authentication middleware
-func AuthMiddleware(jwtService *auth.JWTService) func(http.Handler) http.Handler {
+// AuthMiddleware creates authentication middleware.
+//
+// Beyond signature/expiry validation, every request re-checks the account's
+// blocked flag through blockList (a short-TTL cached read), so an admin block
+// cuts off an already-issued access token within seconds instead of at token
+// expiry. blockList may be nil (tests) — then only the JWT is validated.
+func AuthMiddleware(jwtService *auth.JWTService, blockList *auth.BlockChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -34,6 +39,11 @@ func AuthMiddleware(jwtService *auth.JWTService) func(http.Handler) http.Handler
 				} else {
 					httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
 				}
+				return
+			}
+
+			if blockList != nil && blockList.IsBlocked(r.Context(), claims.UserID) {
+				httputil.WriteError(w, http.StatusForbidden, models.ErrAccountBlocked)
 				return
 			}
 

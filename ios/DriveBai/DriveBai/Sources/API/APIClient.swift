@@ -1152,6 +1152,20 @@ final class APIClient: APIClientProtocol {
                         let missing = missingRaw.compactMap { DocumentType(rawValue: $0) }
                         throw APIError.driverDocsRequired(missingTypes: missing)
                     }
+                    // Global intercept: the account was blocked by an admin.
+                    // Every protected endpoint (and the refresh path) returns
+                    // this, so handle it once here — force a local sign-out
+                    // with an explanatory message instead of leaving each
+                    // screen to render a generic error forever.
+                    if errorResponse.error.code == "ACCOUNT_BLOCKED" {
+                        Task { @MainActor in
+                            await AuthStore.shared.handleAccountBlocked()
+                        }
+                        throw APIError.serverError(
+                            code: errorResponse.error.code,
+                            message: errorResponse.error.message
+                        )
+                    }
                     throw APIError.serverError(
                         code: errorResponse.error.code,
                         message: errorResponse.error.message

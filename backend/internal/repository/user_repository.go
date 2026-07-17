@@ -95,6 +95,21 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Use
 	return user, nil
 }
 
+// IsUserBlocked is the narrow single-column read used by the auth
+// middleware's block cache. A missing row reports blocked=true: a token for
+// a user that no longer exists must never pass authentication.
+func (r *UserRepository) IsUserBlocked(ctx context.Context, id uuid.UUID) (bool, error) {
+	var blocked bool
+	err := r.db.Pool.QueryRow(ctx, `SELECT is_blocked FROM users WHERE id = $1`, id).Scan(&blocked)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, nil
+		}
+		return false, err
+	}
+	return blocked, nil
+}
+
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
 	query := `
 		SELECT id, email, password_hash, role, first_name, last_name, phone, is_email_verified, onboarding_status, profile_photo_url, is_blocked, blocked_at, created_at, updated_at

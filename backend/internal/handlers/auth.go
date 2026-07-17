@@ -16,9 +16,9 @@ import (
 )
 
 type AuthHandler struct {
-	userRepo    *repository.UserRepository
-	tokenRepo   *repository.TokenRepository
-	profileRepo *repository.ProfileRepository
+	userRepo    authUserStore
+	tokenRepo   authTokenStore
+	profileRepo authProfileStore
 	jwtSvc      *auth.JWTService
 	emailSvc    email.Sender
 	cfg         *config.Config
@@ -252,7 +252,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.IsBlocked {
-		WriteError(w, http.StatusForbidden, models.NewAPIError("ACCOUNT_BLOCKED", "Account has been blocked"))
+		WriteError(w, http.StatusForbidden, models.ErrAccountBlocked)
 		return
 	}
 
@@ -322,6 +322,14 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("failed to get user", "error", err)
 		WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	// A blocked account must not be able to refresh its way back in. The
+	// presented token was already revoked by the rotation above, so this
+	// rejection also burns it.
+	if user.IsBlocked {
+		WriteError(w, http.StatusForbidden, models.ErrAccountBlocked)
 		return
 	}
 

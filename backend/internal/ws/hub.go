@@ -111,6 +111,26 @@ func (h *Hub) Unregister(conn *Conn) {
 	h.unregister <- conn
 }
 
+// DisconnectUser force-closes every active connection for the user. Closing
+// the underlying socket makes each connection's ReadPump return, which
+// unregisters it and tears down its write pump. Used when an admin blocks a
+// user so live WebSocket sessions are cut immediately.
+func (h *Hub) DisconnectUser(userID uuid.UUID) {
+	h.mu.RLock()
+	conns := make([]*Conn, 0, len(h.connections[userID]))
+	for conn := range h.connections[userID] {
+		conns = append(conns, conn)
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range conns {
+		_ = conn.ws.Close()
+	}
+	if len(conns) > 0 {
+		h.logger.Info("ws force-disconnected user", "user_id", userID, "connections", len(conns))
+	}
+}
+
 // IsUserOnline checks if a user has at least one active connection.
 func (h *Hub) IsUserOnline(userID uuid.UUID) bool {
 	h.mu.RLock()
