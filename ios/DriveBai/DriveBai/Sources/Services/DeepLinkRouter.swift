@@ -216,10 +216,25 @@ final class DeepLinkRouter: ObservableObject {
                 pendingChatTap = nil
                 pendingChatTap = chatId
             }
+        case "support_message":
+            // Admin/support wrote to the user's support chat — open it
+            // directly ("show up as a pop up message they can respond to").
+            pendingSupportChatTap = false
+            pendingSupportChatTap = true
         default:
             // `system` and unknown types: foregrounding the app is enough.
             break
         }
+    }
+
+    /// Set when a `support_message` push is tapped. Both tab views observe
+    /// this and present SupportChatView (there is exactly one support chat
+    /// per user, so no id needs to travel with the flag). Cleared after
+    /// presentation via `clearPendingSupportChatTap()`.
+    @Published var pendingSupportChatTap = false
+
+    func clearPendingSupportChatTap() {
+        pendingSupportChatTap = false
     }
 
     /// Set by `route(notificationUserInfo:)` when a `chat_message` push is

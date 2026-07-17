@@ -48,12 +48,24 @@ final class AuthStore: ObservableObject {
     // after the forced sign-out. Cleared when the user dismisses the alert.
     @Published var accountBlockedMessage: String?
 
+    private var cancellables = Set<AnyCancellable>()
+
     init(
         apiClient: APIClientProtocol = APIClient.shared,
         keychain: KeychainService = .shared
     ) {
         self.apiClient = apiClient
         self.keychain = keychain
+
+        // Admin-initiated mode switch: the server broadcasts `profile_updated`
+        // to this user; refetch the profile so ContentView re-derives the
+        // Driver/Owner tab set immediately instead of on next app launch.
+        WebSocketManager.shared.profileUpdatedPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { await self?.refreshCurrentUser() }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Initialization

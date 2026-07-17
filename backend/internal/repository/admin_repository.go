@@ -26,11 +26,21 @@ func NewAdminRepository(db *database.DB) *AdminRepository {
 // ========== USERS ==========
 
 type AdminUserRow struct {
-	ID               uuid.UUID  `json:"id"`
-	Email            string     `json:"email"`
-	Role             string     `json:"role"`
-	FirstName        string     `json:"first_name"`
-	LastName         string     `json:"last_name"`
+	ID    uuid.UUID `json:"id"`
+	Email string    `json:"email"`
+	// Role is the users.role mirror (kept in sync with the active profile).
+	Role string `json:"role"`
+	// SignupRole is the role chosen at sign-up: the user's EARLIEST profile.
+	// nil only for legacy rows with no profiles (fall back to Role).
+	SignupRole *string `json:"signup_role,omitempty"`
+	// ActiveRole is the CURRENT mode: the role of the profile pointed to by
+	// users.active_profile_id. nil when no active profile is set.
+	ActiveRole *string `json:"active_role,omitempty"`
+	// ProfileRoles lists every mode profile the user has created, oldest
+	// first — tells the admin whether a switch target already exists.
+	ProfileRoles []string   `json:"profile_roles"`
+	FirstName    string     `json:"first_name"`
+	LastName     string     `json:"last_name"`
 	Phone            *string    `json:"phone,omitempty"`
 	IsEmailVerified  bool       `json:"is_email_verified"`
 	OnboardingStatus string     `json:"onboarding_status"`
@@ -90,7 +100,11 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 
 	args = append(args, limit, (page-1)*limit)
 	listSQL := fmt.Sprintf(`
-		SELECT u.id, u.email, u.role, u.first_name, u.last_name, u.phone,
+		SELECT u.id, u.email, u.role,
+		       (SELECT p.role::text FROM user_profiles p WHERE p.user_id = u.id ORDER BY p.created_at ASC LIMIT 1) AS signup_role,
+		       (SELECT p.role::text FROM user_profiles p WHERE p.id = u.active_profile_id)                          AS active_role,
+		       ARRAY(SELECT p.role::text FROM user_profiles p WHERE p.user_id = u.id ORDER BY p.created_at ASC)     AS profile_roles,
+		       u.first_name, u.last_name, u.phone,
 		       u.is_email_verified, u.onboarding_status,
 		       u.is_blocked, u.blocked_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license') AS has_license,
@@ -112,7 +126,9 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 	out := []AdminUserRow{}
 	for rows.Next() {
 		var u AdminUserRow
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.FirstName, &u.LastName, &u.Phone,
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role,
+			&u.SignupRole, &u.ActiveRole, &u.ProfileRoles,
+			&u.FirstName, &u.LastName, &u.Phone,
 			&u.IsEmailVerified, &u.OnboardingStatus,
 			&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
 			&u.HasLicense, &u.Rating, &u.RatingCount,
@@ -127,7 +143,11 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 func (r *AdminRepository) GetUserDetail(ctx context.Context, id uuid.UUID) (*AdminUserRow, error) {
 	var u AdminUserRow
 	err := r.db.Pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.role, u.first_name, u.last_name, u.phone,
+		SELECT u.id, u.email, u.role,
+		       (SELECT p.role::text FROM user_profiles p WHERE p.user_id = u.id ORDER BY p.created_at ASC LIMIT 1),
+		       (SELECT p.role::text FROM user_profiles p WHERE p.id = u.active_profile_id),
+		       ARRAY(SELECT p.role::text FROM user_profiles p WHERE p.user_id = u.id ORDER BY p.created_at ASC),
+		       u.first_name, u.last_name, u.phone,
 		       u.is_email_verified, u.onboarding_status,
 		       u.is_blocked, u.blocked_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license'),
@@ -136,7 +156,9 @@ func (r *AdminRepository) GetUserDetail(ctx context.Context, id uuid.UUID) (*Adm
 		       u.created_at
 		FROM users u
 		WHERE u.id = $1
-	`, id).Scan(&u.ID, &u.Email, &u.Role, &u.FirstName, &u.LastName, &u.Phone,
+	`, id).Scan(&u.ID, &u.Email, &u.Role,
+		&u.SignupRole, &u.ActiveRole, &u.ProfileRoles,
+		&u.FirstName, &u.LastName, &u.Phone,
 		&u.IsEmailVerified, &u.OnboardingStatus,
 		&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
 		&u.HasLicense, &u.Rating, &u.RatingCount,

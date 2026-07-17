@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import DataTable from '../components/DataTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -12,6 +13,7 @@ import { useToastStore } from '../stores/toast'
 import { fmtDate } from '../utils/format'
 
 const toast = useToastStore()
+const router = useRouter()
 
 const rows = ref<AdminUser[]>([])
 const total = ref(0)
@@ -159,6 +161,57 @@ async function confirmBlock() {
   }
 }
 
+// --- live chat (admin-initiated support conversation) ---
+// Opens (or creates) the user's ONE support chat — the same thread their
+// in-app Ask-for-Help button uses — and jumps to Support with it selected.
+const openingChatFor = ref<string | null>(null)
+async function openLiveChat(u: AdminUser) {
+  if (openingChatFor.value) return
+  openingChatFor.value = u.id
+  try {
+    const res = await adminApi.openSupportChat(u.id)
+    router.push({ name: 'support', query: { chat: res.chat_id } })
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to open live chat')
+  } finally {
+    openingChatFor.value = null
+  }
+}
+
+// --- mode switch (sign-up role vs current mode) ---
+// The user's CURRENT mode can be changed by admin — e.g. when someone is
+// stuck unable to switch to Owner mode themselves. The target profile is
+// created server-side if missing; the user's device updates via WS + push.
+const pendingSwitch = ref<AdminUser | null>(null)
+const switchTarget = ref<'driver' | 'car_owner'>('driver')
+const switching = ref(false)
+function currentMode(u: AdminUser): string { return u.active_role ?? u.role }
+function otherMode(u: AdminUser): 'driver' | 'car_owner' {
+  return currentMode(u) === 'driver' ? 'car_owner' : 'driver'
+}
+function askSwitch(u: AdminUser) {
+  switchTarget.value = otherMode(u)
+  pendingSwitch.value = u
+}
+async function confirmSwitch() {
+  const u = pendingSwitch.value
+  if (!u || switching.value) return
+  switching.value = true
+  try {
+    await adminApi.setUserActiveProfile(u.id, switchTarget.value)
+    u.active_role = switchTarget.value
+    u.role = switchTarget.value // users.role mirrors the active profile
+    if (!u.profile_roles?.includes(switchTarget.value)) u.profile_roles?.push(switchTarget.value)
+    if (drawerUser.value?.id === u.id) drawerUser.value = { ...u }
+    toast.success(`Switched to ${roleLabel(switchTarget.value)} mode — the user's app updates automatically`)
+  } catch (e: any) {
+    toast.error(e?.message || 'Mode switch failed')
+  } finally {
+    switching.value = false
+    pendingSwitch.value = null
+  }
+}
+
 // --- password reset ---
 // Passwords are stored as one-way bcrypt hashes: there is nothing to view or
 // hand out, by design. The only admin remedy for "can't log in" is emailing
@@ -281,7 +334,8 @@ function onboardingLabel(s: string) {
     <template #header>
       <th>Email</th>
       <th>Full Name</th>
-      <th>Role</th>
+      <th>Signed up as</th>
+      <th>Current mode</th>
       <th>Rating</th>
       <th>Status</th>
       <th>Created</th>
@@ -290,7 +344,8 @@ function onboardingLabel(s: string) {
     <template #row="{ row }">
       <td>{{ row.email }}</td>
       <td>{{ row.first_name }} {{ row.last_name }}</td>
-      <td>{{ roleLabel(row.role) }}</td>
+      <td>{{ roleLabel(row.signup_role ?? row.role) }}</td>
+      <td>{{ roleLabel(currentMode(row)) }}</td>
       <td><StarRating :rating="row.rating" :count="row.rating_count" /></td>
       <td>
         <StatusBadge
@@ -300,6 +355,12 @@ function onboardingLabel(s: string) {
       </td>
       <td>{{ fmtDate(row.created_at) }}</td>
       <td class="actions" @click.stop>
+        <button
+          class="ghost"
+          :disabled="openingChatFor === row.id"
+          title="Open a live support chat with this user"
+          @click="openLiveChat(row)"
+        >💬 Chat</button>
         <button class="ghost" @click="openDetails(row)">Details</button>
         <button class="ghost" @click="askReset(row)">Reset password</button>
         <button :class="row.is_blocked ? 'primary' : 'danger'" @click="askBlock(row)">
@@ -314,7 +375,14 @@ function onboardingLabel(s: string) {
     <dl class="kv">
       <dt>Email</dt><dd>{{ drawerUser.email }}</dd>
       <dt>Phone</dt><dd>{{ drawerUser.phone || '—' }}</dd>
-      <dt>Role</dt><dd>{{ roleLabel(drawerUser.role) }}</dd>
+      <dt>Signed up as</dt><dd>{{ roleLabel(drawerUser.signup_role ?? drawerUser.role) }}</dd>
+      <dt>Current mode</dt>
+      <dd class="mode-cell">
+        <span>{{ roleLabel(currentMode(drawerUser)) }}</span>
+        <button class="ghost" :disabled="switching" @click="askSwitch(drawerUser)">
+          Switch to {{ roleLabel(otherMode(drawerUser)) }}
+        </button>
+      </dd>
       <dt>Rating</dt><dd><StarRating :rating="drawerUser.rating" :count="drawerUser.rating_count" /></dd>
       <dt>Email verified</dt><dd>{{ drawerUser.is_email_verified ? 'Yes' : 'No' }}</dd>
       <dt>Onboarding</dt><dd>{{ onboardingLabel(drawerUser.onboarding_status) }}</dd>
@@ -382,6 +450,11 @@ function onboardingLabel(s: string) {
     </p>
 
     <div class="drawer-actions">
+      <button
+        class="secondary"
+        :disabled="openingChatFor === drawerUser.id"
+        @click="openLiveChat(drawerUser)"
+      >💬 Live chat</button>
       <button class="secondary" @click="startEdit(drawerUser)">Edit profile</button>
       <button class="secondary" @click="askReset(drawerUser)">Send password reset</button>
       <button :class="drawerUser.is_blocked ? 'primary' : 'danger'" @click="askBlock(drawerUser)">
@@ -463,6 +536,15 @@ function onboardingLabel(s: string) {
   />
 
   <ConfirmDialog
+    :open="!!pendingSwitch"
+    :title="`Switch to ${roleLabel(switchTarget)} mode?`"
+    :message="`${pendingSwitch?.email} will be switched to ${roleLabel(switchTarget)} mode immediately — their app updates via live connection and push. If they don't have a ${roleLabel(switchTarget)} profile yet, one is created. Switching to Driver requires a valid driver's license on file.`"
+    :confirm-label="switching ? 'Switching…' : `Switch to ${roleLabel(switchTarget)}`"
+    @confirm="confirmSwitch"
+    @cancel="pendingSwitch = null"
+  />
+
+  <ConfirmDialog
     :open="!!pendingBlock"
     :title="pendingBlock?.is_blocked ? 'Unblock user?' : 'Block user?'"
     :message="pendingBlock?.is_blocked
@@ -500,6 +582,7 @@ select { width: 160px; }
 }
 .drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
+.mode-cell { display: flex; align-items: center; gap: 10px; }
 .docs-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .docs-section h3 { margin: 0 0 12px; font-size: 14px; }
 .muted { color: var(--text-muted); font-size: 13px; }

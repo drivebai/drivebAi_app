@@ -52,7 +52,13 @@ type AdminHandler struct {
 	// docRepo powers the driver-license review endpoints (list + status).
 	// Wired via SetDocumentRepository; nil in tests that don't need it.
 	docRepo *repository.DocumentRepository
-	logger  *slog.Logger
+	// profileRepo powers the admin mode switch (SetUserActiveProfile).
+	// Wired via SetProfileRepository; nil in tests that don't need it.
+	profileRepo *repository.ProfileRepository
+	// supportRepo powers admin-INITIATED live chat (open-or-create the
+	// target user's support chat). Wired via SetSupportRepository.
+	supportRepo *repository.SupportRepository
+	logger      *slog.Logger
 }
 
 func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, urlSigner *PrivateURLSigner, logger *slog.Logger) *AdminHandler {
@@ -63,6 +69,63 @@ func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository
 // license review endpoints. Setter for the usual test-compat reason.
 func (h *AdminHandler) SetDocumentRepository(docRepo *repository.DocumentRepository) {
 	h.docRepo = docRepo
+}
+
+// SetProfileRepository wires the mode-profile store used by the admin
+// active-profile switch. Setter for the usual test-compat reason.
+func (h *AdminHandler) SetProfileRepository(profileRepo *repository.ProfileRepository) {
+	h.profileRepo = profileRepo
+}
+
+// SetSupportRepository wires the support-chat store used by the admin
+// live-chat initiation. Setter for the usual test-compat reason.
+func (h *AdminHandler) SetSupportRepository(supportRepo *repository.SupportRepository) {
+	h.supportRepo = supportRepo
+}
+
+// OpenSupportChatWithUser — POST /admin/users/{id}/support-chat
+//
+// Admin-initiated live chat: opens (or creates) the ONE support chat this
+// user has — the same thread their in-app "Ask for Help" button opens, so
+// there is a single conversation per user, never two disconnected inboxes.
+// Returns the chat id; the admin console then navigates to Support with it
+// preselected. Messages the admin sends there notify the user (push +
+// in-app) via the existing SendSupportMessage path.
+func (h *AdminHandler) OpenSupportChatWithUser(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	user, err := h.userRepo.GetByID(r.Context(), id)
+	if err != nil {
+		if models.GetAPIError(err) == models.ErrUserNotFound {
+			httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "user not found"))
+			return
+		}
+		h.logger.Error("admin open support chat: load user", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if user.Role == models.RoleAdmin {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("admin accounts don't have support chats"))
+		return
+	}
+	if h.supportRepo == nil {
+		h.logger.Error("admin open support chat: support repository not wired")
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	chat, err := h.supportRepo.GetOrCreateChat(r.Context(), id)
+	if err != nil {
+		h.logger.Error("admin open support chat: get-or-create", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"chat_id": chat.ID,
+		"user_id": id,
+	})
 }
 
 // SetNotificationHandler wires the central NotificationHandler so admin
@@ -304,6 +367,118 @@ func (h *AdminHandler) UpdateUserDocumentStatus(w http.ResponseWriter, r *http.R
 				"Your "+docName+" has been reviewed and approved.",
 				nil, nil)
 		}
+	}
+}
+
+type setActiveProfileBody struct {
+	Role string `json:"role"`
+}
+
+// SetUserActiveProfile — PATCH /admin/users/{id}/active-profile
+//
+// THE dedicated admin flow for changing a user's current mode (the comment
+// on UpdateUserProfile has always pointed role changes here). Mirrors the
+// user-side switch exactly:
+//   - target profile is created lazily if the user never made one — the
+//     client's scenario ("user is having trouble switching") is usually
+//     exactly that, so the switch must not 500 or dead-end;
+//   - switching TO driver applies the same license gate as the user-side
+//     switch (409 DRIVER_DOCS_REQUIRED) so an admin can't put a user into a
+//     state the app itself would refuse;
+//   - the device is told immediately: a `profile_updated` WS event triggers
+//     an iOS profile refetch, plus a system push for the app-closed case.
+func (h *AdminHandler) SetUserActiveProfile(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	var body setActiveProfileBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid body"))
+		return
+	}
+	role := models.Role(body.Role)
+	if role != models.RoleDriver && role != models.RoleCarOwner {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("role must be 'driver' or 'car_owner'"))
+		return
+	}
+
+	user, err := h.userRepo.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) || models.GetAPIError(err) == models.ErrUserNotFound {
+			httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "user not found"))
+			return
+		}
+		h.logger.Error("admin set active profile: load user", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if user.Role == models.RoleAdmin {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("admin accounts have no driver/owner mode"))
+		return
+	}
+	if user.Role == role {
+		// Already in the requested mode — idempotent no-op.
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "active_role": string(role)})
+		return
+	}
+
+	// Same gate as the user-side switch: driver mode requires a usable
+	// (non-rejected) driver's license on file.
+	if role == models.RoleDriver && h.docRepo != nil {
+		hasDocs, derr := h.docRepo.HasRequiredDocuments(r.Context(), id)
+		if derr != nil {
+			h.logger.Error("admin set active profile: doc gate", "error", derr)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if !hasDocs {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("DRIVER_DOCS_REQUIRED",
+				"The user has no valid driver's license on file — they must upload one before switching to driver mode"))
+			return
+		}
+	}
+
+	if h.profileRepo == nil {
+		h.logger.Error("admin set active profile: profile repository not wired")
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	// Idempotent upsert: creates the missing profile (the usual reason the
+	// user-side switch was "having trouble"), returns the existing one
+	// untouched otherwise.
+	profile, err := h.profileRepo.Create(r.Context(), id, role, models.OnboardingRoleSelected)
+	if err != nil {
+		h.logger.Error("admin set active profile: ensure profile", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if err := h.userRepo.SetActiveProfile(r.Context(), id, profile.ID, profile.Role); err != nil {
+		h.logger.Error("admin set active profile: activate", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "active_role": string(role)})
+
+	roleLabel := "Owner"
+	if role == models.RoleDriver {
+		roleLabel = "Driver"
+	}
+	if h.wsHub != nil {
+		h.wsHub.Broadcast(&ws.Event{
+			Type:          "profile_updated",
+			Payload:       map[string]any{"active_role": string(role)},
+			TargetUserIDs: []uuid.UUID{id},
+		})
+	}
+	if h.notifHandler != nil {
+		go h.notifHandler.Notify(id, models.NotificationTypeSystem,
+			"Account mode changed",
+			"Support switched your account to "+roleLabel+" mode. Reopen the app if you don't see the change.",
+			nil, nil)
 	}
 }
 
@@ -773,16 +948,17 @@ func (h *AdminHandler) SendSupportMessage(w http.ResponseWriter, r *http.Request
 			TargetUserIDs: []uuid.UUID{chatUserID},
 		})
 
-		// Push notification so backgrounded users see the support reply
-		// without having to refresh. System type keeps it grouped under
-		// "system" in Notification Center rather than mixed with chats.
+		// Push notification so backgrounded users see the support message
+		// without having to refresh. The dedicated support_message type
+		// makes the TAP deep-link straight into the support chat on iOS
+		// (system pushes intentionally don't navigate).
 		if h.notifHandler != nil {
 			preview := body.Body
 			if len(preview) > 140 {
 				preview = preview[:140] + "…"
 			}
-			go h.notifHandler.Notify(chatUserID, models.NotificationTypeSystem,
-				"Support replied", preview, nil, nil)
+			go h.notifHandler.Notify(chatUserID, models.NotificationTypeSupportMessage,
+				"Message from DriveBai support", preview, nil, nil)
 		}
 	}
 

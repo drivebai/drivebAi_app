@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { adminApi } from '../api/admin'
 import type { AdminSupportChat, AdminSupportMessage } from '../api/types'
@@ -9,6 +10,7 @@ import { fmtDateTime, imgUrl } from '../utils/format'
 
 const toast = useToastStore()
 const support = useSupportStore()
+const route = useRoute()
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -46,8 +48,17 @@ async function loadChats() {
     const res = await adminApi.listSupportChats()
     chats.value = res.chats
     support.setTotalUnread(totalUnreadInList.value)
-    // Auto-select first chat if none selected
-    if (!selected.value && res.chats.length) await selectChat(res.chats[0])
+    // Deep-link from the Users page 💬 action: ?chat=<id> preselects that
+    // user's chat (GetOrCreate ran first, so the row is in the list even
+    // when the conversation is brand new and empty).
+    const wanted = typeof route.query.chat === 'string' ? route.query.chat : null
+    const target = wanted ? res.chats.find(c => c.id === wanted) : null
+    if (target) {
+      await selectChat(target)
+    } else if (!selected.value && res.chats.length) {
+      // Auto-select first chat if none selected
+      await selectChat(res.chats[0])
+    }
   } catch (e: any) {
     toast.error(e?.message || 'Failed to load support chats')
   } finally {

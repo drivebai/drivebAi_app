@@ -22,6 +22,10 @@ const (
 	// verification updates, and accident notifications — anything that
 	// doesn't fit the lease/payment/handover/chat buckets above.
 	NotificationTypeSystem NotificationType = "system"
+	// NotificationTypeSupportMessage — a support/admin message to the user.
+	// Distinct from `system` so the iOS push TAP can deep-link straight
+	// into the support chat (system pushes intentionally don't navigate).
+	NotificationTypeSupportMessage NotificationType = "support_message"
 )
 
 // Notification is the DB-backed record stored per user.

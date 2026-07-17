@@ -101,6 +101,14 @@ struct OwnerTabView: View {
             guard next != nil else { return }
             selectedTab = 2
         }
+        // Push tap on a `support_message` (admin wrote to this user's
+        // support chat) → present SupportChatView directly so the message
+        // "pops up" ready to respond to.
+        .onChange(of: deepLinkRouter.pendingSupportChatTap) { _, tapped in
+            guard tapped else { return }
+            showSupport = true
+            deepLinkRouter.clearPendingSupportChatTap()
+        }
     }
 }
 

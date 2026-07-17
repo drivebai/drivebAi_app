@@ -11,7 +11,14 @@ export interface Page<T> {
 export interface AdminUser {
   id: string
   email: string
+  /** users.role mirror — kept in sync with the active profile. */
   role: 'driver' | 'car_owner' | 'admin'
+  /** Role chosen at sign-up (earliest profile); null for legacy rows. */
+  signup_role?: 'driver' | 'car_owner' | null
+  /** CURRENT mode (role of the active profile); null if none set. */
+  active_role?: 'driver' | 'car_owner' | null
+  /** Every mode profile the user has, oldest first. */
+  profile_roles: string[]
   first_name: string
   last_name: string
   phone?: string | null

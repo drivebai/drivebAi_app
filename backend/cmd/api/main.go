@@ -196,6 +196,8 @@ func main() {
 	adminHandler.SetNotificationHandler(notifHandler)
 	adminHandler.SetBlockList(blockList)
 	adminHandler.SetDocumentRepository(docRepo)
+	adminHandler.SetProfileRepository(profileRepo)
+	adminHandler.SetSupportRepository(supportRepo)
 	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
 	// internals: reset-token store + the transactional email sender.
 	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
@@ -487,6 +489,12 @@ func main() {
 				// signed URLs + approve/decline with required decline reason.
 				r.Get("/users/{id}/documents", adminHandler.ListUserDocuments)
 				r.Patch("/users/{id}/documents/{docId}/status", adminHandler.UpdateUserDocumentStatus)
+				// Admin mode switch: change the user's CURRENT mode
+				// (driver/owner), creating the target profile if missing.
+				r.Patch("/users/{id}/active-profile", adminHandler.SetUserActiveProfile)
+				// Admin-initiated live chat: open/create this user's ONE
+				// support chat (same thread as their Ask-for-Help button).
+				r.Post("/users/{id}/support-chat", adminHandler.OpenSupportChatWithUser)
 
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)

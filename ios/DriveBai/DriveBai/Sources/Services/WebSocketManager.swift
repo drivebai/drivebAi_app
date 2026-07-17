@@ -54,6 +54,12 @@ final class WebSocketManager: ObservableObject {
     // Support chat events — admin reply arrives in real-time
     let supportMessageCreatedPublisher = PassthroughSubject<SupportMessageAPIResponse, Never>()
 
+    /// `profile_updated` — an admin changed this user's active mode
+    /// (driver/owner). Payload is the new active role string when present.
+    /// AuthStore listens and refetches the profile so the tab set flips
+    /// without the user reopening the app.
+    let profileUpdatedPublisher = PassthroughSubject<String?, Never>()
+
     private var webSocketTask: URLSessionWebSocketTask?
     private let session: URLSession = .shared
     private let keychain: KeychainService = .shared
@@ -272,6 +278,10 @@ final class WebSocketManager: ObservableObject {
             if let msg = try? decoder.decode(SupportMessageAPIResponse.self, from: payloadData) {
                 supportMessageCreatedPublisher.send(msg)
             }
+        case "profile_updated":
+            // Payload: { "active_role": "driver" | "car_owner" }
+            let role = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: String])?["active_role"]
+            profileUpdatedPublisher.send(role)
         default:
             #if DEBUG
             print("[WebSocket] Unknown event type: \(type)")

@@ -42,6 +42,23 @@ export const adminApi = {
     api.post<{ message?: string }>(`${BASE}/users/${id}/reset-password`, {}),
 
   /**
+   * Admin-initiated live chat: open (or create) the user's ONE support
+   * chat — the same thread as their in-app Ask-for-Help button. Returns
+   * the chat id for preselecting it on the Support page.
+   */
+  openSupportChat: (id: string) =>
+    api.post<{ chat_id: string; user_id: string }>(`${BASE}/users/${id}/support-chat`, {}),
+
+  /**
+   * Switch the user's CURRENT mode (driver/owner). Creates the target
+   * profile if the user never made one; 409 DRIVER_DOCS_REQUIRED when
+   * switching to driver without a valid license on file. The user's
+   * device is updated via WebSocket + push.
+   */
+  setUserActiveProfile: (id: string, role: 'driver' | 'car_owner') =>
+    api.patch<{ ok: boolean; active_role: string }>(`${BASE}/users/${id}/active-profile`, { role }),
+
+  /**
    * Personal documents (driver's license + optional docs) with signed,
    * short-lived file URLs for inline viewing.
    */

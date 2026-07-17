@@ -273,6 +273,13 @@ func buildPushRequest(
 		// admin profile change vs accident) and shouldn't overwrite each
 		// other in the banner queue.
 
+	case models.NotificationTypeSupportMessage:
+		// Support/admin message — the iOS tap handler deep-links into
+		// SupportChatView off the `type` alone (one support chat per user,
+		// so no id needs to travel in the payload).
+		req.Category = "SUPPORT_MESSAGE"
+		req.ThreadID = "support"
+
 	default:
 		// Unknown type — still deliver the alert but with no special grouping.
 		req.Category = "SYSTEM"
