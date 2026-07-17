@@ -84,6 +84,12 @@ struct BillOfSaleFlowView: View {
     /// (user typing, in particular during a cold-start GET) counts.
     @State private var suppressDirtyTracking: Bool = false
 
+    /// Device-location auto-fill for the viewer's OWN address row (same
+    /// pattern as the listing wizard's pickup location): if the server row
+    /// loaded with no address, the first GPS fix fills it — still editable
+    /// via the map picker, and never overwriting an existing value.
+    @StateObject private var locationManager = LocationManager()
+
     private var isSeller: Bool { currentUserId == purchaseRequest.sellerId }
     private var isBuyer: Bool { currentUserId == purchaseRequest.buyerId }
 
@@ -179,6 +185,20 @@ struct BillOfSaleFlowView: View {
             .onChange(of: externalBoSStream) { _, fresh in
                 guard let fresh, fresh.purchaseRequestId == purchaseRequest.id else { return }
                 mergeExternalUpdate(fresh)
+            }
+            // Address auto-fill (client 7/16: "same location filler as the
+            // wizard"). Waits for the server row to load (hasSeeded) so a
+            // saved address is never raced, then requests one fix and fills
+            // the viewer's own empty address row whenever the fix arrives —
+            // even after a slow permission-dialog answer.
+            .onChange(of: hasSeeded) { _, seeded in
+                guard seeded, viewerAddressNeedsSeed else { return }
+                locationManager.requestPermission()
+                locationManager.requestLocation()
+            }
+            .onReceive(locationManager.$lastLocation) { coordinate in
+                guard let coordinate else { return }
+                Task { await applyDeviceAddressIfNeeded(coordinate) }
             }
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
@@ -1036,6 +1056,36 @@ struct BillOfSaleFlowView: View {
     }
 
     // MARK: - Address + title actions
+
+    /// True when the viewer's own address row is empty and still editable —
+    /// the ONLY case the device-location auto-fill may write. The
+    /// counterparty's row and signature-locked rows are never touched.
+    private var viewerAddressNeedsSeed: Bool {
+        guard hasSeeded else { return false }
+        if isSeller { return sellerAddress.isEmpty && !sellerLockedForEdits }
+        if isBuyer { return buyerAddress.isEmpty && !buyerLockedForEdits }
+        return false
+    }
+
+    /// Fills the viewer's empty address row from a device fix, through the
+    /// SAME apply path as a manual map pick (marks the step dirty, so it
+    /// persists via the normal save flow). Guarded before and after the
+    /// async reverse-geocode so a manual pick made meanwhile always wins;
+    /// an unresolvable fix writes nothing — a legal document never gets
+    /// "Unknown location" as an address.
+    @MainActor
+    private func applyDeviceAddressIfNeeded(_ coordinate: CLLocationCoordinate2D) async {
+        guard viewerAddressNeedsSeed else { return }
+        guard let resolved = await LocationGeocoder.reverseGeocode(coordinate),
+              !resolved.isEmpty else { return }
+        guard viewerAddressNeedsSeed else { return }
+
+        if isSeller {
+            applySellerAddress(coord: coordinate, resolved: resolved)
+        } else if isBuyer {
+            applyBuyerAddress(coord: coordinate, resolved: resolved)
+        }
+    }
 
     private func applySellerAddress(coord: CLLocationCoordinate2D, resolved: ResolvedAddress) {
         // Persist the resolved human address string + coordinate — never a bare
