@@ -347,9 +347,11 @@ type CarOwnerResponse struct {
 	ID              uuid.UUID `json:"id"`
 	Name            string    `json:"name"`
 	ProfilePhotoURL *string   `json:"profile_photo_url,omitempty"`
-	// Rating and review count would come from a reviews table in the future
-	Rating      float64 `json:"rating"`
-	ReviewCount int     `json:"review_count"`
+	// Rating is the owner's real aggregate from the reviews table, filled in
+	// by the handler (CarHandler.applyOwnerRatings). nil means "no ratings
+	// yet" — clients must render that, never a default number.
+	Rating      *float64 `json:"rating,omitempty"`
+	ReviewCount int      `json:"review_count"`
 }
 
 // ToResponse converts a Car model to CarResponse.
@@ -475,12 +477,12 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 		if owner.LastName != "" {
 			ownerName += " " + owner.LastName
 		}
+		// Rating/ReviewCount are populated by the handler from the reviews
+		// table (nil/0 until then — never a hardcoded default).
 		resp.Owner = &CarOwnerResponse{
 			ID:              owner.ID,
 			Name:            ownerName,
 			ProfilePhotoURL: owner.ProfilePhotoURL,
-			Rating:          5.0, // Default rating for now
-			ReviewCount:     0,   // Default review count
 		}
 	}
 

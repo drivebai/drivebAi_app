@@ -21,6 +21,10 @@ export interface AdminUser {
   blocked_at?: string | null
   profile_photo_url?: string | null
   has_license: boolean
+  // Real review aggregate (rating received as a transaction party).
+  // rating is absent/null with rating_count 0 = no ratings yet.
+  rating?: number | null
+  rating_count: number
   created_at: string
 }
 
@@ -56,6 +60,10 @@ export interface AdminCar {
   currency: string
   address?: string | null
   cover_photo_url?: string | null
+  // Real vehicle review aggregate; rating absent/null with rating_count 0
+  // = no ratings yet.
+  rating?: number | null
+  rating_count: number
   created_at: string
   /**
    * Server-computed list of required document types this car is still

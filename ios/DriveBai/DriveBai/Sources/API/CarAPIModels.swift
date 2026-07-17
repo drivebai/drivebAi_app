@@ -193,7 +193,8 @@ struct CarOwnerAPIResponse: Codable {
     let id: UUID
     let name: String
     let profilePhotoUrl: String?
-    let rating: Double
+    /// nil when the owner has no reviews yet (server omits the field).
+    let rating: Double?
     let reviewCount: Int
 
     enum CodingKeys: String, CodingKey {
@@ -406,11 +407,12 @@ extension CarAPIResponse {
                 reviewCount: owner.reviewCount
             )
         } else {
+            // No owner payload — no rating information, not a fake 5.0.
             carOwner = CarOwnerInfo(
                 id: ownerId,
                 name: "Owner",
                 avatarURL: nil,
-                rating: 5.0,
+                rating: nil,
                 reviewCount: 0
             )
         }

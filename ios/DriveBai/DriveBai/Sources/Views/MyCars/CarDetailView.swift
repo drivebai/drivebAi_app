@@ -451,18 +451,24 @@ private struct CarOwnerSection: View {
                         .foregroundColor(.primary)
 
                     HStack(spacing: 4) {
-                        Image(systemName: "star.fill")
-                            .font(.caption)
-                            .foregroundColor(.yellow)
+                        if owner.hasRating {
+                            Image(systemName: "star.fill")
+                                .font(.caption)
+                                .foregroundColor(.yellow)
 
-                        Text(owner.ratingFormatted)
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .foregroundColor(.primary)
+                            Text(owner.ratingFormatted)
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(.primary)
 
-                        Text("(\(owner.reviewCount) reviews)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            Text("(\(owner.reviewCount) \(owner.reviewCount == 1 ? "review" : "reviews"))")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("No ratings yet")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 

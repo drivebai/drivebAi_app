@@ -817,6 +817,14 @@ final class APIClient: APIClientProtocol {
 
     // MARK: - Support Chat Methods
 
+    // MARK: - Reviews
+
+    /// Rate a completed purchase or rental (1–5 stars for the car and/or
+    /// the counterparty). 409 REVIEW_ALREADY_EXISTS on double submission.
+    func submitReview(_ request: SubmitReviewRequest) async throws -> SubmitReviewResponse {
+        try await post(path: "reviews", body: request, authenticated: true)
+    }
+
     func getOrCreateSupportChat() async throws -> SupportChatAPIResponse {
         try await postEmpty(path: "support/chats", authenticated: true)
     }

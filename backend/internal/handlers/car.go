@@ -32,6 +32,49 @@ type CarHandler struct {
 	urlSigner          *PrivateURLSigner
 	minWeeklyRentPrice float64
 	autoApproveCars    bool
+	// reviewRepo feeds real owner rating aggregates into car responses.
+	// Wired via SetReviewRepository; nil in tests → "no ratings yet".
+	reviewRepo *repository.ReviewRepository
+}
+
+// SetReviewRepository wires the ratings store used to populate
+// Owner.Rating/ReviewCount on car responses.
+func (h *CarHandler) SetReviewRepository(r *repository.ReviewRepository) {
+	h.reviewRepo = r
+}
+
+// applyOwnerRating fills Owner.Rating/ReviewCount on the given responses
+// from the reviews table, batched per call (no N+1 on list paths). Nil-safe
+// and non-fatal: on any failure the response simply keeps nil/0, which
+// clients render as "No ratings yet".
+func (h *CarHandler) applyOwnerRating(ctx context.Context, resps ...*models.CarResponse) {
+	if h.reviewRepo == nil {
+		return
+	}
+	seen := map[uuid.UUID]bool{}
+	ids := make([]uuid.UUID, 0, len(resps))
+	for _, r := range resps {
+		if r != nil && r.Owner != nil && !seen[r.Owner.ID] {
+			seen[r.Owner.ID] = true
+			ids = append(ids, r.Owner.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	ratings, err := h.reviewRepo.GetUserRatings(ctx, ids)
+	if err != nil {
+		slog.Error("car: load owner ratings", "error", err)
+		return
+	}
+	for _, r := range resps {
+		if r != nil && r.Owner != nil {
+			if s, ok := ratings[r.Owner.ID]; ok {
+				r.Owner.Rating = s.Average
+				r.Owner.ReviewCount = s.Count
+			}
+		}
+	}
 }
 
 func NewCarHandler(
@@ -96,6 +139,7 @@ func (h *CarHandler) ListCars(w http.ResponseWriter, r *http.Request) {
 		}
 		responses = append(responses, resp)
 	}
+	h.applyOwnerRating(ctx, responses...)
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"cars": responses,
@@ -118,6 +162,7 @@ func (h *CarHandler) ownerCarResponse(ctx context.Context, carID, ownerID uuid.U
 	documents, _ := h.docRepo.GetByCarID(ctx, car.ID)
 	owner, _ := h.userRepo.GetByID(ctx, ownerID)
 	resp := car.ToResponse(photos, documents, owner, true)
+	h.applyOwnerRating(ctx, resp)
 	if rental != nil {
 		resp.ActiveRental = buildActiveRentalSummary(rental)
 	}
@@ -197,6 +242,7 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 
 	// GetCar 403s above unless the caller is the owner — VIN is safe here.
 	resp := car.ToResponse(photos, documents, owner, true)
+	h.applyOwnerRating(ctx, resp)
 	// active_rental carries driver name/earnings; the ownership 403 above
 	// already guarantees the requester is the owner, so it is safe to attach.
 	if rental != nil {
@@ -394,7 +440,9 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("car created", "car_id", car.ID, "user_id", userID, "auto_approved", h.autoApproveCars)
 	// Caller just created this car — they are the owner.
-	httputil.WriteJSON(w, http.StatusCreated, car.ToResponse(nil, nil, owner, true))
+	resp := car.ToResponse(nil, nil, owner, true)
+	h.applyOwnerRating(ctx, resp)
+	httputil.WriteJSON(w, http.StatusCreated, resp)
 }
 
 // UpdateCar updates an existing car listing
@@ -1378,6 +1426,7 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 		owner, _ := h.userRepo.GetByID(ctx, car.OwnerID)
 		responses = append(responses, car.ToResponse(photos, nil, owner, false))
 	}
+	h.applyOwnerRating(ctx, responses...)
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"listings": responses,

@@ -373,11 +373,13 @@ class CreateListingState: ObservableObject {
             zip: locationZip
         )
 
+        // Preview card for a listing being created — the owner's real rating
+        // (if any) comes from the server after save; never fake a 5.0 here.
         let owner = CarOwnerInfo(
             id: ownerId,
             name: ownerName,
             avatarURL: nil,
-            rating: 5.0,
+            rating: nil,
             reviewCount: 0
         )
 

@@ -20,6 +20,11 @@ struct VehicleReturnCard: View {
     /// "Got it" tap on a terminal completed/cancelled card.
     var onDismiss: (() -> Void)? = nil
 
+    /// Post-rental rating prompt (point 4): offered on the completed card
+    /// until the viewer submits (or the server says they already have).
+    @State private var showRatingSheet = false
+    @State private var hasRated = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -44,6 +49,10 @@ struct VehicleReturnCard: View {
                 cancelWindowRow(remaining: remaining)
             }
 
+            if vehicleReturn.status == .completed && !hasRated {
+                rateExperienceButton
+            }
+
             // CTAs: undo / confirm / dispute / dismiss.
             actionRow
         }
@@ -57,6 +66,37 @@ struct VehicleReturnCard: View {
         .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 2)
         .contentShape(Rectangle())
         .onTapGesture { onOpen() }
+        .sheet(isPresented: $showRatingSheet) {
+            RatingPromptSheet(
+                transactionType: "rental",
+                transactionId: vehicleReturn.id,
+                canRateCar: vehicleReturn.isDriver,
+                carTitle: vehicleReturn.carTitle,
+                partnerName: vehicleReturn.counterpartyName,
+                onFinished: { hasRated = true }
+            )
+        }
+    }
+
+    /// "Rate your experience" CTA on the completed return card.
+    private var rateExperienceButton: some View {
+        Button {
+            showRatingSheet = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "star")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Rate your experience")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(TodayLayout.tealAccent.opacity(0.12))
+            .foregroundColor(TodayLayout.tealAccent)
+            .cornerRadius(10)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Header / car

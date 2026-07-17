@@ -368,14 +368,19 @@ struct CarOwnerInfo: Equatable {
     let id: UUID
     let name: String
     let avatarURL: String?
-    let rating: Double
+    /// Real review aggregate from the server. nil = no ratings yet — render
+    /// "No ratings yet", never a default number.
+    let rating: Double?
     let reviewCount: Int
 
+    var hasRating: Bool { rating != nil && reviewCount > 0 }
+
     var ratingFormatted: String {
-        String(format: "%.1f", rating)
+        guard let rating, reviewCount > 0 else { return "No ratings yet" }
+        return String(format: "%.1f", rating)
     }
 
-    init(id: UUID = UUID(), name: String, avatarURL: String? = nil, rating: Double, reviewCount: Int) {
+    init(id: UUID = UUID(), name: String, avatarURL: String? = nil, rating: Double? = nil, reviewCount: Int = 0) {
         self.id = id
         self.name = name
         self.avatarURL = avatarURL

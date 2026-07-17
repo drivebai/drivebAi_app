@@ -100,6 +100,7 @@ func main() {
 	notifRepo := repository.NewNotificationRepository(db)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(db)
 	onboardingRepo := repository.NewOnboardingProgressRepository(db)
+	reviewRepo := repository.NewReviewRepository(db)
 
 	// Ensure uploads directory exists
 	uploadDir := cfg.UploadDir
@@ -168,6 +169,8 @@ func main() {
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
+	carHandler.SetReviewRepository(reviewRepo)
+	reviewHandler := handlers.NewReviewHandler(reviewRepo, logger)
 	// VIN decode gets ExistsByVIN so the wizard's Search step can show the
 	// early "already listed on DrivaBai" signal (same definition of "in use"
 	// as the create/update preflights).
@@ -304,6 +307,10 @@ func main() {
 
 			// Onboarding (signup flow)
 			r.Post("/onboarding/complete", userHandler.CompleteOnboarding)
+
+			// Ratings: rate the car and/or the counterparty of a COMPLETED
+			// purchase or rental (1-5 stars, once per transaction).
+			r.Post("/reviews", reviewHandler.SubmitReview)
 
 			// Product-tour ("onboarding") progress. All three endpoints are
 			// strictly self-scoped: the user id comes only from the JWT, so a

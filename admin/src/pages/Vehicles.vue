@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import DataTable from '../components/DataTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import StarRating from '../components/StarRating.vue'
 import Toggle from '../components/Toggle.vue'
 import Drawer from '../components/Drawer.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -180,6 +181,7 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
         <th>Vehicle</th>
         <th>Year</th>
         <th>Owner</th>
+        <th>Rating</th>
         <th>Status</th>
         <th>Docs</th>
         <th>Approved</th>
@@ -195,6 +197,7 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
         </td>
         <td>{{ row.year }}</td>
         <td>{{ row.owner_email || '—' }}</td>
+        <td><StarRating :rating="row.rating" :count="row.rating_count" /></td>
         <td><StatusBadge :label="row.status" :tone="statusTone(row.status)" /></td>
         <td>
           <StatusBadge
@@ -333,6 +336,7 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
         <dt>Make / Model</dt><dd>{{ detail.make }} {{ detail.model }}</dd>
         <dt>Year</dt><dd>{{ detail.year }}</dd>
         <dt>Owner</dt><dd>{{ detail.owner_email || '—' }}</dd>
+        <dt>Rating</dt><dd><StarRating :rating="detail.rating" :count="detail.rating_count" /></dd>
         <dt>Status</dt><dd><StatusBadge :label="detail.status" :tone="statusTone(detail.status)" /></dd>
         <dt>Required docs</dt>
         <dd>

@@ -5,6 +5,7 @@ import DataTable from '../components/DataTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import Drawer from '../components/Drawer.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import StarRating from '../components/StarRating.vue'
 import { adminApi } from '../api/admin'
 import type { AdminUser, AdminUserDocument } from '../api/types'
 import { useToastStore } from '../stores/toast'
@@ -281,6 +282,7 @@ function onboardingLabel(s: string) {
       <th>Email</th>
       <th>Full Name</th>
       <th>Role</th>
+      <th>Rating</th>
       <th>Status</th>
       <th>Created</th>
       <th></th>
@@ -289,6 +291,7 @@ function onboardingLabel(s: string) {
       <td>{{ row.email }}</td>
       <td>{{ row.first_name }} {{ row.last_name }}</td>
       <td>{{ roleLabel(row.role) }}</td>
+      <td><StarRating :rating="row.rating" :count="row.rating_count" /></td>
       <td>
         <StatusBadge
           :label="row.is_blocked ? 'Blocked' : 'Active'"
@@ -312,6 +315,7 @@ function onboardingLabel(s: string) {
       <dt>Email</dt><dd>{{ drawerUser.email }}</dd>
       <dt>Phone</dt><dd>{{ drawerUser.phone || '—' }}</dd>
       <dt>Role</dt><dd>{{ roleLabel(drawerUser.role) }}</dd>
+      <dt>Rating</dt><dd><StarRating :rating="drawerUser.rating" :count="drawerUser.rating_count" /></dd>
       <dt>Email verified</dt><dd>{{ drawerUser.is_email_verified ? 'Yes' : 'No' }}</dd>
       <dt>Onboarding</dt><dd>{{ onboardingLabel(drawerUser.onboarding_status) }}</dd>
       <dt>Status</dt>

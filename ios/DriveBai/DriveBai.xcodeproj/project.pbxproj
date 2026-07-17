@@ -146,6 +146,8 @@
 		F0DECA0001000000000000002 /* TourCatalogue.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000002 /* TourCatalogue.swift */; };
 		F0DECA0001000000000000003 /* TourLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000003 /* TourLogic.swift */; };
 		F0DECA0001000000000000004 /* ProductTourAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000004 /* ProductTourAnalytics.swift */; };
+		F1AECA0001000000000000001 /* ReviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AECA0002000000000000001 /* ReviewModels.swift */; };
+		F1AECA0001000000000000002 /* RatingPromptSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AECA0002000000000000002 /* RatingPromptSheet.swift */; };
 		F0DECA0001000000000000005 /* TourProgressAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000005 /* TourProgressAPI.swift */; };
 		F0DECA0001000000000000006 /* TourProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000006 /* TourProgressStore.swift */; };
 		F0DECA0001000000000000007 /* ProductTourCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000007 /* ProductTourCoordinator.swift */; };
@@ -318,6 +320,8 @@
 		F0DECA0002000000000000002 /* TourCatalogue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourCatalogue.swift; path = DriveBai/Sources/Onboarding/TourCatalogue.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000003 /* TourLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourLogic.swift; path = DriveBai/Sources/Onboarding/TourLogic.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000004 /* ProductTourAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProductTourAnalytics.swift; path = DriveBai/Sources/Onboarding/ProductTourAnalytics.swift; sourceTree = SOURCE_ROOT; };
+		F1AECA0002000000000000001 /* ReviewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReviewModels.swift; path = DriveBai/Sources/Models/Reviews/ReviewModels.swift; sourceTree = SOURCE_ROOT; };
+		F1AECA0002000000000000002 /* RatingPromptSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RatingPromptSheet.swift; path = DriveBai/Sources/Views/Reviews/RatingPromptSheet.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000005 /* TourProgressAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourProgressAPI.swift; path = DriveBai/Sources/Onboarding/TourProgressAPI.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000006 /* TourProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourProgressStore.swift; path = DriveBai/Sources/Onboarding/TourProgressStore.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000007 /* ProductTourCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProductTourCoordinator.swift; path = DriveBai/Sources/Onboarding/ProductTourCoordinator.swift; sourceTree = SOURCE_ROOT; };
@@ -381,6 +385,7 @@
 				8787D9FB2F5590C6001618B0 /* Frameworks */,
 				E00000010000000000000005 /* Products */,
 				F0DECA0003000000000000001 /* Onboarding */,
+				F1AECA0003000000000000001 /* Reviews */,
 				F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */,
 				AAD64FF183F0E45A5A9D1AB7 /* KeyHandoverAPIModels.swift */,
 				CB21474C8D5573D6466F4CBC /* KeyHandoverCard.swift */,
@@ -766,6 +771,15 @@
 			name = Onboarding;
 			sourceTree = "<group>";
 		};
+		F1AECA0003000000000000001 /* Reviews */ = {
+			isa = PBXGroup;
+			children = (
+				F1AECA0002000000000000001 /* ReviewModels.swift */,
+				F1AECA0002000000000000002 /* RatingPromptSheet.swift */,
+			);
+			name = Reviews;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -992,6 +1006,8 @@
 				F0DECA0001000000000000002 /* TourCatalogue.swift in Sources */,
 				F0DECA0001000000000000003 /* TourLogic.swift in Sources */,
 				F0DECA0001000000000000004 /* ProductTourAnalytics.swift in Sources */,
+				F1AECA0001000000000000001 /* ReviewModels.swift in Sources */,
+				F1AECA0001000000000000002 /* RatingPromptSheet.swift in Sources */,
 				F0DECA0001000000000000005 /* TourProgressAPI.swift in Sources */,
 				F0DECA0001000000000000006 /* TourProgressStore.swift in Sources */,
 				F0DECA0001000000000000007 /* ProductTourCoordinator.swift in Sources */,

@@ -23,6 +23,11 @@ struct PurchaseTodayCard: View {
     /// (or a "Preparing…" placeholder) once both parties have signed.
     @State private var bos: BillOfSale?
 
+    /// Post-sale rating prompt (point 4): shown on the completed card until
+    /// the viewer submits (or the server says they already have).
+    @State private var showRatingSheet = false
+    @State private var hasRated = false
+
     /// True once the purchase has reached (or passed) the fully-signed BoS
     /// stage — the only point at which a finalized PDF can exist.
     private var bosStageReached: Bool {
@@ -54,6 +59,10 @@ struct PurchaseTodayCard: View {
             // both parties have signed.
             BillOfSalePDFRow(billOfSale: bos, isTourTarget: true)
 
+            if purchaseRequest.status == .completed && !hasRated {
+                rateExperienceButton
+            }
+
             openButton
         }
         .padding(16)
@@ -67,6 +76,16 @@ struct PurchaseTodayCard: View {
         .contentShape(Rectangle())
         .onTapGesture { primaryTap() }
         .task(id: purchaseRequest.status) { await loadBoSIfNeeded() }
+        .sheet(isPresented: $showRatingSheet) {
+            RatingPromptSheet(
+                transactionType: "purchase",
+                transactionId: purchaseRequest.id,
+                canRateCar: isBuyer,
+                carTitle: purchaseRequest.carTitle,
+                partnerName: isBuyer ? purchaseRequest.sellerName : purchaseRequest.buyerName,
+                onFinished: { hasRated = true }
+            )
+        }
         // The PDF is rendered after the second signature, without changing the
         // purchase status — so a status-keyed task alone would leave this card
         // on "Preparing Bill of Sale…" until something else moved. Listen for
@@ -156,6 +175,27 @@ struct PurchaseTodayCard: View {
         .padding(10)
         .background(TodayLayout.tealAccent.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// "Rate your experience" CTA on the completed sale card.
+    private var rateExperienceButton: some View {
+        Button {
+            showRatingSheet = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "star")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("Rate your experience")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(TodayLayout.tealAccent.opacity(0.12))
+            .foregroundColor(TodayLayout.tealAccent)
+            .cornerRadius(10)
+        }
+        .buttonStyle(.plain)
     }
 
     private var openButton: some View {

@@ -41,8 +41,12 @@ type AdminUserRow struct {
 	// document rows (with status + signed URLs) via ListUserDocuments.
 	// Registration is deliberately absent: it is a car-owner document and
 	// must never appear as a driver requirement (client point 5, twice).
-	HasLicense bool      `json:"has_license"`
-	CreatedAt  time.Time `json:"created_at"`
+	HasLicense bool `json:"has_license"`
+	// Rating aggregate received as a transaction party (seller/buyer/
+	// owner/driver). nil + 0 = no ratings yet.
+	Rating      *float64  `json:"rating,omitempty"`
+	RatingCount int       `json:"rating_count"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type AdminUsersPage struct {
@@ -90,6 +94,8 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 		       u.is_email_verified, u.onboarding_status,
 		       u.is_blocked, u.blocked_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license') AS has_license,
+		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_user_id = u.id) AS rating,
+		       (SELECT COUNT(*) FROM reviews rv WHERE rv.subject_user_id = u.id)               AS rating_count,
 		       u.created_at
 		FROM users u
 		%s
@@ -109,7 +115,7 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.FirstName, &u.LastName, &u.Phone,
 			&u.IsEmailVerified, &u.OnboardingStatus,
 			&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
-			&u.HasLicense,
+			&u.HasLicense, &u.Rating, &u.RatingCount,
 			&u.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -125,13 +131,15 @@ func (r *AdminRepository) GetUserDetail(ctx context.Context, id uuid.UUID) (*Adm
 		       u.is_email_verified, u.onboarding_status,
 		       u.is_blocked, u.blocked_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license'),
+		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_user_id = u.id),
+		       (SELECT COUNT(*) FROM reviews rv WHERE rv.subject_user_id = u.id),
 		       u.created_at
 		FROM users u
 		WHERE u.id = $1
 	`, id).Scan(&u.ID, &u.Email, &u.Role, &u.FirstName, &u.LastName, &u.Phone,
 		&u.IsEmailVerified, &u.OnboardingStatus,
 		&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
-		&u.HasLicense,
+		&u.HasLicense, &u.Rating, &u.RatingCount,
 		&u.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -230,8 +238,12 @@ type AdminCarRow struct {
 	// have on file. Title is no longer required at approval (decision C —
 	// enforced at the Bill-of-Sale stage instead). The admin UI badges rows
 	// with a non-empty list, and ApproveCar 422s on the same computation.
-	MissingRequiredDocuments []string  `json:"missing_required_documents"`
-	CreatedAt                time.Time `json:"created_at"`
+	MissingRequiredDocuments []string `json:"missing_required_documents"`
+	// Vehicle rating aggregate from the reviews table (subject = this car).
+	// nil + 0 = no ratings yet.
+	Rating      *float64  `json:"rating,omitempty"`
+	RatingCount int       `json:"rating_count"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type AdminCarsPage struct {
@@ -278,6 +290,8 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 		       c.address,
 		       (SELECT p.file_url FROM car_photos p WHERE p.car_id = c.id AND p.slot_type = 'cover_front' LIMIT 1),
 		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id),
+		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_car_id = c.id),
+		       (SELECT COUNT(*) FROM reviews rv WHERE rv.subject_car_id = c.id),
 		       c.created_at
 		FROM cars c
 		LEFT JOIN users u ON u.id = c.owner_id
@@ -303,6 +317,7 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 			&c.Address,
 			&c.CoverPhotoURL,
 			&docTypes,
+			&c.Rating, &c.RatingCount,
 			&c.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -347,6 +362,8 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		       c.address,
 		       (SELECT p.file_url FROM car_photos p WHERE p.car_id = c.id AND p.slot_type = 'cover_front' LIMIT 1),
 		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id),
+		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_car_id = c.id),
+		       (SELECT COUNT(*) FROM reviews rv WHERE rv.subject_car_id = c.id),
 		       c.created_at,
 		       c.description
 		FROM cars c
@@ -359,6 +376,7 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		&c.Address,
 		&c.CoverPhotoURL,
 		&docTypes,
+		&c.Rating, &c.RatingCount,
 		&c.CreatedAt,
 		&c.Description)
 	if err != nil {
