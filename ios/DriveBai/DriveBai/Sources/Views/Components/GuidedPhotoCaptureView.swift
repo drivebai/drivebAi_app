@@ -43,7 +43,8 @@ struct GuidedPhotoCaptureView: View {
     @State private var currentIndex = 0
     @State private var captured: [PhotoSlotType: Data] = [:]
     @State private var reviewData: Data?
-    @State private var libraryItem: PhotosPickerItem?
+    @State private var showLibraryPicker = false
+    @State private var didSeedCaptures = false
     @State private var didComplete = false
 
     private var currentSlot: PhotoSlotType? {
@@ -64,26 +65,32 @@ struct GuidedPhotoCaptureView: View {
         }
         .statusBarHidden()
         .onAppear {
-            captured = initialCaptures
+            // onAppear re-fires whenever a cover presented from here (the
+            // library picker) dismisses — seed the slot progress only once
+            // so returning from the picker never wipes this session's shots.
+            if !didSeedCaptures {
+                didSeedCaptures = true
+                captured = initialCaptures
+            }
             camera.start()
         }
         .onDisappear {
             camera.stop()
         }
-        // The library picker is the PhotosPicker BUTTON component (see the
-        // two call sites), not the `.photosPicker(isPresented:)` modifier:
-        // the modifier variant's sheet auto-dismisses when presented over
-        // this fullScreenCover (picker flashed open and snapped back to the
-        // camera — client 7/16). The button owns its presentation internally
-        // and is immune to ancestor re-renders.
-        .onChange(of: libraryItem) { _, newItem in
-            guard let item = newItem else { return }
-            libraryItem = nil
-            Task {
-                guard let data = try? await item.loadTransferable(type: Data.self),
-                      let normalized = Self.normalizedJPEG(from: data) else { return }
-                await MainActor.run { acceptShot(normalized) }
+        // Library picker: PHPickerViewController presented as a
+        // fullScreenCover. BOTH SwiftUI-native variants glitched here — the
+        // `.photosPicker(isPresented:)` sheet auto-dismissed over this
+        // camera cover, and the PhotosPicker button tore the camera view
+        // down to the fallback screen (client 7/16, twice). A UIKit picker
+        // inside cover-over-cover presents deterministically; the camera
+        // pauses via onDisappear while picking and restarts on return.
+        .fullScreenCover(isPresented: $showLibraryPicker) {
+            PhotoLibraryPicker { data in
+                showLibraryPicker = false
+                guard let data, let normalized = Self.normalizedJPEG(from: data) else { return }
+                acceptShot(normalized)
             }
+            .ignoresSafeArea()
         }
     }
 
@@ -224,11 +231,9 @@ struct GuidedPhotoCaptureView: View {
             .accessibilityLabel("Take photo")
 
             HStack {
-                PhotosPicker(selection: $libraryItem, matching: .images) {
-                    Text("Choose from library")
-                        .font(.subheadline)
-                        .foregroundColor(.white)
-                }
+                Button("Choose from library") { showLibraryPicker = true }
+                    .font(.subheadline)
+                    .foregroundColor(.white)
 
                 Spacer()
 
@@ -326,7 +331,9 @@ struct GuidedPhotoCaptureView: View {
                 .foregroundColor(.white)
             }
 
-            PhotosPicker(selection: $libraryItem, matching: .images) {
+            Button {
+                showLibraryPicker = true
+            } label: {
                 Label("Choose from library", systemImage: "photo.on.rectangle")
                     .font(.headline)
                     .foregroundColor(.black)
@@ -544,6 +551,66 @@ private struct CameraPreviewView: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewHostView, context: Context) {
         if uiView.previewLayer.session !== session {
             uiView.previewLayer.session = session
+        }
+    }
+}
+
+// MARK: - UIKit photo-library picker
+//
+// PHPickerViewController wrapped for presentation as a fullScreenCover from
+// the guided-capture camera. Both SwiftUI-native pickers glitched in that
+// context (sheet auto-dismissal / camera-view teardown), so the system
+// picker is presented directly — cover-over-cover is deterministic. Runs
+// out of process: no photo-library permission required.
+struct PhotoLibraryPicker: UIViewControllerRepresentable {
+    /// Called exactly once: image data on pick, nil on cancel/failure.
+    /// The caller dismisses the cover.
+    let onPick: (Data?) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let onPick: (Data?) -> Void
+        private var finished = false
+
+        init(onPick: @escaping (Data?) -> Void) {
+            self.onPick = onPick
+        }
+
+        private func finish(_ data: Data?) {
+            guard !finished else { return }
+            finished = true
+            onPick(data)
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard let provider = results.first?.itemProvider else {
+                DispatchQueue.main.async { self.finish(nil) }
+                return
+            }
+            // UIImage load handles HEIC/orientation; the guided flow then
+            // re-encodes through normalizedJPEG like every other pick.
+            if provider.canLoadObject(ofClass: UIImage.self) {
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    let data = (object as? UIImage)?.jpegData(compressionQuality: 0.92)
+                    DispatchQueue.main.async { self.finish(data) }
+                }
+            } else {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    DispatchQueue.main.async { self.finish(data) }
+                }
+            }
         }
     }
 }
