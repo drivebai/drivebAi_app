@@ -844,7 +844,9 @@ func (h *UserHandler) missingDriverDocs(ctx context.Context, userID uuid.UUID) (
 		if err != nil {
 			return nil, err
 		}
-		if doc == nil {
+		// An admin-rejected document must be re-uploaded, so it counts as
+		// missing for gating purposes (mirrors HasRequiredDocuments).
+		if doc == nil || doc.Status == models.DocumentStatusRejected {
 			missing = append(missing, t)
 		}
 	}

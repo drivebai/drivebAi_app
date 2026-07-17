@@ -6,7 +6,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import Drawer from '../components/Drawer.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { adminApi } from '../api/admin'
-import type { AdminUser } from '../api/types'
+import type { AdminUser, AdminUserDocument } from '../api/types'
 import { useToastStore } from '../stores/toast'
 import { fmtDate } from '../utils/format'
 
@@ -49,7 +49,96 @@ load()
 
 // --- detail drawer ---
 const drawerUser = ref<AdminUser | null>(null)
-function openDetails(u: AdminUser) { drawerUser.value = u }
+function openDetails(u: AdminUser) {
+  drawerUser.value = u
+  loadDocs(u)
+}
+
+// --- documents (license review) ---
+const drawerDocs = ref<AdminUserDocument[]>([])
+const docsLoading = ref(false)
+const docSaving = ref<string | null>(null) // id of the doc being saved
+
+async function loadDocs(u: AdminUser) {
+  drawerDocs.value = []
+  docsLoading.value = true
+  try {
+    drawerDocs.value = await adminApi.listUserDocuments(u.id)
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to load documents')
+  } finally {
+    docsLoading.value = false
+  }
+}
+
+async function approveDoc(doc: AdminUserDocument) {
+  const u = drawerUser.value
+  if (!u || docSaving.value) return
+  docSaving.value = doc.id
+  try {
+    await adminApi.setUserDocumentStatus(u.id, doc.id, { status: 'verified' })
+    doc.status = 'verified'
+    toast.success(`${docLabel(doc.type)} approved — the user has been notified`)
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to approve document')
+  } finally {
+    docSaving.value = null
+  }
+}
+
+// Decline needs a reason (the user sees it), so it gets a small modal
+// instead of a bare ConfirmDialog.
+const declining = ref<AdminUserDocument | null>(null)
+const declineReason = ref('')
+const savingDecline = ref(false)
+const declineError = ref<string | null>(null)
+function startDecline(doc: AdminUserDocument) {
+  declining.value = doc
+  declineReason.value = ''
+  declineError.value = null
+}
+async function confirmDecline() {
+  const doc = declining.value
+  const u = drawerUser.value
+  if (!doc || !u || savingDecline.value) return
+  const reason = declineReason.value.trim()
+  if (!reason) {
+    declineError.value = 'A reason is required — the user will see it.'
+    return
+  }
+  savingDecline.value = true
+  declineError.value = null
+  try {
+    await adminApi.setUserDocumentStatus(u.id, doc.id, { status: 'rejected', reason })
+    doc.status = 'rejected'
+    toast.success(`${docLabel(doc.type)} declined — the user has been notified`)
+    declining.value = null
+  } catch (e: any) {
+    declineError.value = e?.message || 'Failed to decline document'
+  } finally {
+    savingDecline.value = false
+  }
+}
+
+function docLabel(t: string) {
+  switch (t) {
+    case 'drivers_license': return "Driver's license"
+    case 'registration': return 'Vehicle registration'
+    case 'commercial_license': return 'Commercial license'
+    case 'tlc_license': return 'TLC license'
+    default: return 'Document'
+  }
+}
+function docStatusLabel(s: string) {
+  return s === 'verified' ? 'Approved' : s === 'rejected' ? 'Declined' : 'Pending review'
+}
+function docStatusTone(s: string): 'success' | 'danger' | 'warning' {
+  return s === 'verified' ? 'success' : s === 'rejected' ? 'danger' : 'warning'
+}
+function docIsImage(doc: AdminUserDocument) {
+  if (doc.mime_type?.startsWith('image/')) return true
+  return /\.(jpe?g|png|webp|heic)$/i.test(doc.file_url.split('?')[0] ?? '')
+}
 
 // --- block confirm ---
 const pendingBlock = ref<AdminUser | null>(null)
@@ -151,6 +240,19 @@ function roleLabel(r: string) {
   if (r === 'car_owner') return 'Owner'
   return r
 }
+
+// Human-readable onboarding step instead of the raw enum string.
+// Mirrors backend/internal/models/user.go OnboardingStatus values.
+function onboardingLabel(s: string) {
+  switch (s) {
+    case 'created': return 'Account created — no role chosen yet'
+    case 'role_selected': return 'Role chosen — profile photo pending'
+    case 'photo_uploaded': return 'Photo added — documents pending'
+    case 'documents_uploaded': return 'Documents uploaded — finishing up'
+    case 'complete': return 'Complete'
+    default: return s
+  }
+}
 </script>
 
 <template>
@@ -211,7 +313,7 @@ function roleLabel(r: string) {
       <dt>Phone</dt><dd>{{ drawerUser.phone || '—' }}</dd>
       <dt>Role</dt><dd>{{ roleLabel(drawerUser.role) }}</dd>
       <dt>Email verified</dt><dd>{{ drawerUser.is_email_verified ? 'Yes' : 'No' }}</dd>
-      <dt>Onboarding</dt><dd>{{ drawerUser.onboarding_status }}</dd>
+      <dt>Onboarding</dt><dd>{{ onboardingLabel(drawerUser.onboarding_status) }}</dd>
       <dt>Status</dt>
       <dd>
         <StatusBadge
@@ -220,23 +322,54 @@ function roleLabel(r: string) {
         />
       </dd>
       <dt>Created</dt><dd>{{ fmtDate(drawerUser.created_at) }}</dd>
-      <template v-if="drawerUser.role === 'driver'">
-        <dt>Driver's license</dt>
-        <dd>
-          <StatusBadge
-            :label="drawerUser.has_license ? 'Uploaded' : 'Missing'"
-            :tone="drawerUser.has_license ? 'success' : 'warning'"
-          />
-        </dd>
-        <dt>Registration</dt>
-        <dd>
-          <StatusBadge
-            :label="drawerUser.has_registration ? 'Uploaded' : 'Missing'"
-            :tone="drawerUser.has_registration ? 'success' : 'warning'"
-          />
-        </dd>
-      </template>
     </dl>
+
+    <!-- Personal documents: inline view + approve/decline. Registration is
+         deliberately NOT solicited for drivers — it's a car-owner document;
+         only docs the user actually uploaded are listed. -->
+    <section class="docs-section">
+      <h3>Documents</h3>
+      <p v-if="docsLoading" class="muted">Loading documents…</p>
+      <template v-else>
+        <p v-if="drawerDocs.length === 0" class="muted">
+          {{ drawerUser.role === 'driver'
+            ? 'No documents uploaded yet — the driver\'s license is still missing.'
+            : 'No documents uploaded.' }}
+        </p>
+        <div v-for="doc in drawerDocs" :key="doc.id" class="doc-card">
+          <div class="doc-head">
+            <strong>{{ docLabel(doc.type) }}</strong>
+            <StatusBadge :label="docStatusLabel(doc.status)" :tone="docStatusTone(doc.status)" />
+          </div>
+          <a :href="doc.file_url" target="_blank" rel="noopener" class="doc-link">
+            <img
+              v-if="docIsImage(doc)"
+              :src="doc.file_url"
+              :alt="docLabel(doc.type)"
+              class="doc-image"
+              loading="lazy"
+            />
+            <span v-else>Open {{ doc.file_name }}</span>
+          </a>
+          <div class="doc-actions">
+            <button
+              class="primary"
+              :disabled="docSaving === doc.id || doc.status === 'verified'"
+              @click="approveDoc(doc)"
+            >
+              {{ doc.status === 'verified' ? 'Approved' : 'Approve' }}
+            </button>
+            <button
+              class="danger"
+              :disabled="docSaving === doc.id || doc.status === 'rejected'"
+              @click="startDecline(doc)"
+            >
+              {{ doc.status === 'rejected' ? 'Declined' : 'Decline' }}
+            </button>
+          </div>
+        </div>
+      </template>
+    </section>
 
     <p class="password-note">
       Passwords are stored as one-way hashes and can never be viewed — by
@@ -279,6 +412,38 @@ function roleLabel(r: string) {
         <button class="secondary" :disabled="savingEdit" @click="cancelEdit">Cancel</button>
         <button class="primary" :disabled="savingEdit" @click="saveEdit">
           {{ savingEdit ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Decline-document modal: a reason is mandatory because it is sent to
+       the user in the decline notification. -->
+  <div v-if="declining" class="modal-overlay" @click.self="declining = null">
+    <div class="modal" role="dialog" aria-labelledby="declineDocTitle">
+      <h2 id="declineDocTitle">Decline {{ docLabel(declining.type) }}?</h2>
+      <p class="modal-sub">
+        The user is notified with your reason and must upload a new copy
+        before they can continue as a driver.
+      </p>
+
+      <label>
+        Reason (visible to the user)
+        <textarea
+          v-model="declineReason"
+          rows="3"
+          maxlength="300"
+          :disabled="savingDecline"
+          placeholder="e.g. The photo is blurry — please retake it with all four corners visible."
+        ></textarea>
+      </label>
+
+      <p v-if="declineError" class="error">{{ declineError }}</p>
+
+      <div class="modal-actions">
+        <button class="secondary" :disabled="savingDecline" @click="declining = null">Cancel</button>
+        <button class="danger" :disabled="savingDecline" @click="confirmDecline">
+          {{ savingDecline ? 'Declining…' : 'Decline document' }}
         </button>
       </div>
     </div>
@@ -330,6 +495,28 @@ select { width: 160px; }
   line-height: 1.5;
 }
 .drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+.docs-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.docs-section h3 { margin: 0 0 12px; font-size: 14px; }
+.muted { color: var(--text-muted); font-size: 13px; }
+.doc-card {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px; margin-bottom: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.doc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.doc-link { display: block; }
+.doc-image {
+  display: block; width: 100%; max-height: 260px; object-fit: contain;
+  border-radius: 8px; background: var(--bg); border: 1px solid var(--border);
+}
+.doc-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal textarea {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 14px; background: var(--bg, #fff); color: var(--text, #111);
+  resize: vertical; font-family: inherit;
+}
+.modal textarea:focus { outline: 2px solid var(--accent, #2bd1c4); outline-offset: -1px; }
 
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4);

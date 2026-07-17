@@ -173,11 +173,15 @@ func (r *DocumentRepository) DeleteByUserIDAndType(ctx context.Context, userID u
 // personal document on file: a driver's license. Registration and the other
 // document types are optional supporting docs and must NEVER gate a driver —
 // a license alone lets them proceed.
+//
+// An admin-REJECTED license does not count: the driver must re-upload before
+// completing onboarding or switching into driver mode. (Uploading a new
+// license replaces the rejected row, resetting status to 'uploaded'.)
 func (r *DocumentRepository) HasRequiredDocuments(ctx context.Context, userID uuid.UUID) (bool, error) {
 	query := `
 		SELECT COUNT(*)
 		FROM documents
-		WHERE user_id = $1 AND type = $2
+		WHERE user_id = $1 AND type = $2 AND status <> 'rejected'
 	`
 	var count int
 	err := r.db.Pool.QueryRow(ctx, query, userID, models.DocumentDriversLicense).Scan(&count)

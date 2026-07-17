@@ -153,6 +153,23 @@ func (d DocumentType) IsValid() bool {
 	return false
 }
 
+// DisplayName is the human-facing label used in notifications (mirrors the
+// iOS DocumentType.displayName mapping).
+func (d DocumentType) DisplayName() string {
+	switch d {
+	case DocumentDriversLicense:
+		return "Driver's license"
+	case DocumentRegistration:
+		return "Vehicle registration"
+	case DocumentCommercialLicense:
+		return "Commercial license"
+	case DocumentTLCLicense:
+		return "TLC license"
+	default:
+		return "Document"
+	}
+}
+
 type DocumentStatus string
 
 const (

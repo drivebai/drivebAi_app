@@ -21,8 +21,20 @@ export interface AdminUser {
   blocked_at?: string | null
   profile_photo_url?: string | null
   has_license: boolean
-  has_registration: boolean
   created_at: string
+}
+
+// One personal document (driver's license etc.) with a SIGNED file URL,
+// as returned by GET /admin/users/{id}/documents.
+export interface AdminUserDocument {
+  id: string
+  type: string
+  file_name: string
+  mime_type?: string
+  status: 'uploaded' | 'verified' | 'rejected'
+  file_url: string
+  created_at: string
+  updated_at: string
 }
 
 export interface AdminCar {

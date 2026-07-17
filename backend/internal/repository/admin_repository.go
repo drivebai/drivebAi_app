@@ -36,10 +36,13 @@ type AdminUserRow struct {
 	OnboardingStatus string     `json:"onboarding_status"`
 	IsBlocked        bool       `json:"is_blocked"`
 	BlockedAt        *time.Time `json:"blocked_at,omitempty"`
-	ProfilePhotoURL  *string    `json:"profile_photo_url,omitempty"`
-	HasLicense       bool       `json:"has_license"`
-	HasRegistration  bool       `json:"has_registration"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ProfilePhotoURL *string `json:"profile_photo_url,omitempty"`
+	// HasLicense is the quick list-level signal; the drawer loads the full
+	// document rows (with status + signed URLs) via ListUserDocuments.
+	// Registration is deliberately absent: it is a car-owner document and
+	// must never appear as a driver requirement (client point 5, twice).
+	HasLicense bool      `json:"has_license"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type AdminUsersPage struct {
@@ -87,7 +90,6 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 		       u.is_email_verified, u.onboarding_status,
 		       u.is_blocked, u.blocked_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license') AS has_license,
-		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'registration')     AS has_registration,
 		       u.created_at
 		FROM users u
 		%s
@@ -107,7 +109,7 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.FirstName, &u.LastName, &u.Phone,
 			&u.IsEmailVerified, &u.OnboardingStatus,
 			&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
-			&u.HasLicense, &u.HasRegistration,
+			&u.HasLicense,
 			&u.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -123,19 +125,62 @@ func (r *AdminRepository) GetUserDetail(ctx context.Context, id uuid.UUID) (*Adm
 		       u.is_email_verified, u.onboarding_status,
 		       u.is_blocked, u.blocked_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license'),
-		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'registration'),
 		       u.created_at
 		FROM users u
 		WHERE u.id = $1
 	`, id).Scan(&u.ID, &u.Email, &u.Role, &u.FirstName, &u.LastName, &u.Phone,
 		&u.IsEmailVerified, &u.OnboardingStatus,
 		&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
-		&u.HasLicense, &u.HasRegistration,
+		&u.HasLicense,
 		&u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// AdminUserDocument is one row of a user's personal documents as shown in
+// the admin Users drawer. FileURL is the RELATIVE private upload path
+// (/uploads/{user_id}/{basename}); the handler signs it before responding —
+// raw paths are never sent to the browser.
+type AdminUserDocument struct {
+	ID        uuid.UUID `json:"id"`
+	Type      string    `json:"type"`
+	FileName  string    `json:"file_name"`
+	MimeType  string    `json:"mime_type,omitempty"`
+	Status    string    `json:"status"`
+	FileURL   string    `json:"file_url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ListUserDocuments returns every personal document a user has uploaded,
+// newest first. The URL is derived the same way the BoS/lease flows derive
+// license URLs: /uploads/<user_id>/<basename(file_path)>.
+func (r *AdminRepository) ListUserDocuments(ctx context.Context, userID uuid.UUID) ([]AdminUserDocument, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, type, file_name, COALESCE(mime_type, ''), status,
+		       '/uploads/' || user_id || '/' || regexp_replace(file_path, '^.*/', ''),
+		       created_at, updated_at
+		FROM documents
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	docs := []AdminUserDocument{}
+	for rows.Next() {
+		var d AdminUserDocument
+		if err := rows.Scan(&d.ID, &d.Type, &d.FileName, &d.MimeType, &d.Status,
+			&d.FileURL, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		docs = append(docs, d)
+	}
+	return docs, rows.Err()
 }
 
 func (r *AdminRepository) SetUserBlocked(ctx context.Context, id uuid.UUID, blocked bool) error {

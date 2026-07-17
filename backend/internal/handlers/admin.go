@@ -49,11 +49,20 @@ type AdminHandler struct {
 	// invalidates the target's entry so a block/unblock takes effect on this
 	// instance immediately instead of after the cache TTL. Nil in tests.
 	blockList *auth.BlockChecker
-	logger    *slog.Logger
+	// docRepo powers the driver-license review endpoints (list + status).
+	// Wired via SetDocumentRepository; nil in tests that don't need it.
+	docRepo *repository.DocumentRepository
+	logger  *slog.Logger
 }
 
 func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, urlSigner *PrivateURLSigner, logger *slog.Logger) *AdminHandler {
 	return &AdminHandler{adminRepo: adminRepo, userRepo: userRepo, wsHub: wsHub, urlSigner: urlSigner, logger: logger}
+}
+
+// SetDocumentRepository wires the personal-documents store used by the
+// license review endpoints. Setter for the usual test-compat reason.
+func (h *AdminHandler) SetDocumentRepository(docRepo *repository.DocumentRepository) {
+	h.docRepo = docRepo
 }
 
 // SetNotificationHandler wires the central NotificationHandler so admin
@@ -183,6 +192,118 @@ func (h *AdminHandler) BlockUser(w http.ResponseWriter, r *http.Request) {
 			"Account access restored",
 			"Your DriveBai account has been unblocked. You can now sign back in.",
 			nil, nil)
+	}
+}
+
+// ListUserDocuments — GET /admin/users/{id}/documents
+//
+// Returns every personal document the user has uploaded (driver's license
+// plus any optional docs), each with a SIGNED file URL — license files live
+// under the private-uploads rule, so raw paths would 403 at serve time.
+func (h *AdminHandler) ListUserDocuments(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	docs, err := h.adminRepo.ListUserDocuments(r.Context(), id)
+	if err != nil {
+		h.logger.Error("admin list user documents", "error", err, "user_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	for i := range docs {
+		docs[i].FileURL = h.urlSigner.Sign(docs[i].FileURL)
+	}
+	httputil.WriteJSON(w, http.StatusOK, docs)
+}
+
+type updateDocumentStatusBody struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// UpdateUserDocumentStatus — PATCH /admin/users/{id}/documents/{docId}/status
+//
+// Approves ('verified') or declines ('rejected') a user's document. Decline
+// requires a reason, which is sent to the user in the notification. A
+// rejected driver's license stops counting as the required driver document
+// (HasRequiredDocuments / missingDriverDocs), so the driver must re-upload
+// before completing onboarding or switching into driver mode.
+func (h *AdminHandler) UpdateUserDocumentStatus(w http.ResponseWriter, r *http.Request) {
+	userID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	docID, err := uuid.Parse(chi.URLParam(r, "docId"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid document id"))
+		return
+	}
+	var body updateDocumentStatusBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid body"))
+		return
+	}
+
+	status := models.DocumentStatus(body.Status)
+	if status != models.DocumentStatusVerified && status != models.DocumentStatusRejected {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("status must be 'verified' or 'rejected'"))
+		return
+	}
+	body.Reason = strings.TrimSpace(body.Reason)
+	if status == models.DocumentStatusRejected && body.Reason == "" {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("a reason is required when rejecting a document"))
+		return
+	}
+
+	if h.docRepo == nil {
+		h.logger.Error("admin update document status: document repository not wired")
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	// Scope the document to the user in the URL so a docId can't be applied
+	// across users.
+	doc, err := h.docRepo.GetByID(r.Context(), docID)
+	if err != nil {
+		h.logger.Error("admin update document status: load", "error", err, "doc_id", docID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if doc == nil || doc.UserID != userID {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "document not found"))
+		return
+	}
+
+	if err := h.docRepo.UpdateStatus(r.Context(), docID, status); err != nil {
+		h.logger.Error("admin update document status: update", "error", err, "doc_id", docID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"id":     docID,
+		"status": string(status),
+	})
+
+	// Tell the user what happened — decline includes the admin's reason so
+	// they know what to fix before re-uploading.
+	if h.notifHandler != nil {
+		docName := doc.Type.DisplayName()
+		if status == models.DocumentStatusRejected {
+			go h.notifHandler.Notify(userID, models.NotificationTypeSystem,
+				docName+" needs attention",
+				"Your "+docName+" was declined: "+body.Reason+" Please upload a new copy.",
+				nil, nil)
+		} else {
+			go h.notifHandler.Notify(userID, models.NotificationTypeSystem,
+				docName+" verified",
+				"Your "+docName+" has been reviewed and approved.",
+				nil, nil)
+		}
 	}
 }
 

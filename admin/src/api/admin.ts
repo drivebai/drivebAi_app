@@ -3,7 +3,7 @@
 
 import { api, qs } from './client'
 import type {
-  AdminUser, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
+  AdminUser, AdminUserDocument, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
   AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
   PurchaseRequest, PurchaseRequestDetail, PurchaseRejection, PurchaseBillOfSale,
 } from './types'
@@ -40,6 +40,26 @@ export const adminApi = {
    */
   resetUserPassword: (id: string) =>
     api.post<{ message?: string }>(`${BASE}/users/${id}/reset-password`, {}),
+
+  /**
+   * Personal documents (driver's license + optional docs) with signed,
+   * short-lived file URLs for inline viewing.
+   */
+  listUserDocuments: (id: string) =>
+    api.get<AdminUserDocument[]>(`${BASE}/users/${id}/documents`),
+
+  /**
+   * Approve or decline a user's document. Declining REQUIRES a reason —
+   * the backend rejects an empty one — and notifies the user with it.
+   * A rejected driver's license stops counting as the required driver
+   * document until a new copy is uploaded.
+   */
+  setUserDocumentStatus: (
+    userId: string,
+    docId: string,
+    body: { status: 'verified' | 'rejected'; reason?: string },
+  ) => api.patch<{ ok: boolean; id: string; status: string }>(
+    `${BASE}/users/${userId}/documents/${docId}/status`, body),
 
   // ---- Cars ----
   listCars: (q: { query?: string; page?: number; limit?: number }) =>

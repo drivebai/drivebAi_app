@@ -192,6 +192,7 @@ func main() {
 	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, privateURLSigner, logger)
 	adminHandler.SetNotificationHandler(notifHandler)
 	adminHandler.SetBlockList(blockList)
+	adminHandler.SetDocumentRepository(docRepo)
 	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
 	// internals: reset-token store + the transactional email sender.
 	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
@@ -475,6 +476,10 @@ func main() {
 				// Admin-triggered password reset (D7): 202, never returns
 				// the token — the user gets the standard reset email.
 				r.Post("/users/{id}/reset-password", adminHandler.ResetUserPassword)
+				// Driver-license (and other personal-doc) review: list with
+				// signed URLs + approve/decline with required decline reason.
+				r.Get("/users/{id}/documents", adminHandler.ListUserDocuments)
+				r.Patch("/users/{id}/documents/{docId}/status", adminHandler.UpdateUserDocumentStatus)
 
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)
