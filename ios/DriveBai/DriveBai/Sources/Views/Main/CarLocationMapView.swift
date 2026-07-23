@@ -89,10 +89,7 @@ struct CarLocationMapView: View {
 
                     if !authStore.state.isAuthenticated {
                         Button {
-                            deepLinkRouter.promptGuestSignIn(
-                                "Sign in to see the exact pickup location",
-                                intent: .viewExactLocation(car.id)
-                            )
+                            deepLinkRouter.promptGuestSignIn(.exactLocation(car.id))
                         } label: {
                             Text("Sign in to see the exact location")
                                 .font(.subheadline)

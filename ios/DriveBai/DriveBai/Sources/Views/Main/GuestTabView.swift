@@ -37,7 +37,11 @@ struct GuestTabView: View {
         // is untouched on dismiss; on successful sign-in the root swaps to
         // the authenticated tabs and the intent replays (unit 3).
         .sheet(item: $deepLinkRouter.guestPrompt) { prompt in
-            EnterEmailOTPView(showDismissButton: true, contextMessage: prompt.message)
+            EnterEmailOTPView(
+                showDismissButton: true,
+                contextTitle: prompt.title,
+                contextBody: prompt.body
+            )
         }
     }
 }

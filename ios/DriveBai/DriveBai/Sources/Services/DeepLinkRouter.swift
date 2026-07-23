@@ -103,8 +103,8 @@ final class DeepLinkRouter: ObservableObject {
     @Published var guestReplayInFlight = false
 
     /// Raise the sign-in sheet from a guest-gated CTA.
-    func promptGuestSignIn(_ message: String, intent: GuestIntent?) {
-        guestPrompt = GuestPrompt(message: message, intent: intent)
+    func promptGuestSignIn(_ prompt: GuestPrompt) {
+        guestPrompt = prompt
     }
 
     /// Called from the app root the moment authentication succeeds: move
@@ -335,8 +335,49 @@ enum GuestIntent: Equatable {
 
 /// One sign-in prompt with its conversion context. Identifiable so
 /// `.sheet(item:)` presents exactly one at a time.
+// One guest sign-in prompt: a specific, persuasive ask (title + body) raised
+// by a gated action, plus the intent to replay after auth. Copy lives here so
+// the three "save" call sites (card / detail / map preview) never drift.
+//
+// Copy discipline (verified against the code — do NOT round up): no escrow,
+// no "released to the seller", no "verified/vetted", no title verification, no
+// DMV/lien/theft claims. "your card isn't charged until", never "you don't
+// pay until". "never shown publicly", never "only they can see".
 struct GuestPrompt: Identifiable, Equatable {
     let id = UUID()
-    let message: String
+    let title: String
+    let body: String
     let intent: GuestIntent?
+
+    static func like(_ carID: UUID) -> GuestPrompt {
+        GuestPrompt(
+            title: "Save this car",
+            body: "Create a free account to keep the cars you like in one place. All we need is your email — no license and no payment until you actually rent or buy something.",
+            intent: .like(carID)
+        )
+    }
+
+    static func rent(_ carID: UUID) -> GuestPrompt {
+        GuestPrompt(
+            title: "Request this car",
+            body: "Sign in to message the owner and request your dates. You'll add a driver's license before you drive — the owner reviews it before accepting, and it's never shown publicly. You're only charged when you book.",
+            intent: .rent(carID)
+        )
+    }
+
+    static func buy(_ carID: UUID) -> GuestPrompt {
+        GuestPrompt(
+            title: "Make an offer",
+            body: "Sign in to make an offer. Before any sale is final: the seller signs a Bill of Sale with you and declares the title's status, uploads the title for you to review, and you inspect the car in person and confirm an 8-point checklist. Your card isn't charged until you accept the car.",
+            intent: .buy(carID)
+        )
+    }
+
+    static func exactLocation(_ carID: UUID) -> GuestPrompt {
+        GuestPrompt(
+            title: "The exact location is shared after you sign in",
+            body: "We never show an owner's precise address to people browsing without an account — the area you see is intentionally approximate. Once you're signed in and part of a booking, you get the exact pickup spot. The same protection covers your address when you list or rent.",
+            intent: .viewExactLocation(carID)
+        )
+    }
 }

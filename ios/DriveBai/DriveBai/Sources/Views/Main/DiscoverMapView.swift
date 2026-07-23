@@ -166,10 +166,7 @@ struct MapPreviewCard: View {
                             tintColor: isLiked ? .red : .white
                         ) {
                             guard authStore.state.isAuthenticated else {
-                                deepLinkRouter.promptGuestSignIn(
-                                    "Sign in to save cars you love",
-                                    intent: .like(car.id)
-                                )
+                                deepLinkRouter.promptGuestSignIn(.like(car.id))
                                 return
                             }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {

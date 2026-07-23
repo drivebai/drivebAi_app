@@ -531,10 +531,7 @@ struct DiscoverListingCard: View {
                             tintColor: isLiked ? .red : .white
                         ) {
                             guard authStore.state.isAuthenticated else {
-                                deepLinkRouter.promptGuestSignIn(
-                                    "Sign in to save cars you love",
-                                    intent: .like(car.id)
-                                )
+                                deepLinkRouter.promptGuestSignIn(.like(car.id))
                                 return
                             }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
@@ -1000,10 +997,7 @@ struct ListingDetailView: View {
         guard authStore.state.user != nil else {
             // Guest: the prime conversion moment — they found a car they
             // want. Never a silent no-op.
-            deepLinkRouter.promptGuestSignIn(
-                "Sign in to request this car",
-                intent: .rent(car.id)
-            )
+            deepLinkRouter.promptGuestSignIn(.rent(car.id))
             return
         }
         guard !isRequestingLease else { return }
@@ -1085,10 +1079,7 @@ struct ListingDetailView: View {
                 // Favorite button
                 Button(action: {
                     guard authStore.state.isAuthenticated else {
-                        deepLinkRouter.promptGuestSignIn(
-                            "Sign in to save cars you love",
-                            intent: .like(car.id)
-                        )
+                        deepLinkRouter.promptGuestSignIn(.like(car.id))
                         return
                     }
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
@@ -1251,10 +1242,7 @@ struct ListingDetailView: View {
     private var buyThisCarButton: some View {
         Button {
             guard authStore.state.isAuthenticated else {
-                deepLinkRouter.promptGuestSignIn(
-                    "Sign in to make an offer on this car",
-                    intent: .buy(car.id)
-                )
+                deepLinkRouter.promptGuestSignIn(.buy(car.id))
                 return
             }
             // Explain buying *before* opening the offer form: the

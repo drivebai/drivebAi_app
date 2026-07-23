@@ -17,14 +17,16 @@ struct EnterEmailOTPView: View {
     @Environment(\.dismiss) private var dismiss
 
     let showDismissButton: Bool
-    /// Guest-mode conversion context ("Sign in to save cars you love"),
-    /// shown in place of the generic subtitle when a gated CTA raised this
-    /// sheet. nil keeps the default copy.
-    let contextMessage: String?
+    /// Guest-mode conversion context raised by a gated CTA: the specific ask
+    /// (title) and its persuasive body replace the generic welcome header.
+    /// Both nil → the default "Welcome to DrivaBai" header (Sign-in tab / root).
+    let contextTitle: String?
+    let contextBody: String?
 
-    init(showDismissButton: Bool = true, contextMessage: String? = nil) {
+    init(showDismissButton: Bool = true, contextTitle: String? = nil, contextBody: String? = nil) {
         self.showDismissButton = showDismissButton
-        self.contextMessage = contextMessage
+        self.contextTitle = contextTitle
+        self.contextBody = contextBody
     }
 
     @State private var email = ""
@@ -49,12 +51,14 @@ struct EnterEmailOTPView: View {
                         .padding(.top, 48)
 
                         VStack(spacing: 6) {
-                            Text("Welcome to DrivaBai")
+                            Text(contextTitle ?? "Welcome to DrivaBai")
                                 .font(.title2)
                                 .fontWeight(.bold)
-                            Text(contextMessage ?? "Enter your email to sign in or create an account")
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                            Text(contextBody ?? "Enter your email to sign in or create an account")
                                 .font(.subheadline)
-                                .foregroundColor(contextMessage == nil ? .secondary : .primary)
+                                .foregroundColor(contextBody == nil ? .secondary : .primary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 24)
                         }
