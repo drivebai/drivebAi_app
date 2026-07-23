@@ -135,20 +135,34 @@ struct SupportFloatingButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "questionmark.circle.fill")
-                .font(.system(size: 40))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, Color.driveBaiPrimary)
-                .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
-                .overlay(alignment: .topTrailing) {
-                    if unreadCount > 0 {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 12, height: 12)
-                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
-                            .offset(x: 1, y: -1)
-                    }
+            ZStack {
+                Circle()
+                    .fill(Color.driveBaiPrimary)
+                    .frame(width: 40, height: 40)
+
+                // The DriveBai mark (wing → "b"), template-tinted white to
+                // match the button's iconography. Sized to ~0.64 of the
+                // circle and nudged up-left: the mark's visual weight is the
+                // solid "b" bowl in the lower-right, so a geometric centre
+                // reads low-right — this recentres it optically.
+                Image("SupportMark")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundColor(.white)
+                    .frame(width: 26, height: 26)
+                    .offset(x: -1, y: -2)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
+            .overlay(alignment: .topTrailing) {
+                if unreadCount > 0 {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                        .offset(x: 1, y: -1)
                 }
+            }
         }
         .accessibilityLabel("Help and support")
         .padding(.trailing, 16)
