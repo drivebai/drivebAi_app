@@ -140,23 +140,27 @@ struct SupportFloatingButton: View {
                     .fill(Color.driveBaiPrimary)
                     .frame(width: 56, height: 56)
 
-                // The DriveBai mark (wing → "b"), template-tinted white to
-                // match the button's iconography.
+                // The DriveBai mark (wing → "b"), template-tinted white.
                 //
-                // Optical-centring offset (down + left), tuned by eye — do NOT
-                // "fix" this to a mathematical centre. The mark's thin outlined
-                // wing strokes reach far into the UPPER-LEFT while carrying
-                // almost no ink, so both a bounding-box centre and a
-                // pixel-mass centroid place it too HIGH and RIGHT (the eye
-                // weighs the wing's reach; a mass centroid barely counts it).
-                // Shifting down-left recentres what the eye actually sees.
+                // Centred by its bounding box (no offset). Verified in the
+                // real app via ImageRenderer: offset 0 gives the most EVEN
+                // margins (left == right, top == bottom); any nudge toward the
+                // pixel-mass centroid makes them less even. This mark resists
+                // tighter optical centring — its dense mass (the "b" bowl,
+                // lower-right) and its visual spread (the thin wing,
+                // upper-left) sit on OPPOSITE diagonals, so translating toward
+                // the mass only crowds the wing into an edge. Bbox-centre is
+                // the best fit for the full mark; a compacter small-size
+                // variant would be needed to balance it more tightly.
+                //
+                // Sized to 36 of the 56 circle for an even ring of breathing
+                // room (was 40 — too large, nearly touching the edge).
                 Image("SupportMark")
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
                     .foregroundColor(.white)
-                    .frame(width: 40, height: 40)
-                    .offset(x: -3, y: 5)
+                    .frame(width: 36, height: 36)
             }
             .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
             .overlay(alignment: .topTrailing) {
