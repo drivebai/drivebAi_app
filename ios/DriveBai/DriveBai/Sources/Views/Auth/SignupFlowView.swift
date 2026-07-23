@@ -396,6 +396,18 @@ struct SignupRoleStepView: View {
                 }
             }
         }
+        .onAppear { applyRoleHintIfNeeded() }
+    }
+
+    /// Pre-select the role a guest signalled at an owner-facing entry point
+    /// ("List your car"). Pre-selection only — never a forced choice: the
+    /// guest can tap the other card, and Continue still requires an explicit
+    /// selection. Consumed once so it can't override a later manual change.
+    private func applyRoleHintIfNeeded() {
+        guard signupFlow.selectedRole == nil,
+              let hint = DeepLinkRouter.shared.guestSignupRoleHint else { return }
+        signupFlow.selectedRole = hint
+        DeepLinkRouter.shared.guestSignupRoleHint = nil
     }
 
     private func handleContinue() {

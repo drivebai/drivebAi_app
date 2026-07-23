@@ -89,6 +89,13 @@ final class DeepLinkRouter: ObservableObject {
     /// pending-flag pattern above. Cleared via `clearPendingGuestIntent()`.
     @Published var pendingGuestIntent: GuestIntent?
 
+    /// A signup role to PRE-SELECT (never force) when a guest enters signup
+    /// from an owner-facing entry point ("List your car"). The role step
+    /// reads this for its initial selection; the guest can still change it in
+    /// one tap. Survives the root swap on this singleton; cleared after the
+    /// role step consumes it and on sign-out.
+    @Published var guestSignupRoleHint: UserRole?
+
     /// True from the moment DiscoverView starts replaying a guest intent
     /// (pushing the car, re-opening the action) until the user pops back to
     /// the Discover root. The deferred new-user welcome tour waits on this
@@ -115,12 +122,13 @@ final class DeepLinkRouter: ObservableObject {
         pendingGuestIntent = nil
     }
 
-    /// Sign-out teardown: a stale prompt or intent must never replay into
-    /// the next account's session.
+    /// Sign-out teardown: a stale prompt, intent, or role hint must never
+    /// replay into the next account's session.
     func clearGuestState() {
         guestPrompt = nil
         pendingGuestIntent = nil
         guestReplayInFlight = false
+        guestSignupRoleHint = nil
     }
 
     private init() {}

@@ -161,6 +161,10 @@ struct EnterEmailOTPView: View {
     private func requestCode() {
         guard isEmailValid, !authStore.isLoading else { return }
         let trimmed = email.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Mark that this device has started sign-in before, so the guest
+        // Sign-in tab greets a returning visitor differently from a
+        // first-timer. Set on submit regardless of whether it completes.
+        GuestOnboardingStore.shared.markEnteredEmail()
         Task {
             do {
                 try await authStore.requestLoginOTP(email: trimmed)

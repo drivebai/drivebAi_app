@@ -47,6 +47,7 @@
 		E0000001000000000000001C /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000C /* KeychainService.swift */; };
 		E0000001000000000000001D /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000D /* APIClient.swift */; };
 		E0000001000000000000001E /* AuthStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000E /* AuthStore.swift */; };
+		F3CECA0001000000000000001 /* GuestOnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3CECA0002000000000000001 /* GuestOnboardingStore.swift */; };
 		E0000001000000000000001F /* Styles.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000F /* Styles.swift */; };
 		E00000010000000000000020 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000010 /* LoginView.swift */; };
 		E00000010000000000000024 /* ForgotPasswordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000014 /* ForgotPasswordView.swift */; };
@@ -220,6 +221,7 @@
 		E0000001000000000000000C /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		E0000001000000000000000D /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		E0000001000000000000000E /* AuthStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthStore.swift; sourceTree = "<group>"; };
+		F3CECA0002000000000000001 /* GuestOnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestOnboardingStore.swift; sourceTree = "<group>"; };
 		E0000001000000000000000F /* Styles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Styles.swift; sourceTree = "<group>"; };
 		E00000010000000000000010 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		E00000010000000000000014 /* ForgotPasswordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForgotPasswordView.swift; sourceTree = "<group>"; };
@@ -500,6 +502,7 @@
 			isa = PBXGroup;
 			children = (
 				E0000001000000000000000E /* AuthStore.swift */,
+				F3CECA0002000000000000001 /* GuestOnboardingStore.swift */,
 				E00000010000000000000045 /* SignupFlowState.swift */,
 				E00000010000000000000081 /* Today */,
 				E00000010000000000000088 /* Cars */,
@@ -909,6 +912,7 @@
 				E0000001000000000000001C /* KeychainService.swift in Sources */,
 				E0000001000000000000001D /* APIClient.swift in Sources */,
 				E0000001000000000000001E /* AuthStore.swift in Sources */,
+				F3CECA0001000000000000001 /* GuestOnboardingStore.swift in Sources */,
 				E0000001000000000000001F /* Styles.swift in Sources */,
 				E00000010000000000000020 /* LoginView.swift in Sources */,
 				E00000010000000000000024 /* ForgotPasswordView.swift in Sources */,
