@@ -138,20 +138,25 @@ struct SupportFloatingButton: View {
             ZStack {
                 Circle()
                     .fill(Color.driveBaiPrimary)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 56, height: 56)
 
                 // The DriveBai mark (wing → "b"), template-tinted white to
-                // match the button's iconography. Sized to ~0.64 of the
-                // circle and nudged up-left: the mark's visual weight is the
-                // solid "b" bowl in the lower-right, so a geometric centre
-                // reads low-right — this recentres it optically.
+                // match the button's iconography.
+                //
+                // Optical-centring offset (down + left), tuned by eye — do NOT
+                // "fix" this to a mathematical centre. The mark's thin outlined
+                // wing strokes reach far into the UPPER-LEFT while carrying
+                // almost no ink, so both a bounding-box centre and a
+                // pixel-mass centroid place it too HIGH and RIGHT (the eye
+                // weighs the wing's reach; a mass centroid barely counts it).
+                // Shifting down-left recentres what the eye actually sees.
                 Image("SupportMark")
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
                     .foregroundColor(.white)
-                    .frame(width: 26, height: 26)
-                    .offset(x: -1, y: -2)
+                    .frame(width: 40, height: 40)
+                    .offset(x: -3, y: 5)
             }
             .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
             .overlay(alignment: .topTrailing) {
