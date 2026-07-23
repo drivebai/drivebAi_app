@@ -76,6 +76,28 @@ final class DeepLinkRouter: ObservableObject {
     /// correlate two separate `@Published` props on the same frame.
     @Published var pendingPurchaseChat: PendingPurchaseChat?
 
+    // MARK: - Guest mode (sign-in prompts + post-auth intent replay)
+
+    /// A sign-in prompt raised by a guest-gated CTA. The guest shell binds a
+    /// sheet to this; `message` is the conversion context line ("Sign in to
+    /// save cars you love"), `intent` what to replay after authentication.
+    @Published var guestPrompt: GuestPrompt?
+
+    /// The intent captured when a guest signed in from a prompt. Survives
+    /// the root tree swap (this router is an app-level singleton); consumed
+    /// by DiscoverView once the authenticated tabs mount, following the
+    /// pending-flag pattern above. Cleared via `clearPendingGuestIntent()`.
+    @Published var pendingGuestIntent: GuestIntent?
+
+    /// Raise the sign-in sheet from a guest-gated CTA.
+    func promptGuestSignIn(_ message: String, intent: GuestIntent?) {
+        guestPrompt = GuestPrompt(message: message, intent: intent)
+    }
+
+    func clearPendingGuestIntent() {
+        pendingGuestIntent = nil
+    }
+
     private init() {}
 
     func handle(url: URL) {
@@ -257,4 +279,31 @@ final class DeepLinkRouter: ObservableObject {
 struct PendingPurchaseChat: Equatable, Hashable {
     let chatID: UUID
     let purchaseRequestID: UUID
+}
+
+// MARK: - Guest mode types
+
+/// What a guest was trying to do when the sign-in prompt interrupted them.
+/// The car UUID is the "return to context" anchor: after authentication the
+/// user is brought back to that exact car with the action replayed.
+enum GuestIntent: Equatable {
+    case like(UUID)
+    case rent(UUID)
+    case buy(UUID)
+    case viewExactLocation(UUID)
+
+    var carID: UUID {
+        switch self {
+        case .like(let id), .rent(let id), .buy(let id), .viewExactLocation(let id):
+            return id
+        }
+    }
+}
+
+/// One sign-in prompt with its conversion context. Identifiable so
+/// `.sheet(item:)` presents exactly one at a time.
+struct GuestPrompt: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+    let intent: GuestIntent?
 }

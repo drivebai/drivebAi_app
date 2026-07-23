@@ -88,6 +88,7 @@
 		E000000100000000000000A1 /* LikedListingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000A0 /* LikedListingsStore.swift */; };
 		E000000100000000000000A3 /* RemoteImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000A2 /* RemoteImage.swift */; };
 		E000000100000000000000B3 /* DiscoverMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000B0 /* DiscoverMapView.swift */; };
+		F2BECA0001000000000000001 /* GuestTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BECA0002000000000000001 /* GuestTabView.swift */; };
 		E000000100000000000000B4 /* CarLocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000B1 /* CarLocationMapView.swift */; };
 		E000000100000000000000B5 /* OwnerEditCarLocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000B2 /* OwnerEditCarLocationView.swift */; };
 		E000000100000000000000D3 /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000C0 /* ChatModels.swift */; };
@@ -261,6 +262,7 @@
 		E000000100000000000000A0 /* LikedListingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedListingsStore.swift; sourceTree = "<group>"; };
 		E000000100000000000000A2 /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
 		E000000100000000000000B0 /* DiscoverMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverMapView.swift; sourceTree = "<group>"; };
+		F2BECA0002000000000000001 /* GuestTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestTabView.swift; sourceTree = "<group>"; };
 		E000000100000000000000B1 /* CarLocationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLocationMapView.swift; sourceTree = "<group>"; };
 		E000000100000000000000B2 /* OwnerEditCarLocationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerEditCarLocationView.swift; sourceTree = "<group>"; };
 		E000000100000000000000C0 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
@@ -555,6 +557,7 @@
 				E00000010000000000000016 /* ProfileView.swift */,
 				E00000010000000000000017 /* MainTabView.swift */,
 				E0000001000000000000003F /* DriverTabView.swift */,
+				F2BECA0002000000000000001 /* GuestTabView.swift */,
 				E00000010000000000000040 /* OwnerTabView.swift */,
 				E00000010000000000000410 /* EditProfileView.swift */,
 			);
@@ -954,6 +957,7 @@
 				E000000100000000000000A1 /* LikedListingsStore.swift in Sources */,
 				E000000100000000000000A3 /* RemoteImage.swift in Sources */,
 				E000000100000000000000B3 /* DiscoverMapView.swift in Sources */,
+				F2BECA0001000000000000001 /* GuestTabView.swift in Sources */,
 				E000000100000000000000B4 /* CarLocationMapView.swift in Sources */,
 				E000000100000000000000B5 /* OwnerEditCarLocationView.swift in Sources */,
 				E000000100000000000000D3 /* ChatModels.swift in Sources */,

@@ -32,14 +32,13 @@ struct DiscoverView: View {
                 // Filter chips row
                 filterChipsRow
 
-                // Content
-                if authStore.state.isAuthenticated {
-                    AuthenticatedDiscoverContent(showMapView: $showMapView, showSortOptions: $showSortOptions)
-                        .environmentObject(viewModel)
-                        .environmentObject(likedStore)
-                } else {
-                    UnauthenticatedDiscoverContent()
-                }
+                // Content — same real listings for BOTH audiences (guest
+                // mode). Guests receive the server-redacted payload; the
+                // gated CTAs (like/rent/buy/exact location) raise the
+                // sign-in prompt instead of acting.
+                DiscoverContent(showMapView: $showMapView, showSortOptions: $showSortOptions)
+                    .environmentObject(viewModel)
+                    .environmentObject(likedStore)
             }
             .navigationTitle("Discover")
             .navigationBarTitleDisplayMode(.large)
@@ -214,9 +213,10 @@ struct FilterChip: View {
 
 // MARK: - Authenticated Content
 
-struct AuthenticatedDiscoverContent: View {
+struct DiscoverContent: View {
     @EnvironmentObject private var viewModel: DiscoverViewModel
     @EnvironmentObject private var likedStore: LikedListingsStore
+    @EnvironmentObject private var authStore: AuthStore
     @ObservedObject private var tour = ProductTourCoordinator.shared
     @Binding var showMapView: Bool
     @Binding var showSortOptions: Bool
@@ -256,8 +256,11 @@ struct AuthenticatedDiscoverContent: View {
             // Restore the checklist's collapse state, as the Today views do —
             // otherwise collapsing it here is forgotten the moment you leave.
             checklistCollapsed = tour.checklistUIState(role: .driver).collapsed
-            // Fetch liked listings from backend if not already loaded
-            if likedStore.likedIDs.isEmpty && !likedStore.isLoading {
+            // Fetch liked listings from backend if not already loaded.
+            // Guests skip it: the endpoint is authenticated and a guest has
+            // no likes to hydrate — don't fire a doomed request.
+            if authStore.state.isAuthenticated,
+               likedStore.likedIDs.isEmpty && !likedStore.isLoading {
                 await likedStore.fetchLikedListings()
             }
         }
@@ -293,7 +296,9 @@ struct AuthenticatedDiscoverContent: View {
         VStack(spacing: 16) {
             // Getting-started banner for a new driver landing on an empty
             // Discover (Section 8). Hidden once dismissed or fully complete.
-            if viewModel.selectedFilter != .liked,
+            // Guests never see it — it reads per-account milestones.
+            if authStore.state.isAuthenticated,
+               viewModel.selectedFilter != .liked,
                !tour.checklistUIState(role: .driver).dismissed {
                 // Rows reflect what the user has actually done — never which
                 // coach marks they happened to see.
@@ -424,37 +429,13 @@ struct AuthenticatedDiscoverContent: View {
 
 // MARK: - Unauthenticated Content
 
-struct UnauthenticatedDiscoverContent: View {
-    var body: some View {
-        VStack(spacing: 32) {
-            Spacer()
-
-            VStack(spacing: 16) {
-                Image(systemName: "car.2.fill")
-                    .font(.system(size: 60))
-                    .foregroundColor(.driveBaiPrimary)
-
-                Text("Find your perfect ride")
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Text("Sign in to browse available cars and connect with owners")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-            }
-
-            Spacer()
-        }
-    }
-}
-
 // MARK: - Discover Listing Card (Figma Design)
 
 struct DiscoverListingCard: View {
     let car: Car
     @EnvironmentObject private var likedStore: LikedListingsStore
+    @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @State private var showShareSheet = false
 
     private var isLiked: Bool {
@@ -487,6 +468,13 @@ struct DiscoverListingCard: View {
                             icon: isLiked ? "heart.fill" : "heart",
                             tintColor: isLiked ? .red : .white
                         ) {
+                            guard authStore.state.isAuthenticated else {
+                                deepLinkRouter.promptGuestSignIn(
+                                    "Sign in to save cars you love",
+                                    intent: .like(car.id)
+                                )
+                                return
+                            }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                                 likedStore.toggleLike(car.id)
                             }
@@ -667,6 +655,7 @@ struct ListingDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var likedStore: LikedListingsStore
     @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @State private var showShareSheet = false
     @State private var currentPhotoIndex = 0
     @State private var showLocationMap = false
@@ -913,7 +902,16 @@ struct ListingDetailView: View {
     }
 
     private func requestLease() {
-        guard authStore.state.user != nil, !isRequestingLease else { return }
+        guard authStore.state.user != nil else {
+            // Guest: the prime conversion moment — they found a car they
+            // want. Never a silent no-op.
+            deepLinkRouter.promptGuestSignIn(
+                "Sign in to request this car",
+                intent: .rent(car.id)
+            )
+            return
+        }
+        guard !isRequestingLease else { return }
         // The "What happens next?" card's button reads "Send request", so it must
         // actually gate the POST. When the explainer isn't due, this sends
         // straight away.
@@ -991,6 +989,13 @@ struct ListingDetailView: View {
 
                 // Favorite button
                 Button(action: {
+                    guard authStore.state.isAuthenticated else {
+                        deepLinkRouter.promptGuestSignIn(
+                            "Sign in to save cars you love",
+                            intent: .like(car.id)
+                        )
+                        return
+                    }
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                         likedStore.toggleLike(car.id)
                     }
@@ -1150,6 +1155,13 @@ struct ListingDetailView: View {
     /// The default green "Buy this car" CTA (no active purchase yet).
     private var buyThisCarButton: some View {
         Button {
+            guard authStore.state.isAuthenticated else {
+                deepLinkRouter.promptGuestSignIn(
+                    "Sign in to make an offer on this car",
+                    intent: .buy(car.id)
+                )
+                return
+            }
             // Explain buying *before* opening the offer form: the
             // intro's first card spotlights this very button, which
             // only exists on this screen. The sheet then presents

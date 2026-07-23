@@ -195,8 +195,11 @@ struct ContentView: View {
                 }
 
             case .unauthenticated:
-                // OTP is the primary auth flow; password login is secondary
-                EnterEmailOTPView(showDismissButton: false)
+                // Guest mode: the app opens into browsing, never a sign-in
+                // wall. Discover renders the server-redacted listings; the
+                // OTP flow lives on the shell's "Sign in" tab and in the
+                // conversion-prompt sheet.
+                GuestTabView()
                     .environmentObject(deepLinkRouter)
 
             case .authenticated(let user):

@@ -17,9 +17,14 @@ struct EnterEmailOTPView: View {
     @Environment(\.dismiss) private var dismiss
 
     let showDismissButton: Bool
+    /// Guest-mode conversion context ("Sign in to save cars you love"),
+    /// shown in place of the generic subtitle when a gated CTA raised this
+    /// sheet. nil keeps the default copy.
+    let contextMessage: String?
 
-    init(showDismissButton: Bool = true) {
+    init(showDismissButton: Bool = true, contextMessage: String? = nil) {
         self.showDismissButton = showDismissButton
+        self.contextMessage = contextMessage
     }
 
     @State private var email = ""
@@ -47,9 +52,9 @@ struct EnterEmailOTPView: View {
                             Text("Welcome to DrivaBai")
                                 .font(.title2)
                                 .fontWeight(.bold)
-                            Text("Enter your email to sign in or create an account")
+                            Text(contextMessage ?? "Enter your email to sign in or create an account")
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(contextMessage == nil ? .secondary : .primary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, 24)
                         }

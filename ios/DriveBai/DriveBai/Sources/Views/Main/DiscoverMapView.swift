@@ -22,16 +22,33 @@ struct DiscoverMapView: View {
                 }
             )) {
                 ForEach(mappableListings) { car in
-                    Annotation(car.displayTitle, coordinate: CLLocationCoordinate2D(
+                    let coordinate = CLLocationCoordinate2D(
                         latitude: car.location.latitude,
                         longitude: car.location.longitude
-                    )) {
-                        CarMapPin(isSelected: selectedCar?.id == car.id)
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    selectedCar = car
-                                }
+                    )
+                    // Guest mode: server-redacted locations are approximate
+                    // (displaced center). Draw the 1 km area circle the
+                    // displacement guarantees contains the true location —
+                    // the marker inside is a soft area dot, not the precise
+                    // car pin.
+                    if car.location.isApproximate {
+                        MapCircle(center: coordinate, radius: 1000)
+                            .foregroundStyle(Color.driveBaiPrimary.opacity(0.15))
+                            .stroke(Color.driveBaiPrimary.opacity(0.4), lineWidth: 1)
+                    }
+                    Annotation(car.displayTitle, coordinate: coordinate) {
+                        Group {
+                            if car.location.isApproximate {
+                                ApproximateAreaMarker(isSelected: selectedCar?.id == car.id)
+                            } else {
+                                CarMapPin(isSelected: selectedCar?.id == car.id)
                             }
+                        }
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                selectedCar = car
+                            }
+                        }
                     }
                     .tag(car.id)
                 }
@@ -99,11 +116,34 @@ struct CarMapPin: View {
     }
 }
 
+// MARK: - Approximate Area Marker (guest mode)
+
+/// Marker for a server-displaced (approximate) location: a soft translucent
+/// dot that reads as "somewhere in this area", deliberately unlike the
+/// precise CarMapPin. Sits at the center of the 1 km MapCircle.
+struct ApproximateAreaMarker: View {
+    var isSelected: Bool = false
+
+    var body: some View {
+        Image(systemName: "car.fill")
+            .font(.system(size: 11))
+            .foregroundColor(.driveBaiPrimary)
+            .frame(width: 28, height: 28)
+            .background(Color.driveBaiPrimary.opacity(isSelected ? 0.45 : 0.25))
+            .clipShape(Circle())
+            .overlay(Circle().stroke(Color.driveBaiPrimary.opacity(0.6), lineWidth: 1))
+            .scaleEffect(isSelected ? 1.15 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isSelected)
+    }
+}
+
 // MARK: - Map Preview Card (bottom sheet style)
 
 struct MapPreviewCard: View {
     let car: Car
     @EnvironmentObject private var likedStore: LikedListingsStore
+    @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
 
     private var isLiked: Bool {
         likedStore.isLiked(car.id)
@@ -125,6 +165,13 @@ struct MapPreviewCard: View {
                             icon: isLiked ? "heart.fill" : "heart",
                             tintColor: isLiked ? .red : .white
                         ) {
+                            guard authStore.state.isAuthenticated else {
+                                deepLinkRouter.promptGuestSignIn(
+                                    "Sign in to save cars you love",
+                                    intent: .like(car.id)
+                                )
+                                return
+                            }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                                 likedStore.toggleLike(car.id)
                             }

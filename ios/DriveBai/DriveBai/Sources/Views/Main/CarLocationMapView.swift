@@ -1,10 +1,19 @@
 import SwiftUI
 import MapKit
 
-/// Read-only car location map (for driver car detail "locator" button)
+/// Read-only car location map (for driver car detail "locator" button).
+/// For an approximate (guest-mode, server-displaced) location it renders a
+/// 1 km area circle instead of a pin, and the address line becomes a
+/// sign-in conversion prompt.
 struct CarLocationMapView: View {
     let car: Car
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var authStore: AuthStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
+
+    private var isApproximate: Bool {
+        car.location.isApproximate
+    }
 
     private var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: car.location.latitude, longitude: car.location.longitude)
@@ -13,7 +22,10 @@ struct CarLocationMapView: View {
     private var region: MKCoordinateRegion {
         MKCoordinateRegion(
             center: coordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+            // Wide enough to see the whole 1 km circle when approximate.
+            span: isApproximate
+                ? MKCoordinateSpan(latitudeDelta: 0.035, longitudeDelta: 0.035)
+                : MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
         )
     }
 
@@ -41,10 +53,18 @@ struct CarLocationMapView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
 
-            // Map
+            // Map — a circle, never a pin, for an approximate location: the
+            // displaced center is NOT where the car lives, and a pin would
+            // claim it is.
             Map(initialPosition: .region(region)) {
-                Annotation(car.displayTitle, coordinate: coordinate) {
-                    CarMapPin(isSelected: true)
+                if isApproximate {
+                    MapCircle(center: coordinate, radius: 1000)
+                        .foregroundStyle(Color.driveBaiPrimary.opacity(0.15))
+                        .stroke(Color.driveBaiPrimary.opacity(0.4), lineWidth: 1.5)
+                } else {
+                    Annotation(car.displayTitle, coordinate: coordinate) {
+                        CarMapPin(isSelected: true)
+                    }
                 }
             }
             .mapStyle(.standard)
@@ -55,18 +75,45 @@ struct CarLocationMapView: View {
 
             // Bottom info
             VStack(spacing: 12) {
-                if !car.location.displayAddressLine.isEmpty {
-                    Text("(precise address as identified on map)")
+                if isApproximate {
+                    Text("Approximate area — the exact pickup location is shared after you sign in")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
-                }
 
-                Text(car.location.displayAddressLine)
-                    .font(.body)
-                    .fontWeight(.medium)
-                    .foregroundColor(.primary)
-                    .multilineTextAlignment(.center)
+                    Text(car.location.displayArea)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.center)
+
+                    if !authStore.state.isAuthenticated {
+                        Button {
+                            deepLinkRouter.promptGuestSignIn(
+                                "Sign in to see the exact pickup location",
+                                intent: .viewExactLocation(car.id)
+                            )
+                        } label: {
+                            Text("Sign in to see the exact location")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.driveBaiPrimary)
+                        }
+                    }
+                } else {
+                    if !car.location.displayAddressLine.isEmpty {
+                        Text("(precise address as identified on map)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Text(car.location.displayAddressLine)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .padding(16)
             .frame(maxWidth: .infinity)
