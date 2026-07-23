@@ -16,6 +16,19 @@ struct TourTargetPreferenceKey: PreferenceKey {
     }
 }
 
+// Carries the host's REAL safe-area insets up from a reader that does NOT
+// ignore the safe area. The overlay's own GeometryReader ignores it (to draw
+// full-bleed), which zeroes its `safeAreaInsets`; reading them here keeps the
+// Skip pill and card placement anchored to the true insets, and stays correct
+// for a sheet host (whose insets differ from the window's) — unlike reading
+// the key window directly.
+struct HostSafeInsetsPreferenceKey: PreferenceKey {
+    static var defaultValue: EdgeInsets = EdgeInsets()
+    static func reduce(value: inout EdgeInsets, nextValue: () -> EdgeInsets) {
+        value = nextValue()
+    }
+}
+
 extension View {
     /// Tag this view as a coach-mark target. When a tour step points at `id`,
     /// the overlay spotlights this view's bounds.
@@ -336,9 +349,21 @@ struct OnboardingOverlayHost: ViewModifier {
     @ObservedObject var coord: ProductTourCoordinator
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var hostToken: Int = 0
+    /// The host's real safe-area insets, captured from a non-ignoring reader.
+    @State private var safeInsets: EdgeInsets = EdgeInsets()
 
     func body(content: Content) -> some View {
         content
+            // Capture the TRUE insets before the overlay ignores the safe area.
+            .background(
+                GeometryReader { g in
+                    Color.clear.preference(
+                        key: HostSafeInsetsPreferenceKey.self,
+                        value: g.safeAreaInsets
+                    )
+                }
+            )
+            .onPreferenceChange(HostSafeInsetsPreferenceKey.self) { safeInsets = $0 }
             .overlayPreferenceValue(TourTargetPreferenceKey.self) { anchors in
                 GeometryReader { proxy in
                     overlay(anchors: anchors, proxy: proxy)
@@ -365,7 +390,10 @@ struct OnboardingOverlayHost: ViewModifier {
                 step: step,
                 spotlight: rect,
                 containerSize: proxy.size,
-                safeInsets: proxy.safeAreaInsets,
+                // Real insets (see HostSafeInsetsPreferenceKey) — NOT
+                // proxy.safeAreaInsets, which the .ignoresSafeArea() above
+                // zeroes.
+                safeInsets: safeInsets,
                 progressText: coord.showsProgress ? "Step \(coord.stepNumber) of \(coord.stepCount)" : nil,
                 onPrimary: { coord.next() },
                 onSkip: { coord.skip() }

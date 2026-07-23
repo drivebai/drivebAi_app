@@ -5,23 +5,20 @@ import SwiftUI
 // Native `.tabItem` content is rendered by UIKit's `UITabBar`, OUTSIDE
 // SwiftUI's preference tree, so `.anchorPreference` cannot tag it and swapping
 // to a custom bar would regress the live `.badge()` modifiers and the
-// `selectedTab` deep-link `.onChange` handlers. Instead we compute the tab
-// cell rect geometrically — the native bar is untouched.
+// `selectedTab` deep-link `.onChange` handlers. Instead we MEASURE the real
+// bar/cell frames from UIKit at draw time (see OverlayGeometry) — the native
+// bar is untouched, and there is no hardcoded height or vertical position, so
+// it is correct on the iOS 26 liquid-glass floating bar and on older bars
+// alike.
 //
-// The 49pt bar height and the equal-width division only describe a compact-width
-// portrait phone bar. On a regular-width layout (iPad) UIKit centres the items
-// instead of spreading them, and a compact-height phone in landscape uses a
-// shorter, inset bar — in both cases the computed cell lands on empty space.
-//
-// So the geometry is *conditional*: when the assumption doesn't hold we return
-// nil and the caller falls back to a centred, arrow-less card. A coach mark
-// that highlights the wrong pixels is worse than one that highlights nothing.
+// The equal-width division still only describes a compact-width portrait phone
+// bar: on a regular-width layout (iPad) UIKit centres the items and in
+// landscape the bar is shorter/inset. Those layouts fall back to nil (a
+// centred, arrow-less card) — highlighting nothing beats highlighting the
+// wrong pixels. Enabling them is a behaviour change, out of scope here.
 
 enum TabBarSpotlightRect {
-    /// Standard `UITabBar` content height, excluding the bottom safe-area inset.
-    static let standardBarHeight: CGFloat = 49
-
-    /// Whether the equal-width / 49pt assumption describes the current layout.
+    /// Whether the equal-width portrait-phone assumption describes the layout.
     static func supportsGeometricSpotlight(
         horizontalSizeClass: UserInterfaceSizeClass?,
         containerSize: CGSize
@@ -30,9 +27,10 @@ enum TabBarSpotlightRect {
         return containerSize.height >= containerSize.width            // portrait only
     }
 
-    /// The rect of tab cell `tabIndex` (0-based) within `tabCount` equal cells,
-    /// expressed in `proxy`'s coordinate space. `nil` when the layout is one we
-    /// cannot describe geometrically.
+    /// The rect of tab cell `tabIndex` (0-based), in the overlay's full-screen
+    /// coordinate space (== the key window's, since the overlay ignores the
+    /// safe area). `nil` when the layout can't be spotlighted or the bar can't
+    /// be read.
     static func rect(
         tabIndex: Int,
         tabCount: Int,
@@ -45,18 +43,24 @@ enum TabBarSpotlightRect {
         ) else { return nil }
 
         let count = max(tabCount, 1)
-        // The tappable icon row is the 49pt band sitting ABOVE the bottom
-        // safe-area (home-indicator) inset. Anchoring to the inset's top and
-        // keeping the height at 49pt puts the cutout on the icons; adding the
-        // inset to either would push the rect down into empty home-indicator
-        // space and drop its centre below the real icon row.
-        let cellWidth = proxy.size.width / CGFloat(count)
         let clampedIndex = min(max(tabIndex, 0), count - 1)
-        return CGRect(
-            x: cellWidth * CGFloat(clampedIndex),
-            y: proxy.size.height - proxy.safeAreaInsets.bottom - standardBarHeight,
-            width: cellWidth,
-            height: standardBarHeight
-        )
+
+        // Preferred: the real per-cell button frame — exact on the standard and
+        // the liquid-glass floating bar. Fall back to the measured whole-bar
+        // frame split into equal cells; nil if neither can be read.
+        let cells = OverlayGeometry.tabCellFrames()
+        if cells.count == count {
+            return cells[clampedIndex]
+        }
+        if let bar = OverlayGeometry.tabBarFrame() {
+            let cellWidth = bar.width / CGFloat(count)
+            return CGRect(
+                x: bar.minX + cellWidth * CGFloat(clampedIndex),
+                y: bar.minY,
+                width: cellWidth,
+                height: bar.height
+            )
+        }
+        return nil
     }
 }

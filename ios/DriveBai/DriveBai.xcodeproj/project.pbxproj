@@ -156,6 +156,7 @@
 		F0DECA0001000000000000007 /* ProductTourCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000007 /* ProductTourCoordinator.swift */; };
 		F0DECA0001000000000000008 /* SpotlightOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000008 /* SpotlightOverlay.swift */; };
 		F0DECA0001000000000000009 /* TabBarSpotlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000009 /* TabBarSpotlight.swift */; };
+		F5EECA0001000000000000009 /* OverlayGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EECA0002000000000000009 /* OverlayGeometry.swift */; };
 		F0DECA000100000000000000A /* GettingStartedCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA000200000000000000A /* GettingStartedCard.swift */; };
 		F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */; };
 /* End PBXBuildFile section */
@@ -333,6 +334,7 @@
 		F0DECA0002000000000000007 /* ProductTourCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProductTourCoordinator.swift; path = DriveBai/Sources/Onboarding/ProductTourCoordinator.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000008 /* SpotlightOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpotlightOverlay.swift; path = DriveBai/Sources/Onboarding/SpotlightOverlay.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000009 /* TabBarSpotlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TabBarSpotlight.swift; path = DriveBai/Sources/Onboarding/TabBarSpotlight.swift; sourceTree = SOURCE_ROOT; };
+		F5EECA0002000000000000009 /* OverlayGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OverlayGeometry.swift; path = DriveBai/Sources/Onboarding/OverlayGeometry.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA000200000000000000A /* GettingStartedCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GettingStartedCard.swift; path = DriveBai/Sources/Onboarding/GettingStartedCard.swift; sourceTree = SOURCE_ROOT; };
 		F23642CA82731C1438425E6D /* ImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImagePipeline.swift; path = DriveBai/Sources/Services/ImagePipeline.swift; sourceTree = SOURCE_ROOT; };
 		F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverModels.swift; path = DriveBai/Sources/Models/KeyHandover/KeyHandoverModels.swift; sourceTree = SOURCE_ROOT; };
@@ -775,6 +777,7 @@
 				F0DECA0002000000000000007 /* ProductTourCoordinator.swift */,
 				F0DECA0002000000000000008 /* SpotlightOverlay.swift */,
 				F0DECA0002000000000000009 /* TabBarSpotlight.swift */,
+				F5EECA0002000000000000009 /* OverlayGeometry.swift */,
 				F0DECA000200000000000000A /* GettingStartedCard.swift */,
 			);
 			name = Onboarding;
@@ -1025,6 +1028,7 @@
 				F0DECA0001000000000000007 /* ProductTourCoordinator.swift in Sources */,
 				F0DECA0001000000000000008 /* SpotlightOverlay.swift in Sources */,
 				F0DECA0001000000000000009 /* TabBarSpotlight.swift in Sources */,
+				F5EECA0001000000000000009 /* OverlayGeometry.swift in Sources */,
 				F0DECA000100000000000000A /* GettingStartedCard.swift in Sources */,
 				5EE64C21ADCC1B7F4BAD52BD /* KeyHandoverDetailViewModel.swift in Sources */,
 				84294759824B8DC261EF2FAE /* KeyHandoverDetailView.swift in Sources */,
