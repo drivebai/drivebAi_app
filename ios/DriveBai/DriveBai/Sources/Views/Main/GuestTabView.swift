@@ -13,6 +13,7 @@ import SwiftUI
 // follow-up, not built).
 struct GuestTabView: View {
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
+    @ObservedObject private var guestStore = GuestOnboardingStore.shared
     @State private var selectedTab = 0
 
     var body: some View {
@@ -24,7 +25,7 @@ struct GuestTabView: View {
                 }
                 .tag(0)
 
-            EnterEmailOTPView(showDismissButton: false)
+            signInTab
                 .tabItem {
                     Image(systemName: "person.crop.circle")
                     Text("Sign in")
@@ -42,6 +43,22 @@ struct GuestTabView: View {
                 contextTitle: prompt.title,
                 contextBody: prompt.body
             )
+        }
+    }
+
+    /// The Sign-in tab treats a first-time visitor differently from someone
+    /// returning to log in. First time: the value/trust intro above the email
+    /// field. Returning: straight to a "Welcome back" email prompt.
+    @ViewBuilder
+    private var signInTab: some View {
+        if guestStore.hasEnteredEmailBefore {
+            EnterEmailOTPView(
+                showDismissButton: false,
+                contextTitle: "Welcome back",
+                contextBody: "Enter your email to sign in."
+            )
+        } else {
+            EnterEmailOTPView(showDismissButton: false, showGuestIntro: true)
         }
     }
 }

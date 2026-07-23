@@ -22,16 +22,26 @@ struct EnterEmailOTPView: View {
     /// Both nil → the default "Welcome to DrivaBai" header (Sign-in tab / root).
     let contextTitle: String?
     let contextBody: String?
+    /// First-time guest treatment on the Sign-in tab: a short 3-point value
+    /// summary plus a "How DriveBai works" entry point above the email field.
+    let showGuestIntro: Bool
 
-    init(showDismissButton: Bool = true, contextTitle: String? = nil, contextBody: String? = nil) {
+    init(
+        showDismissButton: Bool = true,
+        contextTitle: String? = nil,
+        contextBody: String? = nil,
+        showGuestIntro: Bool = false
+    ) {
         self.showDismissButton = showDismissButton
         self.contextTitle = contextTitle
         self.contextBody = contextBody
+        self.showGuestIntro = showGuestIntro
     }
 
     @State private var email = ""
     @State private var showCodeEntry = false
     @State private var showPasswordLogin = false
+    @State private var showHowItWorks = false
     @FocusState private var emailFocused: Bool
 
     var body: some View {
@@ -63,7 +73,14 @@ struct EnterEmailOTPView: View {
                                 .padding(.horizontal, 24)
                         }
                     }
-                    .padding(.bottom, 36)
+                    .padding(.bottom, showGuestIntro ? 20 : 36)
+
+                    // ── First-time guest intro (Sign-in tab) ───────────────
+                    if showGuestIntro {
+                        guestIntroBlock
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 28)
+                    }
 
                     // ── Email input ────────────────────────────────────────
                     VStack(alignment: .leading, spacing: 8) {
@@ -147,6 +164,16 @@ struct EnterEmailOTPView: View {
                 LoginView(showDismissButton: true)
                     .environmentObject(authStore)
             }
+            .sheet(isPresented: $showHowItWorks) {
+                // "Sign up to list your car" from here: the guest is already
+                // on the sign-in screen, so we just pre-select the owner role
+                // (consumed at the signup role step) and close — the email
+                // field is right below. No second prompt.
+                HowDriveBaiWorksView(onSignUpAsOwner: {
+                    DeepLinkRouter.shared.guestSignupRoleHint = .carOwner
+                    showHowItWorks = false
+                })
+            }
             .onAppear {
                 authStore.clearError()
                 // Slight delay so the keyboard appears after the view settles
@@ -154,6 +181,42 @@ struct EnterEmailOTPView: View {
                     emailFocused = true
                 }
             }
+        }
+    }
+
+    // First-time guest intro shown on the Sign-in tab above the email field.
+    private var guestIntroBlock: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            introPoint("magnifyingglass", "Browse every car free — no account needed.")
+            introPoint("envelope", "Sign up with just your email.")
+            introPoint("checkmark.shield", "Add a license or payment only when you rent or buy.")
+
+            Button(action: { showHowItWorks = true }) {
+                HStack(spacing: 4) {
+                    Text("How DriveBai works")
+                    Image(systemName: "chevron.right").font(.caption2)
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.driveBaiPrimary)
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color(.systemGray6))
+        .cornerRadius(14)
+    }
+
+    private func introPoint(_ icon: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.driveBaiPrimary)
+                .frame(width: 20)
+            Text(text)
+                .font(.subheadline)
+                .foregroundColor(.primary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
