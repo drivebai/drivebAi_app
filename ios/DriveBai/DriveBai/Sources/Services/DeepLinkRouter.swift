@@ -89,13 +89,38 @@ final class DeepLinkRouter: ObservableObject {
     /// pending-flag pattern above. Cleared via `clearPendingGuestIntent()`.
     @Published var pendingGuestIntent: GuestIntent?
 
+    /// True from the moment DiscoverView starts replaying a guest intent
+    /// (pushing the car, re-opening the action) until the user pops back to
+    /// the Discover root. The deferred new-user welcome tour waits on this
+    /// so its scrim never lands on top of the car the guest signed up for.
+    @Published var guestReplayInFlight = false
+
     /// Raise the sign-in sheet from a guest-gated CTA.
     func promptGuestSignIn(_ message: String, intent: GuestIntent?) {
         guestPrompt = GuestPrompt(message: message, intent: intent)
     }
 
+    /// Called from the app root the moment authentication succeeds: move
+    /// the presented prompt's intent into the pending channel (it survives
+    /// the root tree swap on this singleton) and drop the prompt. Sign-ins
+    /// from the Sign-in tab have no prompt — nothing to capture.
+    func captureGuestIntentOnAuth() {
+        if let intent = guestPrompt?.intent {
+            pendingGuestIntent = intent
+        }
+        guestPrompt = nil
+    }
+
     func clearPendingGuestIntent() {
         pendingGuestIntent = nil
+    }
+
+    /// Sign-out teardown: a stale prompt or intent must never replay into
+    /// the next account's session.
+    func clearGuestState() {
+        guestPrompt = nil
+        pendingGuestIntent = nil
+        guestReplayInFlight = false
     }
 
     private init() {}

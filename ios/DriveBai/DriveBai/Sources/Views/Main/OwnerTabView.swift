@@ -69,7 +69,14 @@ struct OwnerTabView: View {
         }
         // Product-tour coach-mark overlay (see DriverTabView for the rationale).
         .onboardingOverlayHost(tour)
-        .task { tour.handle(.roleActivated(.owner)) }
+        .task {
+            // A guest who was browsing rentals but signed up as Car Owner
+            // gets their chosen owner experience — the rent/buy intent is
+            // meaningless in this layout, so drop it deliberately (this
+            // also releases the deferred welcome tour).
+            deepLinkRouter.clearPendingGuestIntent()
+            tour.handle(.roleActivated(.owner))
+        }
         // The owner tab walk ends on "List a car" — land the owner on My cars,
         // whose zero-car empty state carries the "List your first vehicle"
         // checklist + primer. Only on completion: skipping the tour must not

@@ -96,8 +96,17 @@ struct DriveBaiApp: App {
                 }
                 .onChange(of: authStore.state) { _, newState in
                     if newState.isAuthenticated {
+                        // Guest conversion: capture the sign-in prompt's
+                        // intent BEFORE the tree swap; DiscoverView replays
+                        // it once the authenticated tabs mount.
+                        deepLinkRouter.captureGuestIntentOnAuth()
                         WebSocketManager.shared.connect()
                         Task {
+                            // Hydrate likes on mid-session sign-in too —
+                            // this was launch-only, so a user signing in
+                            // mid-session rendered every heart unfilled
+                            // until the next cold start.
+                            await likedListingsStore.fetchLikedListings()
                             await ChatsListViewModel.shared.fetchChats()
                             await requestPushPermissionIfNeeded()
                             await supportInboxStore.refresh()
@@ -105,6 +114,9 @@ struct DriveBaiApp: App {
                     } else {
                         WebSocketManager.shared.disconnect()
                         ChatsListViewModel.shared.clearAll()
+                        // Never let a previous guest's prompt or intent
+                        // leak into the next account's session.
+                        deepLinkRouter.clearGuestState()
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
@@ -179,6 +191,12 @@ struct ContentView: View {
     // so a live signup→complete transition is our new-user signal).
     @State private var tourDidBootstrap = false
     @State private var tourSawOnboarding = false
+    /// A new user signed up from a guest conversion prompt: the welcome tour
+    /// is deferred until their replayed intent settles (intent wins, tours
+    /// defer). Session-scoped by design — if the app dies before they return
+    /// to the Discover root, the welcome is skipped rather than replayed
+    /// over a stale context; milestones/armed replays still cover them.
+    @State private var deferredSignupCompleted = false
 
     var body: some View {
         Group {
@@ -230,6 +248,28 @@ struct ContentView: View {
         .onChange(of: authStore.state) { _, newState in
             syncProductTour(for: newState)
         }
+        // Guest-conversion settle points: the deferred welcome fires when
+        // the captured intent is gone AND the replay has left the screen.
+        .onChange(of: deepLinkRouter.pendingGuestIntent) { _, _ in
+            fireDeferredWelcomeIfSettled()
+        }
+        .onChange(of: deepLinkRouter.guestReplayInFlight) { _, _ in
+            fireDeferredWelcomeIfSettled()
+        }
+    }
+
+    /// A converted guest's welcome tour, deferred while their intent
+    /// replayed (see syncProductTour): fire it once nothing guest-related
+    /// is pending or on screen, so the scrim never covers the car they
+    /// signed up for.
+    private func fireDeferredWelcomeIfSettled() {
+        guard deferredSignupCompleted,
+              deepLinkRouter.pendingGuestIntent == nil,
+              !deepLinkRouter.guestReplayInFlight else { return }
+        deferredSignupCompleted = false
+        let coord = ProductTourCoordinator.shared
+        coord.isNewUser = true
+        coord.handle(.signupCompleted)
     }
 
     /// Bridge auth state into the product-tour coordinator: bootstrap once on
@@ -261,8 +301,17 @@ struct ContentView: View {
             }
             if tourSawOnboarding {
                 tourSawOnboarding = false
-                coord.isNewUser = true
-                coord.handle(.signupCompleted)
+                if deepLinkRouter.pendingGuestIntent != nil {
+                    // Converted guest: they are about to be replayed to the
+                    // car they signed up for. Intent wins — the welcome
+                    // chain fires when the replay settles instead of now
+                    // (firing now would be silently dropped by the tour's
+                    // pending-deep-link suppression, losing it forever).
+                    deferredSignupCompleted = true
+                } else {
+                    coord.isNewUser = true
+                    coord.handle(.signupCompleted)
+                }
             }
         }
     }

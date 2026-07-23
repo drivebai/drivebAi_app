@@ -96,6 +96,12 @@ final class ProductTourCoordinator: ObservableObject {
             || dl.pendingPurchaseTap != nil
             || dl.pendingPurchaseChat != nil
             || dl.deepLinkError != nil
+            // Guest conversion: while a sign-in prompt is up or a captured
+            // intent awaits replay, no tour may auto-start over it. The
+            // deferred signupCompleted re-fires once the replay settles
+            // (ContentView.fireDeferredWelcomeIfSettled).
+            || dl.guestPrompt != nil
+            || dl.pendingGuestIntent != nil
         return TourGlobalState(
             isAuthenticated: auth.state.isAuthenticated,
             needsOnboarding: auth.needsOnboarding,

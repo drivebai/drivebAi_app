@@ -18,10 +18,15 @@ struct ChatNavigationData: Identifiable, Hashable {
 struct DiscoverView: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var likedStore: LikedListingsStore
+    @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @StateObject private var viewModel = DiscoverViewModel.shared
     @State private var showMapView = false
     @State private var showSortOptions = false
     @State private var showFilterSheet = false
+    /// Guest-conversion replay: the car pushed programmatically after a
+    /// guest signed in from a gated CTA, plus the action to re-open on it.
+    @State private var guestIntentCar: Car?
+    @State private var guestReplayAction: GuestIntent?
 
     var body: some View {
         NavigationStack {
@@ -90,11 +95,68 @@ struct DiscoverView: View {
                 // the search/first-card coach-marks can run for a new user.
                 ProductTourCoordinator.shared.handle(.discoverAppeared)
                 await viewModel.fetchListings()
+                // Replay a converted guest's intent only AFTER the
+                // authenticated refetch: the shared view model still holds
+                // the REDACTED guest listings at mount, and the replayed
+                // detail must carry the full car (exact location, owner).
+                consumeGuestIntentIfReady()
             }
             .sheet(isPresented: $showFilterSheet) {
                 DiscoverFilterSheet(viewModel: viewModel)
             }
+            // Programmatic push for the guest-conversion replay ("return the
+            // user to exactly where they were"): the same car, with the
+            // gated action re-opened on top.
+            .navigationDestination(item: $guestIntentCar) { car in
+                ListingDetailView(car: car, pendingGuestAction: guestReplayAction)
+                    .environmentObject(likedStore)
+            }
+            .onChange(of: guestIntentCar) { _, car in
+                if car == nil {
+                    // Replay left the screen — the deferred welcome tour
+                    // may now fire (ContentView observes this).
+                    deepLinkRouter.guestReplayInFlight = false
+                }
+            }
         }
+    }
+
+    // MARK: - Guest intent replay
+
+    /// Replays what a guest was doing when the sign-in prompt interrupted
+    /// them: push the same car and re-open the gated action. Runs once,
+    /// after the authenticated listings fetch (see the `.task`).
+    @MainActor
+    private func consumeGuestIntentIfReady() {
+        guard authStore.state.isAuthenticated,
+              let intent = deepLinkRouter.pendingGuestIntent else { return }
+
+        guard let car = viewModel.listings.first(where: { $0.id == intent.carID }) else {
+            // The car left the marketplace while they signed up (sold,
+            // paused, delisted). Drop the intent — the user still lands on
+            // a live Discover rather than a dead detail screen.
+            deepLinkRouter.clearPendingGuestIntent()
+            return
+        }
+
+        deepLinkRouter.clearPendingGuestIntent()
+        deepLinkRouter.guestReplayInFlight = true
+
+        if case .like = intent {
+            // Likes replay at the list level: hydrate first so a stale GET
+            // racing the insert can't wipe it, then like only if needed
+            // (the account may already have this car liked).
+            guestReplayAction = nil
+            Task {
+                await likedStore.fetchLikedListings()
+                if !likedStore.isLiked(car.id) {
+                    likedStore.toggleLike(car.id)
+                }
+            }
+        } else {
+            guestReplayAction = intent
+        }
+        guestIntentCar = car
     }
 
     // MARK: - Search Bar Row
@@ -652,6 +714,9 @@ struct RequirementPill: View {
 
 struct ListingDetailView: View {
     let car: Car
+    /// Guest-conversion replay: the gated action to re-open once this
+    /// detail settles (set only by DiscoverView's programmatic push).
+    var pendingGuestAction: GuestIntent? = nil
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var likedStore: LikedListingsStore
     @EnvironmentObject private var authStore: AuthStore
@@ -659,6 +724,9 @@ struct ListingDetailView: View {
     @State private var showShareSheet = false
     @State private var currentPhotoIndex = 0
     @State private var showLocationMap = false
+    /// Guards the guest-action replay to exactly one run — `.task` re-fires
+    /// on every appearance (returning from the offer sheet, chat, etc.).
+    @State private var didRunGuestAction = false
     @State private var navigateToChat: ChatNavigationData?
     @State private var isRequestingLease = false
     @State private var leaseRequestError: String?
@@ -844,6 +912,7 @@ struct ListingDetailView: View {
             // purchase for this car. Re-runs on every appearance, so returning
             // from the offer sheet / chat re-reconciles the button state.
             await loadActivePurchase()
+            await runPendingGuestActionIfNeeded()
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [shareText])
@@ -886,6 +955,32 @@ struct ListingDetailView: View {
     /// purchase for this exact car. Reuses the same `/today/purchase-requests`
     /// endpoint the Today tab already consumes. Silent on failure — the
     /// backend 409 remains the authoritative guard.
+    /// Re-opens the action a guest was blocked on, once, after the
+    /// programmatic push settles. Runs AFTER loadActivePurchase so a .buy
+    /// replay lands on the reconciled CTA state (an existing active
+    /// purchase renders the status pill instead of double-offering).
+    @MainActor
+    private func runPendingGuestActionIfNeeded() async {
+        guard let action = pendingGuestAction, !didRunGuestAction else { return }
+        didRunGuestAction = true
+        // Let the navigation push finish before presenting on top of it.
+        try? await Task.sleep(for: .milliseconds(400))
+        switch action {
+        case .rent:
+            requestLease()
+        case .buy:
+            guard activePurchase == nil else { return }
+            ProductTourCoordinator.shared.updateContext { $0.carIsForSale = true }
+            ProductTourCoordinator.shared.startOrRun(.purchaseIntro) {
+                buyRequestCar = car
+            }
+        case .viewExactLocation:
+            showLocationMap = true
+        case .like:
+            break // replayed at the Discover level before the push
+        }
+    }
+
     private func loadActivePurchase() async {
         guard car.isForSale, let userId = authStore.state.user?.id else { return }
         do {
