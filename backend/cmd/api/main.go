@@ -135,6 +135,15 @@ func main() {
 	authRateLimiter := middleware.NewRateLimiter(10, time.Minute)
 	defer authRateLimiter.Stop()
 
+	// Rate limiter for the public listings endpoint: 10 req/min per IP —
+	// deliberately as tight as auth. The endpoint has no pagination, so a
+	// single request returns the entire inventory; higher limits would add
+	// nothing for legitimate browsing (one fetch per Discover appearance /
+	// pull-to-refresh) and only serve scrapers. Server-side pagination is
+	// the real fix and is tracked as a follow-up.
+	listingsRateLimiter := middleware.NewRateLimiter(10, time.Minute)
+	defer listingsRateLimiter.Stop()
+
 	// Blocked-account checker used on every authenticated request (and at WS
 	// connect). 30s cache TTL bounds enforcement latency on other instances;
 	// the admin block endpoint invalidates in-process for immediate effect.
@@ -170,6 +179,10 @@ func main() {
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
 	carHandler.SetReviewRepository(reviewRepo)
+	// Coordinate-displacement key for anonymous listing responses. Derived
+	// from the JWT secret (always set, prod-validated) rather than a new env
+	// var: it never leaves the server and needs no rotation story of its own.
+	carHandler.SetPublicRedactionSecret([]byte("car-location-redact:" + cfg.JWTSecret))
 	reviewHandler := handlers.NewReviewHandler(reviewRepo, logger)
 	// VIN decode gets ExistsByVIN so the wizard's Search step can show the
 	// early "already listed on DrivaBai" signal (same definition of "in use"
@@ -255,8 +268,16 @@ func main() {
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		// Public listings endpoint (for drivers to browse available cars)
-		r.Get("/listings", carHandler.ListAvailableListings)
+		// Listings browse — MIXED audience (guest mode): anonymous callers
+		// get the redacted payload (no exact location, no owner PII, see
+		// CarResponse.RedactForPublic), a valid bearer token gets the full
+		// one. OptionalAuth 401s invalid tokens so signed-in clients refresh
+		// instead of silently degrading, and 403s blocked accounts.
+		// Rate-limited: no pagination means one request = whole inventory.
+		r.With(
+			middleware.RateLimit(listingsRateLimiter),
+			middleware.OptionalAuth(jwtSvc, blockList),
+		).Get("/listings", carHandler.ListAvailableListings)
 
 		// Auth routes (public) — rate limited: 10 req/min per IP
 		r.Route("/auth", func(r chi.Router) {

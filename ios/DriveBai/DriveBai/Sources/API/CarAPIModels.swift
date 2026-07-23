@@ -134,6 +134,10 @@ struct CarLocationResponse: Codable {
     let street: String?
     let block: String?
     let zip: String?
+    /// "exact" on authenticated responses, "approximate" on anonymous ones
+    /// (guest mode — coordinates are server-displaced). Optional so payloads
+    /// from older backends keep decoding; absent means exact.
+    let precision: String?
 }
 
 struct CarRequirementsResponse: Codable {
@@ -394,7 +398,8 @@ extension CarAPIResponse {
             area: location.area ?? "",
             street: location.street ?? "",
             block: location.block ?? "",
-            zip: location.zip ?? ""
+            zip: location.zip ?? "",
+            isApproximate: location.precision == "approximate"
         )
 
         let carOwner: CarOwnerInfo

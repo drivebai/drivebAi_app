@@ -399,6 +399,10 @@ struct CarLocation: Equatable {
     let street: String
     let block: String
     let zip: String
+    /// True when the server declared this location approximate (guest mode:
+    /// coordinates displaced, no street address). Map surfaces must render
+    /// an area circle — never a pin — when set.
+    let isApproximate: Bool
 
     var displayText: String {
         if distanceMiles > 0 {
@@ -440,7 +444,8 @@ struct CarLocation: Equatable {
         area: String = "",
         street: String = "",
         block: String = "",
-        zip: String = ""
+        zip: String = "",
+        isApproximate: Bool = false
     ) {
         self.address = address
         self.neighborhood = neighborhood
@@ -451,6 +456,7 @@ struct CarLocation: Equatable {
         self.street = street
         self.block = block
         self.zip = zip
+        self.isApproximate = isApproximate
     }
 }
 

@@ -493,7 +493,14 @@ final class APIClient: APIClientProtocol {
             path += "?" + queryItems.joined(separator: "&")
         }
 
-        let response: ListingsResponse = try await get(path: path, authenticated: false)
+        // Mixed-audience endpoint (guest mode): send the bearer token when we
+        // hold one so signed-in users get the full payload (exact location,
+        // owner detail). Anonymous callers get the server-redacted shape —
+        // the server, not this client, is the privacy boundary.
+        let response: ListingsResponse = try await get(
+            path: path,
+            authenticated: keychain.getAccessToken() != nil
+        )
         return response.listings.map { $0.toCar() }
     }
 

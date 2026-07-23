@@ -1,7 +1,11 @@
 package models
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -307,6 +311,13 @@ type CarSpecsResponse struct {
 	Mileage  int         `json:"mileage"`
 }
 
+// Location precision declared on every car response so clients render
+// pin-vs-circle from a stated fact instead of a heuristic.
+const (
+	LocationPrecisionExact       = "exact"
+	LocationPrecisionApproximate = "approximate"
+)
+
 type CarLocationResponse struct {
 	Address      string   `json:"address"`
 	Neighborhood string   `json:"neighborhood"`
@@ -316,6 +327,10 @@ type CarLocationResponse struct {
 	Street       string   `json:"street"`
 	Block        string   `json:"block"`
 	Zip          string   `json:"zip"`
+	// Precision is "exact" on authenticated responses and "approximate" on
+	// anonymous ones (coordinates displaced by RedactForPublic). Clients
+	// must draw an area circle — never a pin — when approximate.
+	Precision string `json:"precision"`
 }
 
 type CarRequirementsResponse struct {
@@ -383,6 +398,7 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 		Location: CarLocationResponse{
 			Address:      "",
 			Neighborhood: "",
+			Precision:    LocationPrecisionExact,
 		},
 		IsForRent: c.IsForRent,
 		IsForSale: c.IsForSale,
@@ -487,6 +503,76 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 	}
 
 	return resp
+}
+
+// RedactForPublic strips everything an anonymous caller must not see from a
+// CarResponse, in place. The server is the only enforcement point: a guest's
+// JSON must not CONTAIN the private fields, not merely not render them.
+//
+// Removed: exact coordinates (displaced, see obfuscateCoordinate), street
+// address (address/street/block/zip), owner surname, owner photo, owner and
+// top-level owner UUIDs, and owner earnings (total_earned). Kept: the
+// area/neighborhood labels, photos, prices, specs (VIN was never on this
+// path), deposit/requirements, rented_weeks (non-identifying utilization,
+// feeds the "Popular" sort), and the owner's real rating aggregate.
+//
+// ownerFirstName comes straight from the users.first_name column — never
+// derived by splitting the joined display name, whose shape can leak a
+// surname when first_name is empty. secret keys the coordinate displacement
+// HMAC; it must be server-held so the offset cannot be reversed.
+func (r *CarResponse) RedactForPublic(ownerFirstName string, secret []byte) {
+	r.OwnerID = uuid.Nil
+
+	r.Location.Address = ""
+	r.Location.Street = ""
+	r.Location.Block = ""
+	r.Location.Zip = ""
+	r.Location.Precision = LocationPrecisionApproximate
+	if r.Location.Latitude != nil && r.Location.Longitude != nil {
+		lat, lng := obfuscateCoordinate(*r.Location.Latitude, *r.Location.Longitude, r.ID, secret)
+		r.Location.Latitude = &lat
+		r.Location.Longitude = &lng
+	}
+
+	r.TotalEarned = 0
+
+	if r.Owner != nil {
+		r.Owner.ID = uuid.Nil
+		r.Owner.Name = ownerFirstName
+		r.Owner.ProfilePhotoURL = nil
+	}
+}
+
+// obfuscateCoordinate displaces a coordinate by 300–700 m in a direction
+// derived from HMAC-SHA256(secret, carID), then rounds to 4 decimals.
+//
+// Why displacement instead of grid-snapping: a grid cell's rounding error
+// can be ZERO — a car sitting at the cell center would be published at its
+// true location, and a cell containing exactly one car names that property.
+// A minimum offset of 300 m guarantees the published point is never the
+// true point. Why HMAC instead of random jitter: the offset is stable for
+// a given car across every request (repeat sampling averages jitter away)
+// and unpredictable without the server-held secret. Clients draw a 1 km
+// circle around the published point, which always contains the true
+// location (max offset 700 m < 1 km).
+func obfuscateCoordinate(lat, lng float64, carID uuid.UUID, secret []byte) (float64, float64) {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(carID[:])
+	sum := mac.Sum(nil)
+
+	bearing := float64(binary.BigEndian.Uint32(sum[0:4])%360) * math.Pi / 180
+	distanceM := 300 + float64(binary.BigEndian.Uint32(sum[4:8])%400)
+
+	// Meters per degree: ~111,320 for latitude; longitude shrinks by cos(lat).
+	dLat := distanceM * math.Cos(bearing) / 111320
+	cosLat := math.Cos(lat * math.Pi / 180)
+	if math.Abs(cosLat) < 0.01 {
+		cosLat = 0.01 // polar guard; no listings live there, but never divide by ~0
+	}
+	dLng := distanceM * math.Sin(bearing) / (111320 * cosLat)
+
+	round4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
+	return round4(lat + dLat), round4(lng + dLng)
 }
 
 // CreateCarRequest is the request body for creating a car

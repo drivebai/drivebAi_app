@@ -35,12 +35,22 @@ type CarHandler struct {
 	// reviewRepo feeds real owner rating aggregates into car responses.
 	// Wired via SetReviewRepository; nil in tests → "no ratings yet".
 	reviewRepo *repository.ReviewRepository
+	// publicRedactSecret keys the coordinate-displacement HMAC for anonymous
+	// listing responses. Wired via SetPublicRedactionSecret.
+	publicRedactSecret []byte
 }
 
 // SetReviewRepository wires the ratings store used to populate
 // Owner.Rating/ReviewCount on car responses.
 func (h *CarHandler) SetReviewRepository(r *repository.ReviewRepository) {
 	h.reviewRepo = r
+}
+
+// SetPublicRedactionSecret keys the coordinate-displacement HMAC used when
+// serving the public listings surface to anonymous callers (guest mode).
+// Must be server-held and stable — the displacement is deterministic per car.
+func (h *CarHandler) SetPublicRedactionSecret(secret []byte) {
+	h.publicRedactSecret = secret
 }
 
 // applyOwnerRating fills Owner.Rating/ReviewCount on the given responses
@@ -1415,18 +1425,41 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 
 	// Build response with photos and owner info for each car.
 	//
-	// This is the PUBLIC discovery surface — every authenticated driver can
-	// hit it. VINs must be omitted: a (VIN, make, model) tuple is enough to
-	// pull title/accident history or file fraudulent insurance claims, and
-	// nothing about Discovery's UX needs the VIN. Owners still see their own
-	// VINs via /cars and /cars/{id}, which gate on ownership.
+	// This is a MIXED-audience surface: routed through OptionalAuth, it
+	// serves signed-in drivers the full response and anonymous guests a
+	// redacted one. VINs are omitted for everyone: a (VIN, make, model)
+	// tuple is enough to pull title/accident history or file fraudulent
+	// insurance claims, and nothing about Discovery's UX needs the VIN.
+	// Owners still see their own VINs via /cars and /cars/{id}.
+	//
+	// Anonymous callers additionally lose exact coordinates (displaced
+	// 300–700 m), street address, owner surname/photo/UUIDs, and owner
+	// earnings — see CarResponse.RedactForPublic. Redaction must happen
+	// HERE, server-side: a guest's JSON must not contain the fields.
+	_, isAuthenticated := httputil.GetUserID(ctx)
+
 	var responses []*models.CarResponse
+	var ownerFirstNames []string
 	for _, car := range cars {
 		photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
 		owner, _ := h.userRepo.GetByID(ctx, car.OwnerID)
 		responses = append(responses, car.ToResponse(photos, nil, owner, false))
+		// First name straight from the users column — never split the joined
+		// display name (an empty first name would leak the surname).
+		firstName := ""
+		if owner != nil {
+			firstName = owner.FirstName
+		}
+		ownerFirstNames = append(ownerFirstNames, firstName)
 	}
+	// Ratings BEFORE redaction: the batch lookup keys off Owner.ID, which
+	// RedactForPublic zeroes. Guests keep the aggregate (it is not PII).
 	h.applyOwnerRating(ctx, responses...)
+	if !isAuthenticated {
+		for i, resp := range responses {
+			resp.RedactForPublic(ownerFirstNames[i], h.publicRedactSecret)
+		}
+	}
 
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"listings": responses,
