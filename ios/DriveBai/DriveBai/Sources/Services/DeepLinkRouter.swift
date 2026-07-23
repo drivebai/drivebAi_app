@@ -380,4 +380,13 @@ struct GuestPrompt: Identifiable, Equatable {
             intent: .viewExactLocation(carID)
         )
     }
+
+    /// Owner signup prompt (no car intent — the Car Owner role is carried by
+    /// guestSignupRoleHint). Raised from "Sign up to list your car" where the
+    /// guest is NOT already on the sign-in screen (e.g. the engagement nudge).
+    static let listYourCar = GuestPrompt(
+        title: "List your car on DriveBai",
+        body: "Create an account with your email to list your car. You choose who rents and approve each request, your address stays hidden from anyone browsing, and no listing goes live until a DriveBai admin approves it.",
+        intent: nil
+    )
 }

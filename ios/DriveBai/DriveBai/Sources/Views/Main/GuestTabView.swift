@@ -62,3 +62,59 @@ struct GuestTabView: View {
         }
     }
 }
+
+// MARK: - Guest Onboarding Nudge
+//
+// The single pushed element of guest onboarding: a gentle, dismissible card
+// shown once per install after the guest has browsed several cars. It never
+// blocks scrolling, "Not now" silences it permanently in one tap, and it is
+// the only nudge — no timers, no scarcity, no disguised dismiss.
+struct GuestOnboardingNudge: View {
+    let onLearnMore: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.driveBaiPrimary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Seeing something you like?")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text("Here's how renting and buying work on DriveBai — and what stays private.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button(action: onLearnMore) {
+                    Text("How it works")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.driveBaiPrimary)
+                }
+                .padding(.top, 2)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+            .accessibilityLabel("Not now")
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.15), radius: 10, y: 4)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.driveBaiPrimary.opacity(0.2), lineWidth: 1)
+        )
+    }
+}

@@ -19,6 +19,7 @@ struct DiscoverView: View {
     @EnvironmentObject private var authStore: AuthStore
     @EnvironmentObject private var likedStore: LikedListingsStore
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
+    @ObservedObject private var guestStore = GuestOnboardingStore.shared
     @StateObject private var viewModel = DiscoverViewModel.shared
     @State private var showMapView = false
     @State private var showSortOptions = false
@@ -27,6 +28,10 @@ struct DiscoverView: View {
     /// guest signed in from a gated CTA, plus the action to re-open on it.
     @State private var guestIntentCar: Car?
     @State private var guestReplayAction: GuestIntent?
+    /// Engagement nudge (guest only): the How-it-works sheet it opens, and a
+    /// one-shot latch so the owner-signup prompt fires after that sheet closes.
+    @State private var showHowItWorksFromNudge = false
+    @State private var nudgePendingOwnerSignup = false
 
     var body: some View {
         NavigationStack {
@@ -45,6 +50,26 @@ struct DiscoverView: View {
                     .environmentObject(viewModel)
                     .environmentObject(likedStore)
             }
+            // Engagement-earned nudge: guest only, once per install, never on
+            // launch — it appears after the guest has opened enough car
+            // details, floats above the content without blocking scrolling,
+            // and is dismissed permanently in one tap. Guest-only, so it can
+            // never collide with the post-auth replay window.
+            .overlay(alignment: .bottom) {
+                if !authStore.state.isAuthenticated, guestStore.shouldOfferNudge, !showMapView {
+                    GuestOnboardingNudge(
+                        onLearnMore: {
+                            guestStore.markNudgeShown()
+                            showHowItWorksFromNudge = true
+                        },
+                        onDismiss: { guestStore.dismissNudge() }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: guestStore.shouldOfferNudge)
             .navigationTitle("Discover")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -103,6 +128,21 @@ struct DiscoverView: View {
             }
             .sheet(isPresented: $showFilterSheet) {
                 DiscoverFilterSheet(viewModel: viewModel)
+            }
+            // How-it-works opened from the nudge. Its "Sign up to list your
+            // car" raises the owner sign-in prompt AFTER this sheet closes
+            // (the latch + onDismiss avoids a sheet-over-sheet race).
+            .sheet(isPresented: $showHowItWorksFromNudge, onDismiss: {
+                if nudgePendingOwnerSignup {
+                    nudgePendingOwnerSignup = false
+                    deepLinkRouter.guestSignupRoleHint = .carOwner
+                    deepLinkRouter.promptGuestSignIn(.listYourCar)
+                }
+            }) {
+                HowDriveBaiWorksView(onSignUpAsOwner: {
+                    nudgePendingOwnerSignup = true
+                    showHowItWorksFromNudge = false
+                })
             }
             // Programmatic push for the guest-conversion replay ("return the
             // user to exactly where they were"): the same car, with the
@@ -910,6 +950,12 @@ struct ListingDetailView: View {
             // from the offer sheet / chat re-reconciles the button state.
             await loadActivePurchase()
             await runPendingGuestActionIfNeeded()
+            // Count a guest's car-detail opens so the engagement nudge can
+            // fire only after real browsing. Guests only — never during the
+            // post-auth intent replay (that pushes this view authenticated).
+            if !authStore.state.isAuthenticated {
+                GuestOnboardingStore.shared.recordCarDetailView()
+            }
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [shareText])
