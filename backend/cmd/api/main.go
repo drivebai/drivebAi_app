@@ -221,6 +221,12 @@ func main() {
 	accidentHandler := handlers.NewAccidentHandler(accidentRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	accidentHandler.SetNotificationHandler(notifHandler)
 	accidentHandler.SetChatRepository(chatRepo)
+	// Support tickets — structured, trackable support requests (user + admin
+	// surfaces in one handler so URL-signing is shared, avoiding the accident
+	// admin-signing gap).
+	ticketRepo := repository.NewTicketRepository(db)
+	ticketHandler := handlers.NewTicketHandler(ticketRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
+	ticketHandler.SetNotificationHandler(notifHandler)
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
 	vehicleReturnRepo := repository.NewVehicleReturnRepository(db)
 	vehicleReturnHandler := handlers.NewVehicleReturnHandler(vehicleReturnRepo, leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, notifHandler, logger)
@@ -485,6 +491,23 @@ func main() {
 				})
 			})
 
+			// Support tickets (user-facing) — structured, trackable support
+			// requests. The reply conversation lives in the user's support
+			// chat (linked by user_id); this is the record.
+			r.Route("/tickets", func(r chi.Router) {
+				r.Post("/", ticketHandler.Create)
+				r.Get("/", ticketHandler.List)
+				r.Get("/draft", ticketHandler.GetDraft)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", ticketHandler.Get)
+					r.Patch("/", ticketHandler.Patch)
+					r.Post("/attachments", ticketHandler.Upload)
+					r.Delete("/attachments/{attachId}", ticketHandler.DeleteAttachment)
+					r.Post("/submit", ticketHandler.Submit)
+					r.Post("/reopen", ticketHandler.Reopen)
+				})
+			})
+
 			// Support chat (user-facing)
 			r.Route("/support", func(r chi.Router) {
 				r.Post("/chats", supportHandler.GetOrCreate)
@@ -536,6 +559,11 @@ func main() {
 				r.Get("/accidents", adminHandler.ListAccidents)
 				r.Get("/accidents/{id}", adminHandler.GetAccident)
 				r.Patch("/accidents/{id}/status", adminHandler.UpdateAccidentStatus)
+
+				// Support tickets — the admin queue.
+				r.Get("/tickets", ticketHandler.AdminList)
+				r.Get("/tickets/{id}", ticketHandler.AdminGet)
+				r.Patch("/tickets/{id}/status", ticketHandler.AdminUpdateStatus)
 
 				r.Get("/car-sells", adminHandler.ListCarSells)
 				r.Get("/car-sells/{id}", adminHandler.GetCarSell)
