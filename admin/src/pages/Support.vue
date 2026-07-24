@@ -775,7 +775,9 @@ loadChats()
    Desktop (>640px) is untouched. */
 @media (max-width: 640px) {
   .support-layout {
-    grid-template-columns: 1fr;
+    /* minmax(0,1fr) (not 1fr) so the column shrinks to the viewport instead of
+       blowing out to a nowrap preview's min-content width. */
+    grid-template-columns: minmax(0, 1fr);
     /* dvh accounts for mobile browser chrome; the vh line is the fallback.
        Offset ≈ topbar(52) + main padding(16+24) + page header(~38). */
     height: calc(100vh - 130px);
@@ -784,18 +786,44 @@ loadChats()
   .support-layout:not(.show-detail) .conversation { display: none; }
   .support-layout.show-detail .chat-list { display: none; }
 
-  /* Phone list: generous vertical rhythm so rows read as distinct, comfortable
-     units at full width instead of one squashed block. Shared values (:root
-     --m-row-*) so Chats/Tickets/Accidents land on the same density. */
-  .list-toolbar { padding: var(--m-row-px); }
-  .chat-row {
-    padding: var(--m-row-py) var(--m-row-px);
-    gap: var(--m-row-gap);
+  /* Phone list: each chat is a self-contained bordered CARD (the Users/Rents/
+     Vehicles idiom) so the eye separates rows at a glance — a bare divided list
+     read as one column. The list view scrolls the page (no fixed height); the
+     conversation view keeps its own full-height card + pinned composer. */
+  .support-layout:not(.show-detail) {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    height: auto;
+    overflow: visible;
   }
-  .chat-top { margin-bottom: 5px; }
+  .support-layout:not(.show-detail) .chat-list { border-right: none; overflow: visible; }
+  .list-toolbar { padding: 0 0 12px; border-bottom: none; }
+
+  .chat-row {
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .chat-row:last-child { margin-bottom: 0; }
+  .chat-row:hover { background: var(--surface); }
+  .chat-row.active { border-color: var(--accent-strong); background: var(--accent-soft); }
+
+  /* Normalise the avatar so the left edge is clean and scannable. */
+  .chat-avatar img, .chat-avatar .avatar-placeholder { width: 44px; height: 44px; }
+
+  /* Three distinct levels: name + time, the badge on its own line, then the
+     preview — so the badge no longer touches the preview text. */
+  .chat-meta { display: flex; flex-direction: column; gap: 5px; }
+  .chat-top { margin-bottom: 0; }
   .chat-name { font-size: 15px; }
+  .chat-time { font-size: 12px; color: var(--text-subtle); }
+  .chat-bottom { flex-direction: column; align-items: flex-start; gap: 5px; }
   .chat-preview { font-size: 13px; }
-  .chat-time { font-size: 12px; }
 
   .conv-header { padding: 12px 12px; }
   .msg-bubble { max-width: 85%; }

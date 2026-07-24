@@ -314,7 +314,9 @@ loadChats()
   .filters.hide-when-detail { display: none; }
 
   .split {
-    grid-template-columns: 1fr;
+    /* minmax(0,1fr) (not 1fr) so the column shrinks to the viewport instead of
+       blowing out to a nowrap preview's min-content width. */
+    grid-template-columns: minmax(0, 1fr);
     /* list view still shows the filters row, so a bit more offset */
     height: calc(100vh - 188px);
     height: calc(100dvh - 188px);
@@ -327,17 +329,34 @@ loadChats()
   .split:not(.show-detail) .convo { display: none; }
   .split.show-detail .list { display: none; }
 
-  /* List rhythm — rows read as distinct, comfortable units at full width. */
-  .list { padding: 0; }
-  .chat-row {
-    padding: var(--m-row-py) var(--m-row-px);
-    gap: var(--m-row-gap);
+  /* List: each chat is a self-contained bordered CARD (matching Support + the
+     other list pages) so the eye separates rows at a glance. The list view
+     scrolls the page; the conversation view keeps its own full-height card. */
+  .split:not(.show-detail) {
+    background: transparent;
+    border: none;
     border-radius: 0;
-    border-bottom: 1px solid var(--border);
+    height: auto;
+    overflow: visible;
   }
-  .title { font-size: 15px; }
+  .split:not(.show-detail) .list { border-right: none; overflow: visible; padding: 0; }
+  .chat-row {
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .chat-row:last-child { margin-bottom: 0; }
+  .chat-row:hover { background: var(--surface); }
+  .chat-row.active { border-color: var(--accent-strong); background: var(--accent-soft); }
+  /* Three distinct levels with breathing room: car title, participants, preview. */
+  .meta { display: flex; flex-direction: column; gap: 4px; }
+  .title { font-size: 15px; font-weight: 600; }
   .sub { font-size: 13px; }
-  .preview { font-size: 13px; }
+  .preview { font-size: 13px; margin-top: 0; }
 
   /* Conversation header keeps naming car + driver + owner; let it wrap. */
   .convo-header { padding: 12px 12px; gap: 10px; }
