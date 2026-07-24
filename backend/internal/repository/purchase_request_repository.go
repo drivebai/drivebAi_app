@@ -1167,11 +1167,16 @@ func (r *PurchaseRequestRepository) MarkAuthCancelled(ctx context.Context, id uu
 
 // RecordRefund persists the Stripe refund id + status on the row.
 func (r *PurchaseRequestRepository) RecordRefund(ctx context.Context, id uuid.UUID, refundID string, status models.VehicleReturnRefundStatus) (*models.PurchaseRequest, error) {
+	// $3 must be cast to text at every use: `refund_status = $3` deduces $3 as
+	// varchar (the column type) while `$3 = 'succeeded'` deduces it as text, and
+	// pgx (which always prepares) can't reconcile the two — "inconsistent types
+	// deduced for parameter $3". Same footgun fixed in support_tickets'
+	// AdminUpdateStatus. Casting pins $3 to text everywhere.
 	row := r.db.Pool.QueryRow(ctx, `
 		UPDATE purchase_requests
 		SET refund_id = $2,
-		    refund_status = $3,
-		    refunded_at = CASE WHEN $3 = 'succeeded' THEN NOW() ELSE refunded_at END,
+		    refund_status = $3::text,
+		    refunded_at = CASE WHEN $3::text = 'succeeded' THEN NOW() ELSE refunded_at END,
 		    updated_at = NOW()
 		WHERE id = $1
 		RETURNING `+purchaseRequestColumns, id, refundID, string(status))
