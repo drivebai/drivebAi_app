@@ -131,6 +131,10 @@
 		E00000010000000000000371 /* SupportChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000370 /* SupportChatView.swift */; };
 		E000000100000000000003A1 /* SupportInboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003A0 /* SupportInboxStore.swift */; };
 		E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003B0 /* AccidentAPIModels.swift */; };
+		F600010000000000000000B1 /* TicketAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F600010000000000000000B0 /* TicketAPIModels.swift */; };
+		F610010000000000000000B1 /* TicketFlowViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F610010000000000000000B0 /* TicketFlowViewModel.swift */; };
+		F620010000000000000000B1 /* TicketFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F620010000000000000000B0 /* TicketFlowView.swift */; };
+		F630010000000000000000B1 /* SupportRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F630010000000000000000B0 /* SupportRequestsView.swift */; };
 		E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003C0 /* AccidentReportViewModel.swift */; };
 		E000000100000000000003D1 /* AccidentReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003D0 /* AccidentReportView.swift */; };
 		E00000010000000000000401 /* PickupCountdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000400 /* PickupCountdownView.swift */; };
@@ -308,6 +312,10 @@
 		E00000010000000000000370 /* SupportChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportChatView.swift; sourceTree = "<group>"; };
 		E000000100000000000003A0 /* SupportInboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportInboxStore.swift; sourceTree = "<group>"; };
 		E000000100000000000003B0 /* AccidentAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentAPIModels.swift; sourceTree = "<group>"; };
+		F600010000000000000000B0 /* TicketAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketAPIModels.swift; sourceTree = "<group>"; };
+		F610010000000000000000B0 /* TicketFlowViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketFlowViewModel.swift; sourceTree = "<group>"; };
+		F620010000000000000000B0 /* TicketFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketFlowView.swift; sourceTree = "<group>"; };
+		F630010000000000000000B0 /* SupportRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportRequestsView.swift; sourceTree = "<group>"; };
 		E000000100000000000003C0 /* AccidentReportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportViewModel.swift; sourceTree = "<group>"; };
 		E000000100000000000003D0 /* AccidentReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportView.swift; sourceTree = "<group>"; };
 		E00000010000000000000400 /* PickupCountdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickupCountdownView.swift; sourceTree = "<group>"; };
@@ -486,6 +494,7 @@
 				E00000010000000000000340 /* NotificationAPIModels.swift */,
 				E00000010000000000000350 /* SupportAPIModels.swift */,
 				E000000100000000000003B0 /* AccidentAPIModels.swift */,
+				F600010000000000000000B0 /* TicketAPIModels.swift */,
 			);
 			path = API;
 			sourceTree = "<group>";
@@ -737,6 +746,7 @@
 			children = (
 				E00000010000000000000360 /* SupportChatViewModel.swift */,
 				E000000100000000000003A0 /* SupportInboxStore.swift */,
+				F610010000000000000000B0 /* TicketFlowViewModel.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -745,6 +755,8 @@
 			isa = PBXGroup;
 			children = (
 				E00000010000000000000370 /* SupportChatView.swift */,
+				F620010000000000000000B0 /* TicketFlowView.swift */,
+				F630010000000000000000B0 /* SupportRequestsView.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -1010,6 +1022,10 @@
 				E00000010000000000000371 /* SupportChatView.swift in Sources */,
 				E000000100000000000003A1 /* SupportInboxStore.swift in Sources */,
 				E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */,
+				F600010000000000000000B1 /* TicketAPIModels.swift in Sources */,
+				F610010000000000000000B1 /* TicketFlowViewModel.swift in Sources */,
+				F620010000000000000000B1 /* TicketFlowView.swift in Sources */,
+				F630010000000000000000B1 /* SupportRequestsView.swift in Sources */,
 				E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */,
 				E000000100000000000003D1 /* AccidentReportView.swift in Sources */,
 				54E443D88905DEFADDA91C81 /* KeyHandoverModels.swift in Sources */,

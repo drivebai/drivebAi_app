@@ -15,6 +15,7 @@ struct DriverTabView: View {
     /// Drives the universal Help & Support sheet (QA pt 0). One tap from every
     /// tab, in both driver and owner modes.
     @State private var showSupport = false
+    @State private var showSupportHub = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -56,8 +57,13 @@ struct DriverTabView: View {
         // hardcoded email.
         .overlay(alignment: .bottomTrailing) {
             SupportFloatingButton(unreadCount: supportInboxStore.unreadCount) {
-                showSupport = true
+                showSupportHub = true
             }
+        }
+        // Floating button opens the Help & Support hub; a support-message push
+        // still opens the chat directly (below).
+        .sheet(isPresented: $showSupportHub) {
+            SupportHubView().environmentObject(supportInboxStore)
         }
         .sheet(isPresented: $showSupport, onDismiss: {
             supportInboxStore.isSupportChatVisible = false

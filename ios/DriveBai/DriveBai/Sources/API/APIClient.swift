@@ -912,6 +912,48 @@ final class APIClient: APIClientProtocol {
         return try await postEmpty(path: "accidents/\(id.uuidString)/submit", authenticated: true)
     }
 
+    // MARK: - Support Tickets
+
+    func createTicket() async throws -> TicketAPIResponse {
+        return try await postEmpty(path: "tickets", authenticated: true)
+    }
+
+    func getTicketDraft() async throws -> TicketAPIResponse {
+        return try await get(path: "tickets/draft", authenticated: true)
+    }
+
+    func listTickets() async throws -> TicketListResponse {
+        return try await get(path: "tickets", authenticated: true)
+    }
+
+    func getTicket(id: UUID) async throws -> TicketAPIResponse {
+        return try await get(path: "tickets/\(id.uuidString)", authenticated: true)
+    }
+
+    func patchTicket(id: UUID, patch: TicketPatchRequest) async throws -> TicketAPIResponse {
+        return try await self.patch(path: "tickets/\(id.uuidString)", body: patch, authenticated: true)
+    }
+
+    func uploadTicketAttachment(ticketId: UUID, data: Data, filename: String, mimeType: String) async throws -> TicketAttachmentAPI {
+        return try await uploadMultipart(
+            path: "tickets/\(ticketId.uuidString)/attachments",
+            fileData: data, filename: filename, mimeType: mimeType,
+            authenticated: true
+        )
+    }
+
+    func deleteTicketAttachment(ticketId: UUID, attachmentId: UUID) async throws {
+        let _: MessageResponse = try await delete(path: "tickets/\(ticketId.uuidString)/attachments/\(attachmentId.uuidString)", authenticated: true)
+    }
+
+    func submitTicket(id: UUID) async throws -> TicketAPIResponse {
+        return try await postEmpty(path: "tickets/\(id.uuidString)/submit", authenticated: true)
+    }
+
+    func reopenTicket(id: UUID) async throws -> TicketAPIResponse {
+        return try await postEmpty(path: "tickets/\(id.uuidString)/reopen", authenticated: true)
+    }
+
     // MARK: - Private Request Methods
 
     private func post<T: Encodable, R: Decodable>(

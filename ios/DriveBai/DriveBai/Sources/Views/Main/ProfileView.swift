@@ -48,7 +48,7 @@ struct AuthenticatedProfileView: View {
     @State private var showDriverDocsSheet = false
     @State private var shouldRetrySwitchAfterDocs = false
     @State private var switchError: String?
-    @State private var showSupportChat = false
+    @State private var showSupportHub = false
     @State private var showEditProfile = false
     /// Set when a replayed tip was armed for its own screen rather than played here.
     @State private var armedTourNotice: String?
@@ -168,9 +168,9 @@ struct AuthenticatedProfileView: View {
                     Divider().padding(.leading, 56)
                     ProfileActionRow(
                         icon: "questionmark.circle.fill",
-                        title: "Contact Support",
+                        title: "Help & Support",
                         badge: supportInboxStore.unreadCount,
-                        action: { showSupportChat = true }
+                        action: { showSupportHub = true }
                     )
                 }
                 .background(Color(.systemBackground))
@@ -191,13 +191,8 @@ struct AuthenticatedProfileView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
-        .sheet(isPresented: $showSupportChat, onDismiss: {
-            supportInboxStore.isSupportChatVisible = false
-            Task { await supportInboxStore.markRead() }
-        }) {
-            SupportChatView()
-                .environmentObject(authStore)
-                .environmentObject(supportInboxStore)
+        .sheet(isPresented: $showSupportHub) {
+            SupportHubView().environmentObject(supportInboxStore)
         }
         .sheet(isPresented: $showEditProfile) {
             EditProfileView(user: user)
