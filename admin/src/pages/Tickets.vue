@@ -160,42 +160,70 @@ function attachName(a: TicketAttachment) {
         {{ statusFilter === 'open' ? 'No open requests. All caught up.' : 'No requests here.' }}
       </div>
 
-      <table v-else class="tickets-table">
-        <thead>
-          <tr>
-            <th>Submitted</th>
-            <th>Reporter</th>
-            <th>Category</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
+      <template v-else>
+        <!-- Desktop: table -->
+        <table class="tickets-table desktop-only">
+          <thead>
+            <tr>
+              <th>Submitted</th>
+              <th>Reporter</th>
+              <th>Category</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="t in rows"
+              :key="t.id"
+              class="row"
+              :class="{ active: selected?.id === t.id }"
+              @click="select(t)"
+            >
+              <td>{{ fmtDateTime(t.submitted_at || t.created_at) }}</td>
+              <td>
+                <div class="reporter-name">{{ t.user_name }}</div>
+                <div class="reporter-email">{{ t.user_email }}</div>
+              </td>
+              <td>{{ categoryLabel(t.category) }}</td>
+              <td>
+                <span class="status-chip" :style="{ background: STATUS_COLORS[t.status] + '22', color: STATUS_COLORS[t.status] }">
+                  {{ STATUS_LABELS[t.status] }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- Phone: stacked cards (same rhythm as the Support/Chats lists) -->
+        <div class="mobile-cards">
+          <button
             v-for="t in rows"
             :key="t.id"
-            class="row"
+            class="list-card"
             :class="{ active: selected?.id === t.id }"
             @click="select(t)"
           >
-            <td>{{ fmtDateTime(t.submitted_at || t.created_at) }}</td>
-            <td>
-              <div class="reporter-name">{{ t.user_name }}</div>
-              <div class="reporter-email">{{ t.user_email }}</div>
-            </td>
-            <td>{{ categoryLabel(t.category) }}</td>
-            <td>
+            <div class="lc-top">
+              <span class="lc-title">{{ categoryLabel(t.category) }}</span>
               <span class="status-chip" :style="{ background: STATUS_COLORS[t.status] + '22', color: STATUS_COLORS[t.status] }">
                 {{ STATUS_LABELS[t.status] }}
               </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+            </div>
+            <div class="lc-name">{{ t.user_name }}</div>
+            <div class="lc-sub">{{ t.user_email }} · {{ fmtDateTime(t.submitted_at || t.created_at) }}</div>
+          </button>
+        </div>
+      </template>
     </section>
 
     <!-- ── Detail ── -->
     <section v-if="selected" class="detail-pane">
       <div class="detail-header">
+        <button type="button" class="detail-back" aria-label="Back to requests" @click="selected = null">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+            <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
         <div>
           <div class="detail-title">
             {{ categoryLabel(selected.category) }}
@@ -480,4 +508,66 @@ function attachName(a: TicketAttachment) {
   font-weight: 500;
 }
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+/* Mobile-only stacked card list + the detail Back arrow are hidden on desktop. */
+.mobile-cards { display: none; }
+.detail-back {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── Phone: single-view (≤640px) ───────────────────────────────
+   The 440px+1fr detail overflowed the screen. Now: full-width list of stacked
+   cards (shared :root --m-row-* rhythm) → tap → full-screen detail with a Back
+   arrow, evidence + status control stacked. Natural page scroll (not a chat).
+   Desktop (>640px) untouched. */
+@media (max-width: 640px) {
+  .tickets-layout,
+  .tickets-layout.has-detail {
+    grid-template-columns: 1fr;
+    height: auto;
+    gap: 0;
+  }
+  .tickets-layout.has-detail .list-pane { display: none; }
+  .list-pane, .detail-pane { overflow: visible; }
+  .detail-body { overflow-y: visible; }
+
+  .desktop-only { display: none; }
+  .mobile-cards { display: block; }
+  .list-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: var(--m-row-py) var(--m-row-px);
+    cursor: pointer;
+  }
+  .list-card.active { background: var(--accent-soft); }
+  .lc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .lc-title { font-weight: 600; font-size: 15px; }
+  .lc-name { font-size: 14px; color: var(--text); }
+  .lc-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+  /* Filter pills to a real tap target. */
+  .filter-btn { min-height: 40px; padding: 8px 14px; }
+
+  /* Detail header: Back + title share the first row; the status control drops
+     to its own full-width row below. */
+  .detail-back { display: inline-flex; }
+  .detail-header { flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px 14px; }
+  .status-edit { flex-basis: 100%; }
+  .status-select { flex: 1; }
+  .btn-primary { min-height: 40px; }
+}
 </style>
