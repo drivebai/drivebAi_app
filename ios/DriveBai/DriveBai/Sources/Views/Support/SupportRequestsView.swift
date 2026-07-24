@@ -28,7 +28,8 @@ struct SupportHubView: View {
                     }
                     Button { showChat = true } label: {
                         hubRow("bubble.left.and.bubble.right.fill", "Chat with us",
-                               "Quick questions — no request needed")
+                               "Quick questions — no request needed",
+                               showUnread: supportInboxStore.unreadCount > 0)
                     }
                 }
                 Section {
@@ -50,12 +51,25 @@ struct SupportHubView: View {
         }
     }
 
-    private func hubRow(_ icon: String, _ title: String, _ subtitle: String) -> some View {
+    // showUnread paints the same red dot the floating support button carries
+    // (SupportInboxStore.unreadCount) onto a hub row, so the trail from the
+    // floating button continues into the hub. Reading the chat calls
+    // markRead(), which zeroes unreadCount and clears both at once.
+    private func hubRow(_ icon: String, _ title: String, _ subtitle: String, showUnread: Bool = false) -> some View {
         HStack(spacing: 14) {
             Image(systemName: icon)
                 .font(.system(size: 20))
                 .foregroundColor(.driveBaiPrimary)
                 .frame(width: 30)
+                .overlay(alignment: .topTrailing) {
+                    if showUnread {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 10, height: 10)
+                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 1.5))
+                            .offset(x: 5, y: -2)
+                    }
+                }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body.weight(.medium)).foregroundColor(.primary)
                 Text(subtitle).font(.caption).foregroundColor(.secondary)
