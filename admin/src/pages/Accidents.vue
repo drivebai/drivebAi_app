@@ -609,7 +609,9 @@ function diagramLabel(n?: number) {
     gap: 0;
   }
   .accidents-layout.has-detail .list-pane { display: none; }
-  .list-pane, .detail-pane { overflow: visible; }
+  /* min-width:0 lets the single grid column shrink to the viewport instead of
+     blowing out to a child's min-content width (the 8-tab strip / long email). */
+  .list-pane, .detail-pane { overflow: visible; min-width: 0; }
   .tab-content { overflow-y: visible; }
 
   .desktop-only { display: none; }
@@ -632,8 +634,12 @@ function diagramLabel(n?: number) {
 
   .filter-btn { min-height: 40px; padding: 8px 14px; }
 
+  /* Back + title share the first row (left-aligned — the desktop space-between
+     would otherwise shove the title off-screen); status control full-width below. */
   .detail-back { display: inline-flex; }
-  .detail-header { flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px 14px; }
+  .detail-header { flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px 12px; padding: 12px 14px; }
+  .detail-header > div:first-of-type { flex: 1; min-width: 0; }
+  .detail-sub { overflow-wrap: anywhere; }
   .status-edit { flex-basis: 100%; }
   .status-select { flex: 1; }
   .btn-primary { min-height: 40px; }

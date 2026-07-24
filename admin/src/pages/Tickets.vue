@@ -538,7 +538,9 @@ function attachName(a: TicketAttachment) {
     gap: 0;
   }
   .tickets-layout.has-detail .list-pane { display: none; }
-  .list-pane, .detail-pane { overflow: visible; }
+  /* min-width:0 lets the single grid column shrink to the viewport instead of
+     blowing out to a child's min-content width (long email / wide content). */
+  .list-pane, .detail-pane { overflow: visible; min-width: 0; }
   .detail-body { overflow-y: visible; }
 
   .desktop-only { display: none; }
@@ -562,10 +564,13 @@ function attachName(a: TicketAttachment) {
   /* Filter pills to a real tap target. */
   .filter-btn { min-height: 40px; padding: 8px 14px; }
 
-  /* Detail header: Back + title share the first row; the status control drops
-     to its own full-width row below. */
+  /* Detail header: Back + title share the first row (left-aligned — the desktop
+     space-between would otherwise shove the title off-screen); the status
+     control drops to its own full-width row below. */
   .detail-back { display: inline-flex; }
-  .detail-header { flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px 14px; }
+  .detail-header { flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px 12px; padding: 12px 14px; }
+  .detail-header > div:first-of-type { flex: 1; min-width: 0; }
+  .detail-sub { overflow-wrap: anywhere; }
   .status-edit { flex-basis: 100%; }
   .status-select { flex: 1; }
   .btn-primary { min-height: 40px; }
