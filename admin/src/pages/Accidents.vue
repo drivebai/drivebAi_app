@@ -136,42 +136,70 @@ function diagramLabel(n?: number) {
       <div v-if="loading" class="state-msg">Loading…</div>
       <div v-else-if="!accidents.length" class="state-msg">No accident reports yet.</div>
 
-      <table v-else class="accidents-table">
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Reporter</th>
-            <th>Car</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
+      <template v-else>
+        <!-- Desktop: table -->
+        <table class="accidents-table desktop-only">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Reporter</th>
+              <th>Car</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="a in accidents"
+              :key="a.id"
+              class="row"
+              :class="{ active: selected?.id === a.id }"
+              @click="selectAccident(a)"
+            >
+              <td>{{ fmtDateTime(a.created_at) }}</td>
+              <td>
+                <div class="reporter-name">{{ a.reporter_name }}</div>
+                <div class="reporter-email">{{ a.reporter_email }}</div>
+              </td>
+              <td>{{ a.car_title || '—' }}</td>
+              <td>
+                <span class="status-chip" :style="{ background: STATUS_COLORS[a.status] + '22', color: STATUS_COLORS[a.status] }">
+                  {{ STATUS_LABELS[a.status] }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- Phone: stacked cards (same rhythm as the Support/Chats lists) -->
+        <div class="mobile-cards">
+          <button
             v-for="a in accidents"
             :key="a.id"
-            class="row"
+            class="list-card"
             :class="{ active: selected?.id === a.id }"
             @click="selectAccident(a)"
           >
-            <td>{{ fmtDateTime(a.created_at) }}</td>
-            <td>
-              <div class="reporter-name">{{ a.reporter_name }}</div>
-              <div class="reporter-email">{{ a.reporter_email }}</div>
-            </td>
-            <td>{{ a.car_title || '—' }}</td>
-            <td>
+            <div class="lc-top">
+              <span class="lc-title">{{ a.reporter_name }}</span>
               <span class="status-chip" :style="{ background: STATUS_COLORS[a.status] + '22', color: STATUS_COLORS[a.status] }">
                 {{ STATUS_LABELS[a.status] }}
               </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+            </div>
+            <div class="lc-name">{{ a.car_title || 'No car linked' }}</div>
+            <div class="lc-sub">{{ a.reporter_email }} · {{ fmtDateTime(a.created_at) }}</div>
+          </button>
+        </div>
+      </template>
     </section>
 
     <!-- ── Detail ── -->
     <section v-if="selected" class="detail-pane">
       <div class="detail-header">
+        <button type="button" class="detail-back" aria-label="Back to accidents" @click="selected = null">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+            <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
         <div>
           <div class="detail-title">{{ selected.reporter_name }}</div>
           <div class="detail-sub">{{ selected.reporter_email }} · Reported {{ fmtDateTime(selected.created_at) }}</div>
@@ -552,4 +580,62 @@ function diagramLabel(n?: number) {
   font-weight: 500;
 }
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+/* Mobile-only stacked card list + the detail Back arrow are hidden on desktop. */
+.mobile-cards { display: none; }
+.detail-back {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── Phone: single-view (≤640px) ───────────────────────────────
+   The 420px+1fr detail overflowed the screen. Now: full-width list of stacked
+   cards (shared :root --m-row-* rhythm) → tap → full-screen detail with a Back
+   arrow. The 8-tab strip keeps its horizontal scroll. Desktop untouched. */
+@media (max-width: 640px) {
+  .accidents-layout,
+  .accidents-layout.has-detail {
+    grid-template-columns: 1fr;
+    height: auto;
+    gap: 0;
+  }
+  .accidents-layout.has-detail .list-pane { display: none; }
+  .list-pane, .detail-pane { overflow: visible; }
+  .tab-content { overflow-y: visible; }
+
+  .desktop-only { display: none; }
+  .mobile-cards { display: block; }
+  .list-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: var(--m-row-py) var(--m-row-px);
+    cursor: pointer;
+  }
+  .list-card.active { background: var(--accent-soft); }
+  .lc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .lc-title { font-weight: 600; font-size: 15px; }
+  .lc-name { font-size: 14px; color: var(--text); }
+  .lc-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+  .filter-btn { min-height: 40px; padding: 8px 14px; }
+
+  .detail-back { display: inline-flex; }
+  .detail-header { flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px 14px; }
+  .status-edit { flex-basis: 100%; }
+  .status-select { flex: 1; }
+  .btn-primary { min-height: 40px; }
+}
 </style>
