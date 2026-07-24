@@ -501,6 +501,11 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
   .kv dt { margin-top: 8px; }
   .photo-grid { grid-template-columns: repeat(2, 1fr); }
   .doc-grid { grid-template-columns: 1fr; }
+
+  /* The "Missing: Registration, Inspection, Insurance" badge is nowrap by
+     default and overflowed the card. Let card badges wrap on phones so a long
+     one grows to multiple lines instead of bleeding past the edge. */
+  .card-badges :deep(.badge) { white-space: normal; }
 }
 
 /* ---- Card list (mobile) ---- */
