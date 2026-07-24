@@ -134,6 +134,12 @@ struct SupportChatView: View {
                 }
                 .frame(width: 34, height: 34)
                 .foregroundColor(.driveBaiPrimary)
+                // The 22pt glyph sits in a 34pt frame; without contentShape only
+                // the glyph's pixels are hit-testable, leaving a dead ring a real
+                // finger's first (imprecise) tap can land in — the send button
+                // beside it never misses because its glyph fills its frame. Make
+                // the whole 34x34 a solid tap target. (Bug 3, device-only.)
+                .contentShape(Rectangle())
             }
             .disabled(viewModel.isUploadingAttachment)
             .documentSourcePicker(isPresented: $showAttachPicker, filenameBase: "support") { picked in

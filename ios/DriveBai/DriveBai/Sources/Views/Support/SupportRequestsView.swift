@@ -78,6 +78,15 @@ struct SupportHubView: View {
             Image(systemName: "chevron.right").font(.caption).foregroundColor(.secondary)
         }
         .padding(.vertical, 4)
+        // The row is a Button label with a Spacer, so only its opaque subviews
+        // (icon / text / chevron) are hit-testable — the wide Spacer gap is dead.
+        // A real finger's first tap lands in that gap and misses; the second,
+        // adjusted tap hits a subview and works (device-only; a precise
+        // simulator click always hits). contentShape makes the full row a solid
+        // tap target. The "My requests" NavigationLink doesn't suffer this
+        // because List makes an entire NavigationLink row tappable; a Button in
+        // a List only gets its label's hit area. (Bug 3.)
+        .contentShape(Rectangle())
     }
 }
 
