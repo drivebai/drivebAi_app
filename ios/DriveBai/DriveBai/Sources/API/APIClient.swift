@@ -860,6 +860,18 @@ final class APIClient: APIClientProtocol {
         )
     }
 
+    /// Upload an in-chat attachment (photo/document). Creates a new support
+    /// message carrying the file with an optional caption; the server returns
+    /// the full message with a signed attachment URL.
+    func uploadSupportAttachment(chatId: UUID, data: Data, filename: String, mimeType: String, caption: String) async throws -> SupportMessageAPIResponse {
+        return try await uploadMultipartWithFields(
+            path: "support/chats/\(chatId.uuidString.lowercased())/attachments",
+            fileData: data, filename: filename, mimeType: mimeType,
+            fields: ["body": caption],
+            authenticated: true
+        )
+    }
+
     // MARK: - Accidents
 
     func createAccident(relatedChatId: UUID?, relatedCarId: UUID?) async throws -> AccidentAPIResponse {

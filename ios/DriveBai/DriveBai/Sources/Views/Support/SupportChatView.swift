@@ -4,6 +4,7 @@ struct SupportChatView: View {
     @StateObject private var viewModel = SupportChatViewModel()
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showAttachPicker = false
 
     var body: some View {
         NavigationStack {
@@ -111,7 +112,26 @@ struct SupportChatView: View {
     // MARK: - Composer
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 12) {
+        HStack(alignment: .bottom, spacing: 10) {
+            // Attach: camera, photo library, or a document. HEIC→JPEG transcode
+            // is handled inside the picker. A caption typed in the field rides
+            // along with the file.
+            Button { showAttachPicker = true } label: {
+                Group {
+                    if viewModel.isUploadingAttachment {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "paperclip").font(.system(size: 22))
+                    }
+                }
+                .frame(width: 34, height: 34)
+                .foregroundColor(.driveBaiPrimary)
+            }
+            .disabled(viewModel.isUploadingAttachment)
+            .documentSourcePicker(isPresented: $showAttachPicker, filenameBase: "support") { picked in
+                Task { await viewModel.uploadAttachment(data: picked.data, filename: picked.filename, mimeType: picked.mimeType) }
+            }
+
             TextField("Type a message…", text: $viewModel.draft, axis: .vertical)
                 .lineLimit(1...5)
                 .padding(.horizontal, 14)
@@ -159,20 +179,26 @@ private struct SupportBubbleView: View {
                         .foregroundColor(.driveBaiPrimary)
                 }
 
-                Text(message.body)
-                    .font(.body)
-                    .foregroundColor(isFromAdmin ? .primary : .white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(isFromAdmin ? Color.driveBaiPrimary.opacity(0.12) : Color.driveBaiPrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18)
-                            .stroke(
-                                isFromAdmin ? Color.driveBaiPrimary.opacity(0.25) : Color.clear,
-                                lineWidth: 1
-                            )
-                    )
+                ForEach(message.attachments) { att in
+                    SupportAttachmentView(attachment: att, isFromAdmin: isFromAdmin)
+                }
+
+                if message.hasText {
+                    Text(message.body)
+                        .font(.body)
+                        .foregroundColor(isFromAdmin ? .primary : .white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(isFromAdmin ? Color.driveBaiPrimary.opacity(0.12) : Color.driveBaiPrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18)
+                                .stroke(
+                                    isFromAdmin ? Color.driveBaiPrimary.opacity(0.25) : Color.clear,
+                                    lineWidth: 1
+                                )
+                        )
+                }
 
                 Text(formatTime(message.createdAt))
                     .font(.caption2)
@@ -187,6 +213,44 @@ private struct SupportBubbleView: View {
         let f = DateFormatter()
         f.dateFormat = "h:mm a"
         return f.string(from: date)
+    }
+}
+
+// MARK: - Attachment bubble
+
+/// Renders one in-chat attachment: images inline, other files as a tappable
+/// tile that opens the signed URL. The URL is already signed by the server.
+private struct SupportAttachmentView: View {
+    let attachment: SupportAttachmentAPI
+    let isFromAdmin: Bool
+
+    private var url: URL? { URL(string: AppConfig.serverBaseURL.absoluteString + attachment.fileUrl) }
+
+    var body: some View {
+        if attachment.isImage, let url {
+            RemoteImage(url: url, contentMode: .fill, maxPixelSize: 600)
+                .frame(width: 200, height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color(.systemGray4), lineWidth: 0.5)
+                )
+        } else if let url {
+            Link(destination: url) {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc.fill").font(.system(size: 22))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(attachment.mimeType == "application/pdf" ? "PDF document" : "Attachment")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Tap to open").font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+                .foregroundColor(isFromAdmin ? .primary : .white)
+                .padding(.horizontal, 14).padding(.vertical, 12)
+                .background(isFromAdmin ? Color.driveBaiPrimary.opacity(0.12) : Color.driveBaiPrimary)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+            }
+        }
     }
 }
 

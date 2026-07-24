@@ -946,12 +946,13 @@ func (r *AdminRepository) MarkSupportChatAdminRead(ctx context.Context, chatID u
 }
 
 type AdminSupportMessage struct {
-	ID            uuid.UUID `json:"id"`
-	SupportChatID uuid.UUID `json:"support_chat_id"`
-	SenderID      uuid.UUID `json:"sender_id"`
-	SenderKind    string    `json:"sender_kind"` // 'user' | 'admin'
-	Body          string    `json:"body"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            uuid.UUID                  `json:"id"`
+	SupportChatID uuid.UUID                  `json:"support_chat_id"`
+	SenderID      uuid.UUID                  `json:"sender_id"`
+	SenderKind    string                     `json:"sender_kind"` // 'user' | 'admin'
+	Body          string                     `json:"body"`
+	Attachments   []SupportMessageAttachment `json:"attachments"`
+	CreatedAt     time.Time                  `json:"created_at"`
 }
 
 func (r *AdminRepository) ListSupportMessages(ctx context.Context, chatID uuid.UUID) ([]AdminSupportMessage, error) {
@@ -964,14 +965,28 @@ func (r *AdminRepository) ListSupportMessages(ctx context.Context, chatID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []AdminSupportMessage{}
+	ids := []uuid.UUID{}
 	for rows.Next() {
 		var m AdminSupportMessage
+		m.Attachments = []SupportMessageAttachment{}
 		if err := rows.Scan(&m.ID, &m.SupportChatID, &m.SenderID, &m.SenderKind, &m.Body, &m.CreatedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, m)
+		ids = append(ids, m.ID)
+	}
+	rows.Close()
+
+	byMsg, err := loadSupportAttachments(ctx, r.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if atts := byMsg[out[i].ID]; atts != nil {
+			out[i].Attachments = atts
+		}
 	}
 	return out, nil
 }

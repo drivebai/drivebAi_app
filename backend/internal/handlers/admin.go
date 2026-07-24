@@ -909,6 +909,13 @@ func (h *AdminHandler) ListSupportMessages(w http.ResponseWriter, r *http.Reques
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	// Sign in-chat attachment URLs so the console can render them in prod
+	// (raw /uploads paths 404 under signature enforcement).
+	for i := range msgs {
+		for j := range msgs[i].Attachments {
+			msgs[i].Attachments[j].FileURL = h.urlSigner.Sign(msgs[i].Attachments[j].FileURL)
+		}
+	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"messages": msgs})
 }
 

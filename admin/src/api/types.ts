@@ -216,12 +216,22 @@ export interface AdminSupportChat {
   unread_count: number
 }
 
+export interface SupportMessageAttachment {
+  id: string
+  message_id: string
+  file_url: string   // signed by the server
+  file_size: number
+  mime_type: string
+  created_at: string
+}
+
 export interface AdminSupportMessage {
   id: string
   support_chat_id: string
   sender_id: string
   sender_kind: 'user' | 'admin'
   body: string
+  attachments?: SupportMessageAttachment[]
   created_at: string
 }
 

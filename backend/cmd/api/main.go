@@ -214,7 +214,7 @@ func main() {
 	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
 	// internals: reset-token store + the transactional email sender.
 	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
-	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, logger)
+	supportHandler := handlers.NewSupportHandler(supportRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	// Push support replies to backgrounded users (setter owned by W1-C on
 	// support.go). Mirrors the admin/accident/chat notif wiring above.
 	supportHandler.SetNotificationHandler(notifHandler)
@@ -514,6 +514,10 @@ func main() {
 				r.Route("/chats/{chatId}", func(r chi.Router) {
 					r.Get("/messages", supportHandler.ListMessages)
 					r.Post("/messages", supportHandler.SendMessage)
+					// In-chat attachment (photo/document). Owner-or-admin is
+					// enforced inside the handler — an admin's token passes this
+					// authenticated group, and the handler posts it as 'admin'.
+					r.Post("/attachments", supportHandler.UploadAttachment)
 					r.Post("/read", supportHandler.MarkRead)
 				})
 			})

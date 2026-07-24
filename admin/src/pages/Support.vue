@@ -188,6 +188,10 @@ function roleBadge(role: string) {
   return role === 'car_owner' ? 'Owner' : role === 'driver' ? 'Driver' : role
 }
 
+function isImage(mime: string) {
+  return mime.startsWith('image/')
+}
+
 function handleDraftKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -290,7 +294,22 @@ loadChats()
             :class="m.sender_kind"
           >
             <div class="msg-bubble">
-              <p class="msg-body">{{ m.body }}</p>
+              <div v-if="m.attachments?.length" class="msg-attachments">
+                <a
+                  v-for="att in m.attachments"
+                  :key="att.id"
+                  :href="imgUrl(att.file_url)"
+                  target="_blank"
+                  rel="noopener"
+                  class="msg-attach"
+                >
+                  <img v-if="isImage(att.mime_type)" :src="imgUrl(att.file_url)" class="msg-attach-img" />
+                  <span v-else class="msg-attach-file">
+                    &#128206; {{ att.mime_type === 'application/pdf' ? 'PDF' : 'File' }}
+                  </span>
+                </a>
+              </div>
+              <p v-if="m.body" class="msg-body">{{ m.body }}</p>
               <span class="msg-time">
                 {{ m.sender_kind === 'admin' ? 'Support · ' : '' }}{{ fmtDateTime(m.created_at) }}
               </span>
@@ -548,6 +567,32 @@ loadChats()
   font-size: 11px;
   color: var(--text-muted);
   padding: 0 2px;
+}
+
+/* ── In-chat attachments ── */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.msg-attach { display: block; text-decoration: none; }
+.msg-attach-img {
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  display: block;
+}
+.msg-attach-file {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* ── Composer ─────────────────────────────────────────────── */

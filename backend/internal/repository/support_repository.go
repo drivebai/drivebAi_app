@@ -30,12 +30,53 @@ type SupportChatResponse struct {
 
 // SupportMessageResponse is the shape for individual messages on both sides.
 type SupportMessageResponse struct {
-	ID            uuid.UUID `json:"id"`
-	SupportChatID uuid.UUID `json:"support_chat_id"`
-	SenderID      uuid.UUID `json:"sender_id"`
-	SenderKind    string    `json:"sender_kind"` // "user" | "admin"
-	Body          string    `json:"body"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            uuid.UUID                  `json:"id"`
+	SupportChatID uuid.UUID                  `json:"support_chat_id"`
+	SenderID      uuid.UUID                  `json:"sender_id"`
+	SenderKind    string                     `json:"sender_kind"` // "user" | "admin"
+	Body          string                     `json:"body"`
+	Attachments   []SupportMessageAttachment `json:"attachments"`
+	CreatedAt     time.Time                  `json:"created_at"`
+}
+
+// SupportMessageAttachment is one file hung off a support message. FileURL is a
+// raw relative /uploads path in the DB; the handler signs it on the way out.
+type SupportMessageAttachment struct {
+	ID        uuid.UUID `json:"id"`
+	MessageID uuid.UUID `json:"message_id"`
+	FileURL   string    `json:"file_url"`
+	FileSize  int64     `json:"file_size"`
+	MimeType  string    `json:"mime_type"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// loadSupportAttachments batch-loads attachments for a set of message IDs and
+// returns them keyed by message_id. Package-level so both the user-facing
+// (SupportRepository) and admin (AdminRepository) message lists can hydrate
+// without a per-message query. Returns an empty map for no IDs.
+func loadSupportAttachments(ctx context.Context, db *database.DB, messageIDs []uuid.UUID) (map[uuid.UUID][]SupportMessageAttachment, error) {
+	out := map[uuid.UUID][]SupportMessageAttachment{}
+	if len(messageIDs) == 0 {
+		return out, nil
+	}
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, message_id, file_url, file_size, mime_type, created_at
+		FROM support_message_attachments
+		WHERE message_id = ANY($1)
+		ORDER BY created_at ASC
+	`, messageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load support attachments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a SupportMessageAttachment
+		if err := rows.Scan(&a.ID, &a.MessageID, &a.FileURL, &a.FileSize, &a.MimeType, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out[a.MessageID] = append(out[a.MessageID], a)
+	}
+	return out, nil
 }
 
 // GetOrCreateChat returns the existing support chat for the user or creates one.
@@ -118,14 +159,94 @@ func (r *SupportRepository) ListMessages(ctx context.Context, chatID, userID uui
 	defer rows.Close()
 
 	out := []SupportMessageResponse{}
+	ids := []uuid.UUID{}
 	for rows.Next() {
 		var m SupportMessageResponse
+		m.Attachments = []SupportMessageAttachment{}
 		if err := rows.Scan(&m.ID, &m.SupportChatID, &m.SenderID, &m.SenderKind, &m.Body, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
+		ids = append(ids, m.ID)
+	}
+	rows.Close()
+
+	byMsg, err := loadSupportAttachments(ctx, r.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if atts := byMsg[out[i].ID]; atts != nil {
+			out[i].Attachments = atts
+		}
 	}
 	return out, nil
+}
+
+// CreateAttachmentMessage inserts a support message carrying one attachment
+// (body may be empty for an attachment-only message) and returns it fully
+// hydrated, plus the chat's owner user_id (for WS/notification targeting).
+// senderKind is 'user' (owner) or 'admin' (staff reply) — the caller decides
+// after an owner-or-admin auth check. FileURL/FilePath are raw paths; the
+// handler signs FileURL on the way out.
+func (r *SupportRepository) CreateAttachmentMessage(
+	ctx context.Context,
+	chatID, senderID uuid.UUID,
+	senderKind, body, fileURL, filePath, mimeType string,
+	fileSize int64,
+) (*SupportMessageResponse, uuid.UUID, error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, uuid.Nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var chatUserID uuid.UUID
+	if err := tx.QueryRow(ctx, "SELECT user_id FROM support_chats WHERE id = $1", chatID).Scan(&chatUserID); err != nil {
+		return nil, uuid.Nil, fmt.Errorf("support chat not found")
+	}
+
+	now := time.Now().UTC()
+	var m SupportMessageResponse
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO support_messages (id, support_chat_id, sender_id, sender_kind, body, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
+		RETURNING id, support_chat_id, sender_id, sender_kind, body, created_at
+	`, chatID, senderID, senderKind, body, now).Scan(
+		&m.ID, &m.SupportChatID, &m.SenderID, &m.SenderKind, &m.Body, &m.CreatedAt,
+	); err != nil {
+		return nil, uuid.Nil, fmt.Errorf("insert support message: %w", err)
+	}
+
+	var a SupportMessageAttachment
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO support_message_attachments (id, message_id, file_url, file_path, file_size, mime_type, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+		RETURNING id, message_id, file_url, file_size, mime_type, created_at
+	`, m.ID, fileURL, filePath, fileSize, mimeType, now).Scan(
+		&a.ID, &a.MessageID, &a.FileURL, &a.FileSize, &a.MimeType, &a.CreatedAt,
+	); err != nil {
+		return nil, uuid.Nil, fmt.Errorf("insert support attachment: %w", err)
+	}
+	m.Attachments = []SupportMessageAttachment{a}
+
+	if _, err := tx.Exec(ctx,
+		"UPDATE support_chats SET last_message_at = $2, updated_at = $2 WHERE id = $1",
+		chatID, now,
+	); err != nil {
+		return nil, uuid.Nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, uuid.Nil, err
+	}
+	return &m, chatUserID, nil
+}
+
+// GetChatOwner returns the owning user_id of a support chat (for auth checks).
+func (r *SupportRepository) GetChatOwner(ctx context.Context, chatID uuid.UUID) (uuid.UUID, error) {
+	var ownerID uuid.UUID
+	err := r.db.Pool.QueryRow(ctx, "SELECT user_id FROM support_chats WHERE id = $1", chatID).Scan(&ownerID)
+	return ownerID, err
 }
 
 // PostMessage inserts a user message and bumps last_message_at.

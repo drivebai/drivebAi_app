@@ -7,6 +7,7 @@ final class SupportChatViewModel: ObservableObject {
     @Published private(set) var chatId: UUID? = nil
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
+    @Published private(set) var isUploadingAttachment = false
     @Published private(set) var error: String? = nil
     @Published var draft: String = ""
 
@@ -49,6 +50,7 @@ final class SupportChatViewModel: ObservableObject {
             senderId: UUID(), // filled in by server; locally irrelevant
             senderKind: .user,
             body: text,
+            attachments: [],
             createdAt: Date()
         )
         messages.append(optimistic)
@@ -65,6 +67,31 @@ final class SupportChatViewModel: ObservableObject {
             self.error = "Failed to send: \(error.localizedDescription)"
         }
         isSending = false
+    }
+
+    // MARK: - Attachment
+
+    /// Upload a photo/document into the thread. Unlike text, we don't render an
+    /// optimistic bubble — the signed URL only exists after the round-trip — so
+    /// we append the real message the server returns (deduped against the WS
+    /// echo). The caption is whatever is currently in the draft field.
+    func uploadAttachment(data: Data, filename: String, mimeType: String) async {
+        guard let chatId, !isUploadingAttachment else { return }
+        let caption = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        isUploadingAttachment = true
+        do {
+            let saved = try await APIClient.shared.uploadSupportAttachment(
+                chatId: chatId, data: data, filename: filename, mimeType: mimeType, caption: caption
+            )
+            draft = ""
+            let msg = saved.toSupportMessage()
+            if !messages.contains(where: { $0.id == msg.id }) {
+                messages.append(msg)
+            }
+        } catch {
+            self.error = "Failed to send attachment: \(error.localizedDescription)"
+        }
+        isUploadingAttachment = false
     }
 
     func markRead() async {
