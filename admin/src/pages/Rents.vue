@@ -153,6 +153,7 @@ const drawerReturnRows = computed(() => {
     </div>
   </div>
 
+  <div class="desktop-only">
   <DataTable
     :rows :loading :total :page :limit
     :on-row-click="openDetails"
@@ -191,6 +192,34 @@ const drawerReturnRows = computed(() => {
     </template>
     <template #empty>No rentals found.</template>
   </DataTable>
+  </div>
+
+  <!-- Phone: stacked cards → tap opens the full-screen rental Drawer. -->
+  <div class="mobile-only">
+    <div v-if="loading" class="card-state">Loading…</div>
+    <div v-else-if="!rows.length" class="card-state">No rentals found.</div>
+    <template v-else>
+      <button v-for="row in rows" :key="row.id" class="list-card" @click="openDetails(row)">
+        <div class="lc-top">
+          <span class="lc-title">{{ row.car_title }} {{ row.car_year }}</span>
+          <StatusBadge :label="statusLabel(row.status)" :tone="statusTone(row.status)" />
+        </div>
+        <div class="lc-name">{{ row.driver_name || row.driver_email }} → {{ row.owner_name || row.owner_email }}</div>
+        <div class="lc-sub">{{ fmtDate(row.start_date) }} – {{ row.end_date ? fmtDate(row.end_date) : '—' }}</div>
+        <div v-if="hasReturn(row)" class="lc-return">
+          <StatusBadge :label="returnLabel(row)" :tone="returnTone(row)" />
+        </div>
+      </button>
+      <footer v-if="total > 0" class="mobile-pager">
+        <span class="muted">{{ ((page - 1) * limit) + 1 }}–{{ Math.min(page * limit, total) }} of {{ total }}</span>
+        <div class="pager">
+          <button :disabled="page <= 1" @click="page = page - 1; load()">‹ Prev</button>
+          <span class="page-num">{{ page }} / {{ Math.max(1, Math.ceil(total / limit)) }}</span>
+          <button :disabled="page >= Math.ceil(total / limit)" @click="page = page + 1; load()">Next ›</button>
+        </div>
+      </footer>
+    </template>
+  </div>
 
   <Drawer v-if="detail" :title="`Rental — ${detail.car_title} ${detail.car_year}`" @close="detail = null">
     <dl class="kv">
@@ -325,5 +354,56 @@ const drawerReturnRows = computed(() => {
 .modal-body {
   padding: 16px 18px;
   overflow-y: auto;
+}
+
+.mobile-only { display: none; }
+
+/* ── Phone: table → stacked cards (≤640px) ───────────────────── */
+@media (max-width: 640px) {
+  .desktop-only { display: none; }
+  .mobile-only {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  /* Filter row wraps: search full-width, pills below (was clipping the search). */
+  .filters { flex-wrap: wrap; align-items: stretch; }
+  .search { flex-basis: 100%; max-width: none; }
+  .pills { flex-wrap: wrap; }
+  .pills button { min-height: 40px; }
+
+  .list-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: var(--m-row-py) var(--m-row-px);
+    cursor: pointer;
+  }
+  .list-card:last-of-type { border-bottom: none; }
+  .lc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .lc-title { font-weight: 600; font-size: 15px; }
+  .lc-name { font-size: 13px; color: var(--text); }
+  .lc-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .lc-return { margin-top: 6px; }
+  .card-state { padding: 32px; text-align: center; color: var(--text-muted); }
+
+  /* Drawer/modal: stack the label/value grid and break long Stripe/refund IDs. */
+  .kv { grid-template-columns: 1fr; gap: 2px 0; }
+  .kv dt { margin-top: 8px; color: var(--text-muted); }
+  .kv dd { overflow-wrap: anywhere; }
+
+  .mobile-pager {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 12px; border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 13px;
+  }
+  .mobile-pager .pager { display: flex; align-items: center; gap: 12px; }
+  .mobile-pager .pager button { min-height: 44px; min-width: 72px; }
 }
 </style>
