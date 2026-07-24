@@ -9,9 +9,21 @@ final class SupportChatViewModel: ObservableObject {
     @Published private(set) var isSending = false
     @Published private(set) var isUploadingAttachment = false
     @Published private(set) var error: String? = nil
+    /// Support has read every user message stamped at/before this time. Drives
+    /// the "Seen by support" indicator.
+    @Published private(set) var adminLastReadAt: Date? = nil
     @Published var draft: String = ""
 
     private var cancellables = Set<AnyCancellable>()
+
+    /// The id of the last user message that support has seen — the only place
+    /// the "Seen by support" indicator is shown (iMessage-style: under the most
+    /// recent sent message, not every one).
+    var seenIndicatorMessageID: UUID? {
+        guard let seenAt = adminLastReadAt else { return nil }
+        guard let last = messages.last(where: { $0.senderKind == .user }) else { return nil }
+        return last.createdAt <= seenAt ? last.id : nil
+    }
 
     init() {
         subscribeToWebSocket()
@@ -26,6 +38,7 @@ final class SupportChatViewModel: ObservableObject {
         do {
             let chat = try await APIClient.shared.getOrCreateSupportChat()
             chatId = chat.id
+            adminLastReadAt = chat.adminLastReadAt
             let apiMessages = try await APIClient.shared.fetchSupportMessages(chatId: chat.id)
             messages = apiMessages.map { $0.toSupportMessage() }
             try? await APIClient.shared.markSupportChatRead(chatId: chat.id)
@@ -109,6 +122,11 @@ final class SupportChatViewModel: ObservableObject {
                 // Only handle messages for our chat
                 guard self.chatId == apiMsg.supportChatId else { return }
                 let msg = apiMsg.toSupportMessage()
+                // A reply from support means they've read everything up to now —
+                // advance the "Seen" watermark so the indicator updates live.
+                if msg.isFromAdmin {
+                    self.adminLastReadAt = max(self.adminLastReadAt ?? .distantPast, msg.createdAt)
+                }
                 // Deduplicate (WS may race with HTTP response)
                 guard !self.messages.contains(where: { $0.id == msg.id }) else { return }
                 self.messages.append(msg)

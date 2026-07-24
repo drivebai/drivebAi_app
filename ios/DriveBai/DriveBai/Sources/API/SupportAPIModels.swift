@@ -6,6 +6,7 @@ struct SupportChatAPIResponse: Codable {
     let id: UUID
     let userId: UUID
     let unreadCount: Int
+    let adminLastReadAt: Date?   // "Seen by support" up to this time
     let lastMessageAt: Date?
     let createdAt: Date
 
@@ -13,6 +14,7 @@ struct SupportChatAPIResponse: Codable {
         case id
         case userId = "user_id"
         case unreadCount = "unread_count"
+        case adminLastReadAt = "admin_last_read_at"
         case lastMessageAt = "last_message_at"
         case createdAt = "created_at"
     }

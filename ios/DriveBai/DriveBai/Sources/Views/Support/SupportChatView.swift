@@ -60,6 +60,14 @@ struct SupportChatView: View {
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 4)
                                 .id(msg.id)
+                            if msg.id == viewModel.seenIndicatorMessageID {
+                                Text("Seen by support")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                    .padding(.horizontal, 16)
+                                    .padding(.bottom, 2)
+                            }
                         }
                         Color.clear.frame(height: 4).id("bottom")
                     }
@@ -90,7 +98,7 @@ struct SupportChatView: View {
                 .font(.title2.bold())
                 .foregroundColor(.primary)
 
-            Text("Tell us what happened and our support team will respond as soon as possible.")
+            Text("Tell us what happened. We're a small team and read every message — we'll reply as soon as we can.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

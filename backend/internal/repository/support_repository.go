@@ -21,11 +21,14 @@ func NewSupportRepository(db *database.DB) *SupportRepository {
 
 // SupportChatResponse is the shape returned to the mobile client.
 type SupportChatResponse struct {
-	ID            uuid.UUID  `json:"id"`
-	UserID        uuid.UUID  `json:"user_id"`
-	UnreadCount   int        `json:"unread_count"` // admin replies not yet seen by user
-	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID          uuid.UUID `json:"id"`
+	UserID      uuid.UUID `json:"user_id"`
+	UnreadCount int       `json:"unread_count"` // admin replies not yet seen by user
+	// AdminLastReadAt drives the client's "Seen by support" indicator: support
+	// has read every user message stamped at or before this time.
+	AdminLastReadAt *time.Time `json:"admin_last_read_at,omitempty"`
+	LastMessageAt   *time.Time `json:"last_message_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 // SupportMessageResponse is the shape for individual messages on both sides.
@@ -87,8 +90,8 @@ func (r *SupportRepository) GetOrCreateChat(ctx context.Context, userID uuid.UUI
 		INSERT INTO support_chats (id, user_id, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, NOW(), NOW())
 		ON CONFLICT (user_id) DO UPDATE SET updated_at = support_chats.updated_at
-		RETURNING id, user_id, last_message_at, created_at, user_last_read_at
-	`, userID).Scan(&chat.ID, &chat.UserID, &chat.LastMessageAt, &chat.CreatedAt, &userLastRead)
+		RETURNING id, user_id, last_message_at, created_at, user_last_read_at, admin_last_read_at
+	`, userID).Scan(&chat.ID, &chat.UserID, &chat.LastMessageAt, &chat.CreatedAt, &userLastRead, &chat.AdminLastReadAt)
 	if err != nil {
 		return nil, fmt.Errorf("upsert support chat: %w", err)
 	}
@@ -113,10 +116,10 @@ func (r *SupportRepository) GetChatForUser(ctx context.Context, chatID, userID u
 	var chat SupportChatResponse
 	var userLastRead *time.Time
 	err := r.db.Pool.QueryRow(ctx, `
-		SELECT id, user_id, last_message_at, created_at, user_last_read_at
+		SELECT id, user_id, last_message_at, created_at, user_last_read_at, admin_last_read_at
 		FROM support_chats
 		WHERE id = $1 AND user_id = $2
-	`, chatID, userID).Scan(&chat.ID, &chat.UserID, &chat.LastMessageAt, &chat.CreatedAt, &userLastRead)
+	`, chatID, userID).Scan(&chat.ID, &chat.UserID, &chat.LastMessageAt, &chat.CreatedAt, &userLastRead, &chat.AdminLastReadAt)
 	if err != nil {
 		return nil, err
 	}
