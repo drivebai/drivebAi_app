@@ -326,6 +326,8 @@ function onboardingLabel(s: string) {
     </select>
   </div>
 
+  <!-- Desktop: 8-column table -->
+  <div class="desktop-only">
   <DataTable
     :rows :loading :total :page :limit
     :on-row-click="openDetails"
@@ -370,6 +372,35 @@ function onboardingLabel(s: string) {
     </template>
     <template #empty>No users match these filters.</template>
   </DataTable>
+  </div>
+
+  <!-- Phone: stacked cards → tap opens the full-screen Drawer (which holds every
+       action: Live chat, Edit, Reset password, Block). No sideways table scroll. -->
+  <div class="mobile-only">
+    <div v-if="loading" class="card-state">Loading…</div>
+    <div v-else-if="!rows.length" class="card-state">No users match these filters.</div>
+    <template v-else>
+      <button v-for="row in rows" :key="row.id" class="list-card" @click="openDetails(row)">
+        <div class="lc-top">
+          <span class="lc-title">{{ row.first_name }} {{ row.last_name }}</span>
+          <StatusBadge
+            :label="row.is_blocked ? 'Blocked' : 'Active'"
+            :tone="row.is_blocked ? 'danger' : 'success'"
+          />
+        </div>
+        <div class="lc-name">{{ row.email }}</div>
+        <div class="lc-sub">{{ roleLabel(row.signup_role ?? row.role) }} · {{ fmtDate(row.created_at) }}</div>
+      </button>
+      <footer v-if="total > 0" class="mobile-pager">
+        <span class="muted">{{ ((page - 1) * limit) + 1 }}–{{ Math.min(page * limit, total) }} of {{ total }}</span>
+        <div class="pager">
+          <button :disabled="page <= 1" @click="page = page - 1; load()">‹ Prev</button>
+          <span class="page-num">{{ page }} / {{ Math.max(1, Math.ceil(total / limit)) }}</span>
+          <button :disabled="page >= Math.ceil(total / limit)" @click="page = page + 1; load()">Next ›</button>
+        </div>
+      </footer>
+    </template>
+  </div>
 
   <Drawer v-if="drawerUser" :title="`${drawerUser.first_name} ${drawerUser.last_name}`" @close="drawerUser = null">
     <dl class="kv">
@@ -582,6 +613,9 @@ select { width: 160px; }
 }
 .drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* Mobile card list hidden on desktop. */
+.mobile-only { display: none; }
+
 .mode-cell { display: flex; align-items: center; gap: 10px; }
 .docs-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .docs-section h3 { margin: 0 0 12px; font-size: 14px; }
@@ -625,4 +659,46 @@ select { width: 160px; }
 .modal input:focus { outline: 2px solid var(--accent, #2bd1c4); outline-offset: -1px; }
 .modal .error { color: var(--danger, #d33); font-size: 13px; margin: 0; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+
+/* ── Phone: 8-column table → stacked cards (≤640px) ───────────
+   Shared :root --m-row-* rhythm, matching the other mobile lists. Each card
+   opens the full-screen Drawer, where every action lives — no sideways table
+   scroll to reach Block/Chat/Reset. Desktop keeps the table. */
+@media (max-width: 640px) {
+  .desktop-only { display: none; }
+  .mobile-only {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .filters { flex-wrap: wrap; }
+  .search { flex-basis: 100%; max-width: none; }
+
+  .list-card {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    padding: var(--m-row-py) var(--m-row-px);
+    cursor: pointer;
+  }
+  .list-card:last-of-type { border-bottom: none; }
+  .lc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .lc-title { font-weight: 600; font-size: 15px; }
+  .lc-name { font-size: 14px; color: var(--text); word-break: break-all; }
+  .lc-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+  .card-state { padding: 32px; text-align: center; color: var(--text-muted); }
+
+  .mobile-pager {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 12px; border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 13px;
+  }
+  .mobile-pager .pager { display: flex; align-items: center; gap: 12px; }
+  .mobile-pager .pager button { min-height: 44px; min-width: 72px; }
+}
 </style>
