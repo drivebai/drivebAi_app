@@ -1443,6 +1443,14 @@ textarea {
   .party-grid { grid-template-columns: 1fr; }
   .photo-grid { grid-template-columns: repeat(2, 1fr); }
   .doc-grid { grid-template-columns: 1fr; }
+
+  /* Long, unbreakable Stripe/refund/VIN values were bleeding out of the drawer. */
+  .kv dd, .party-kv dd { overflow-wrap: anywhere; }
+
+  /* Tap targets up to 44px on the phone path. */
+  .pills button { min-height: 44px; }
+  .btn-primary, .btn-danger, .pdf-btn { min-height: 44px; }
+  .btn-secondary, .doc-open { min-height: 44px; }
 }
 
 /* ---- Card list (mobile) ---- */
