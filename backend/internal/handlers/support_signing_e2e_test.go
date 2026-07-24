@@ -146,6 +146,68 @@ func doReq(h http.HandlerFunc, userID uuid.UUID, role models.Role, params map[st
 	return rec.Body.String()
 }
 
+// TestAdminUpdateStatus_ExecutesAgainstDB is the regression test for the
+// prod 500 the signed-JSON e2e test missed: AdminUpdateStatus was never run
+// against a real DB, and its UPDATE used $1 as both a varchar column value and
+// a text comparison, which Postgres refuses to prepare. This exercises the
+// actual query end to end and asserts the status + timestamp transitions.
+//
+// Skipped unless TEST_DATABASE_URL points at a migrated, disposable DB.
+func TestAdminUpdateStatus_ExecutesAgainstDB(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("set TEST_DATABASE_URL (migrated, disposable DB) to run the AdminUpdateStatus regression test")
+	}
+	ctx := context.Background()
+	db, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer db.Close()
+
+	repo := repository.NewTicketRepository(db)
+	suffix := uuid.NewString()[:8]
+	var userID, ticketID uuid.UUID
+	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, role, first_name, last_name)
+		VALUES ($1,'driver','Status','Probe') RETURNING id`, "e2e_status_"+suffix+"@example.com").Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	defer db.Pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, userID)
+	if err := db.Pool.QueryRow(ctx, `INSERT INTO support_tickets (user_id, category, description, status, submitted_at)
+		VALUES ($1,'renting','x','open',NOW()) RETURNING id`, userID).Scan(&ticketID); err != nil {
+		t.Fatalf("seed ticket: %v", err)
+	}
+
+	// resolved: must not error, must return the owner, must stamp resolved_at.
+	gotUser, err := repo.AdminUpdateStatus(ctx, ticketID, models.TicketStatusResolved)
+	if err != nil {
+		t.Fatalf("AdminUpdateStatus(resolved) errored (the prod bug): %v", err)
+	}
+	if gotUser != userID {
+		t.Errorf("returned user_id = %s, want %s", gotUser, userID)
+	}
+	var status string
+	var resolvedAt *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT status, resolved_at FROM support_tickets WHERE id=$1`, ticketID).Scan(&status, &resolvedAt); err != nil {
+		t.Fatalf("re-fetch: %v", err)
+	}
+	if status != "resolved" || resolvedAt == nil {
+		t.Errorf("after resolve: status=%q resolved_at=%v (want resolved + timestamp)", status, resolvedAt)
+	}
+
+	// closed: must stamp closed_at.
+	if _, err := repo.AdminUpdateStatus(ctx, ticketID, models.TicketStatusClosed); err != nil {
+		t.Fatalf("AdminUpdateStatus(closed) errored: %v", err)
+	}
+	var closedAt *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT status, closed_at FROM support_tickets WHERE id=$1`, ticketID).Scan(&status, &closedAt); err != nil {
+		t.Fatalf("re-fetch: %v", err)
+	}
+	if status != "closed" || closedAt == nil {
+		t.Errorf("after close: status=%q closed_at=%v (want closed + timestamp)", status, closedAt)
+	}
+}
+
 // extractFileURLs pulls every "file_url":"..." value out of a JSON blob,
 // regardless of nesting, by walking the decoded structure.
 func extractFileURLs(body string) []string {

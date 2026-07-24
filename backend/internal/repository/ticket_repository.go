@@ -316,11 +316,18 @@ func (r *TicketRepository) AdminGet(ctx context.Context, ticketID uuid.UUID) (*m
 // closed_at as appropriate, and returns the ticket's owner id so the caller can
 // notify them. Drafts can't be transitioned by an admin.
 func (r *TicketRepository) AdminUpdateStatus(ctx context.Context, ticketID uuid.UUID, status models.TicketStatus) (userID uuid.UUID, err error) {
+	// $1 must be cast to text at EVERY use. Without the casts, `status = $1`
+	// deduces $1 as varchar (the column type) while `$1 = 'resolved'` deduces it
+	// as text — and Postgres refuses to prepare a statement with inconsistent
+	// types for one parameter ("inconsistent types deduced for parameter $1:
+	// text versus character varying"). psql lets you dodge this by declaring the
+	// param type; pgx always prepares, so it fails every time. Casting pins $1
+	// to text everywhere so the deduction is consistent.
 	err = r.db.Pool.QueryRow(ctx, `
 		UPDATE support_tickets
-		SET status = $1,
-		    resolved_at = CASE WHEN $1 = 'resolved' THEN NOW() ELSE resolved_at END,
-		    closed_at   = CASE WHEN $1 = 'closed'   THEN NOW() ELSE closed_at   END,
+		SET status = $1::text,
+		    resolved_at = CASE WHEN $1::text = 'resolved' THEN NOW() ELSE resolved_at END,
+		    closed_at   = CASE WHEN $1::text = 'closed'   THEN NOW() ELSE closed_at   END,
 		    updated_at  = NOW()
 		WHERE id = $2 AND status != 'draft'
 		RETURNING user_id`, string(status), ticketID).Scan(&userID)
