@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import { adminApi } from '../api/admin'
 import type { AdminChat, AdminMessage } from '../api/types'
@@ -21,6 +21,14 @@ const loadingMsgs = ref(false)
 const newMessage = ref('')
 const sending = ref(false)
 
+// Phone flag (≤640px) drives the single-view navigation, same as Support.
+// Initialised synchronously so the load-time auto-select decision is right.
+const narrowMq = window.matchMedia('(max-width: 640px)')
+const isNarrow = ref(narrowMq.matches)
+function syncNarrow() { isNarrow.value = narrowMq.matches }
+onMounted(() => narrowMq.addEventListener('change', syncNarrow))
+onUnmounted(() => narrowMq.removeEventListener('change', syncNarrow))
+
 let timer: number | undefined
 watch(query, () => {
   if (timer) clearTimeout(timer)
@@ -33,7 +41,9 @@ async function loadChats() {
     const res = await adminApi.listChats({ query: query.value, page: page.value, limit })
     chats.value = res.items
     total.value = res.total
-    if (!selected.value && res.items.length) selectChat(res.items[0])
+    // Don't auto-open a chat on phones — the single-view model wants the admin
+    // to land on the list and choose.
+    if (!selected.value && res.items.length && !isNarrow.value) selectChat(res.items[0])
   } catch (e: any) {
     toast.error(e?.message || 'Failed to load chats')
   } finally {
@@ -84,12 +94,14 @@ loadChats()
 <template>
   <PageHeader title="Request Chats" />
 
-  <div class="filters">
+  <div class="filters" :class="{ 'hide-when-detail': !!selected }">
     <input v-model="query" placeholder="Search by participant email/name, car title, or chat ID…" class="search" />
     <span class="count">{{ total }} chats</span>
   </div>
 
-  <div class="split">
+  <!-- show-detail drives the phone single-view: with a chat selected the list
+       hides and the conversation goes full-screen (≤640px); desktop keeps both. -->
+  <div class="split" :class="{ 'show-detail': !!selected }">
     <aside class="list">
       <div v-if="loadingChats" class="state">Loading…</div>
       <div v-else-if="!chats.length" class="state">No chats found.</div>
@@ -111,6 +123,17 @@ loadChats()
 
     <section class="convo">
       <header v-if="selected" class="convo-header">
+        <button
+          v-if="isNarrow"
+          type="button"
+          class="convo-back"
+          aria-label="Back to chats"
+          @click="selected = null"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+            <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
         <img v-if="selected.cover_photo_url" :src="imgUrl(selected.cover_photo_url)" alt="" class="thumb sm" />
         <div>
           <div class="convo-title">{{ selected.car_title }} {{ selected.car_year }}</div>
@@ -266,4 +289,70 @@ loadChats()
 .composer-send:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .state { padding: 32px; color: var(--text-muted); text-align: center; }
+
+/* Back arrow in the conversation header — only rendered on phones (v-if). */
+.convo-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── Phone: single-view (≤640px) ───────────────────────────────
+   Same model as Support: the 360px+1fr split (which collapsed the message pane
+   to ~0 on a phone) becomes one view at a time — list full-screen, tap → chat
+   full-screen with a Back arrow. Shared list rhythm (:root --m-row-*) so it
+   matches Support/Tickets/Accidents. Desktop (>640px) is untouched. */
+@media (max-width: 640px) {
+  .filters.hide-when-detail { display: none; }
+
+  .split {
+    grid-template-columns: 1fr;
+    /* list view still shows the filters row, so a bit more offset */
+    height: calc(100vh - 188px);
+    height: calc(100dvh - 188px);
+  }
+  .split.show-detail {
+    /* conversation view hides the filters → reclaim that height */
+    height: calc(100vh - 132px);
+    height: calc(100dvh - 132px);
+  }
+  .split:not(.show-detail) .convo { display: none; }
+  .split.show-detail .list { display: none; }
+
+  /* List rhythm — rows read as distinct, comfortable units at full width. */
+  .list { padding: 0; }
+  .chat-row {
+    padding: var(--m-row-py) var(--m-row-px);
+    gap: var(--m-row-gap);
+    border-radius: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .title { font-size: 15px; }
+  .sub { font-size: 13px; }
+  .preview { font-size: 13px; }
+
+  /* Conversation header keeps naming car + driver + owner; let it wrap. */
+  .convo-header { padding: 12px 12px; gap: 10px; }
+  .convo-sub { font-size: 13px; }
+
+  .msg { max-width: 85%; }
+  /* Keep the ADMIN badge legible at phone width. */
+  .admin-badge { font-size: 11px; padding: 3px 9px; }
+
+  .composer {
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  /* Full-width strip that reads as a sentence, not a vertical ribbon. */
+  .composer-warning { font-size: 12px; padding: 6px 12px; }
+  .composer-send { min-height: 44px; }
+}
 </style>
