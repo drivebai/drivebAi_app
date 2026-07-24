@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { adminApi } from '../api/admin'
@@ -27,6 +27,15 @@ const messagesEl = ref<HTMLDivElement | null>(null)
 
 // Attachment preview modal: { url, mime } while open, null while closed.
 const preview = ref<{ url: string; mime: string } | null>(null)
+
+// Phone flag (≤640px) drives the single-view chat navigation and the shortened
+// composer placeholder. Initialised synchronously so the load-time auto-select
+// decision below is right on the first render; kept reactive for rotate/resize.
+const narrowMq = window.matchMedia('(max-width: 640px)')
+const isNarrow = ref(narrowMq.matches)
+function syncNarrow() { isNarrow.value = narrowMq.matches }
+onMounted(() => narrowMq.addEventListener('change', syncNarrow))
+onUnmounted(() => narrowMq.removeEventListener('change', syncNarrow))
 
 // ─── Derived ─────────────────────────────────────────────────────────────────
 
@@ -58,8 +67,10 @@ async function loadChats() {
     const target = wanted ? res.chats.find(c => c.id === wanted) : null
     if (target) {
       await selectChat(target)
-    } else if (!selected.value && res.chats.length) {
-      // Auto-select first chat if none selected
+    } else if (!selected.value && res.chats.length && !isNarrow.value) {
+      // Auto-select first chat if none selected — but NOT on a phone, where the
+      // single-view model wants the admin to land on the conversation list and
+      // choose. A ?chat= deep-link (above) still opens directly on phones.
       await selectChat(res.chats[0])
     }
   } catch (e: any) {
@@ -217,7 +228,10 @@ loadChats()
 <template>
   <PageHeader title="Support chats" />
 
-  <div class="support-layout">
+  <!-- show-detail drives the phone single-view model: with a conversation
+       selected the list hides and the conversation goes full-screen (≤640px);
+       on desktop both panes always show. -->
+  <div class="support-layout" :class="{ 'show-detail': !!selected }">
     <!-- ── Left: Chat list ── -->
     <aside class="chat-list">
       <div class="list-toolbar">
@@ -278,6 +292,17 @@ loadChats()
       <template v-else>
         <!-- Header -->
         <header class="conv-header">
+          <button
+            v-if="isNarrow"
+            type="button"
+            class="conv-back"
+            aria-label="Back to conversations"
+            @click="selected = null"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+              <path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
           <div class="conv-avatar">
             <img v-if="selected.user_photo_url" :src="imgUrl(selected.user_photo_url)" alt="" />
             <div v-else class="avatar-placeholder sm">
@@ -334,7 +359,7 @@ loadChats()
           <textarea
             v-model="draft"
             rows="1"
-            placeholder="Type a reply… (Enter to send, Shift+Enter for new line)"
+            :placeholder="isNarrow ? 'Type a reply…' : 'Type a reply… (Enter to send, Shift+Enter for new line)'"
             :disabled="sending"
             @keydown="handleDraftKeydown"
           />
@@ -726,5 +751,47 @@ loadChats()
   color: var(--text-muted);
   text-align: center;
   font-size: 14px;
+}
+
+/* Back arrow in the conversation header — only rendered on phones (v-if). */
+.conv-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-left: -8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── Phone: single-view chat (≤640px) ──────────────────────────
+   The desktop split (300px list + conversation pane) collapses to one view at
+   a time: with nothing selected the list fills the screen; selecting a chat
+   hides the list and shows the conversation full-screen (Back arrow returns).
+   Desktop (>640px) is untouched. */
+@media (max-width: 640px) {
+  .support-layout {
+    grid-template-columns: 1fr;
+    /* dvh accounts for mobile browser chrome; the vh line is the fallback.
+       Offset ≈ topbar(52) + main padding(16+24) + page header(~38). */
+    height: calc(100vh - 130px);
+    height: calc(100dvh - 130px);
+  }
+  .support-layout:not(.show-detail) .conversation { display: none; }
+  .support-layout.show-detail .chat-list { display: none; }
+
+  .conv-header { padding: 12px 12px; }
+  .msg-bubble { max-width: 85%; }
+
+  .composer {
+    padding: 10px 12px;
+    /* Clear the home-indicator safe area so the pinned composer sits above it. */
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  .send-btn { width: 44px; height: 44px; }
 }
 </style>
