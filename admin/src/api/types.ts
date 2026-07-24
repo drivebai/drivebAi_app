@@ -313,6 +313,55 @@ export interface AdminAccidentsPage {
   page: number
   limit: number
 }
+
+// ---------------------------------------------------------------------------
+// Support tickets (structured requests, distinct from the support chat)
+// Mirrors backend models.AdminTicketRow / TicketAttachment. The category is a
+// server-side enum; status lifecycle is draft → open → resolved → closed (the
+// admin queue never shows drafts).
+// ---------------------------------------------------------------------------
+
+export type TicketCategory =
+  | 'account' | 'listing' | 'renting' | 'buy_sell' | 'payments' | 'other'
+
+export type TicketStatus = 'draft' | 'open' | 'resolved' | 'closed'
+
+export interface TicketAttachment {
+  id: string
+  ticket_id: string
+  file_url: string
+  file_size: number
+  mime_type: string
+  created_at: string
+}
+
+export interface AdminTicket {
+  id: string
+  user_id: string
+  category: TicketCategory
+  subject: string
+  description: string
+  status: TicketStatus
+  last_step: number
+  submitted_at?: string | null
+  resolved_at?: string | null
+  closed_at?: string | null
+  attachments: TicketAttachment[]
+  created_at: string
+  updated_at: string
+  // Reporter identity (joined server-side for the queue + drawer).
+  user_name: string
+  user_email: string
+  user_role: string
+}
+
+export interface AdminTicketsPage {
+  items: AdminTicket[]
+  total: number
+  page: number
+  limit: number
+}
+
 export interface AdminCarSell {
   id: string
   driver_name?: string

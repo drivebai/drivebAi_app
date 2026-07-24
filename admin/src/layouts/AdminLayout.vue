@@ -3,11 +3,13 @@ import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterView, RouterLink, useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useSupportStore } from '../stores/support'
+import { useTicketsStore } from '../stores/tickets'
 
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 const support = useSupportStore()
+const tickets = useTicketsStore()
 
 const items = [
   { to: '/users',     label: 'Users',     icon: 'user' },
@@ -15,6 +17,7 @@ const items = [
   { to: '/chats',     label: 'Chats',     icon: 'chat' },
   { to: '/rents',     label: 'Rents',     icon: 'rent' },
   { to: '/support',   label: 'Support',   icon: 'support' },
+  { to: '/tickets',   label: 'Tickets',   icon: 'ticket' },
   { to: '/accidents', label: 'Accidents', icon: 'accident' },
   { to: '/car-sell',  label: 'Car Sell',  icon: 'sell' },
   { to: '/purchases', label: 'Purchases', icon: 'purchase' },
@@ -61,8 +64,13 @@ function pageTitle(): string {
 
 onMounted(() => {
   support.connect()
+  // Seed the ticket-queue badge, then keep it live: every `ticket_submitted`
+  // frame (surfaced by the support socket) triggers an authoritative re-fetch.
+  tickets.refreshOpenCount()
   document.addEventListener('keydown', onKeydown)
 })
+
+watch(() => support.ticketEvent, () => tickets.refreshOpenCount())
 onUnmounted(() => {
   support.disconnect()
   document.removeEventListener('keydown', onKeydown)
@@ -132,6 +140,9 @@ function logout() {
           <span>{{ i.label }}</span>
           <span v-if="i.icon === 'support' && support.totalUnread > 0" class="badge">
             {{ support.totalUnread > 99 ? '99+' : support.totalUnread }}
+          </span>
+          <span v-else-if="i.icon === 'ticket' && tickets.openCount > 0" class="badge">
+            {{ tickets.openCount > 99 ? '99+' : tickets.openCount }}
           </span>
         </RouterLink>
       </nav>
@@ -271,6 +282,7 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-icon[data-icon="rent"]     { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Cpath d='M3 9h18'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Cpath d='M3 9h18'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="support"]  { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9a2.5 2.5 0 015 0c0 1.5-2.5 2-2.5 4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9a2.5 2.5 0 015 0c0 1.5-2.5 2-2.5 4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="accident"] { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 3l10 18H2L12 3z'/%3E%3Cpath d='M12 10v4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 3l10 18H2L12 3z'/%3E%3Cpath d='M12 10v4'/%3E%3Ccircle cx='12' cy='17' r='0.5' fill='currentColor'/%3E%3C/svg%3E"); }
+.nav-icon[data-icon="ticket"]   { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M4 7a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 000 4v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2a2 2 0 000-4z'/%3E%3Cpath d='M13 5v14' stroke-dasharray='2 2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M4 7a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 000 4v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2a2 2 0 000-4z'/%3E%3Cpath d='M13 5v14' stroke-dasharray='2 2'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="sell"]     { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6'/%3E%3C/svg%3E"); }
 .nav-icon[data-icon="purchase"] { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M6 6h15l-1.5 9h-12z'/%3E%3Cpath d='M6 6L4 3H2'/%3E%3Ccircle cx='9' cy='20' r='1.5'/%3E%3Ccircle cx='18' cy='20' r='1.5'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Cpath d='M6 6h15l-1.5 9h-12z'/%3E%3Cpath d='M6 6L4 3H2'/%3E%3Ccircle cx='9' cy='20' r='1.5'/%3E%3Ccircle cx='18' cy='20' r='1.5'/%3E%3C/svg%3E"); }
 

@@ -20,6 +20,7 @@ const router = createRouter({
         { path: 'chats',     name: 'chats',     component: () => import('../pages/Chats.vue') },
         { path: 'rents',     name: 'rents',     component: () => import('../pages/Rents.vue') },
         { path: 'support',   name: 'support',   component: () => import('../pages/Support.vue') },
+        { path: 'tickets',   name: 'tickets',   component: () => import('../pages/Tickets.vue') },
         { path: 'accidents', name: 'accidents', component: () => import('../pages/Accidents.vue') },
         { path: 'car-sell',  name: 'car-sell',  component: () => import('../pages/CarSell.vue') },
         { path: 'purchases', name: 'purchases', component: () => import('../pages/Purchases.vue') },

@@ -5,6 +5,7 @@ import { api, qs } from './client'
 import type {
   AdminUser, AdminUserDocument, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
   AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
+  AdminTicket, AdminTicketsPage,
   PurchaseRequest, PurchaseRequestDetail, PurchaseRejection, PurchaseBillOfSale,
 } from './types'
 
@@ -106,6 +107,15 @@ export const adminApi = {
     api.post<AdminSupportMessage>(`${BASE}/support/chats/${id}/messages`, { body }),
   markSupportRead: (id: string) =>
     api.post<{ ok: boolean }>(`${BASE}/support/chats/${id}/read`, {}),
+
+  // ---- Support tickets (structured requests) ----
+  // Drafts are never returned; the queue is oldest-submitted-first server-side.
+  // Status may be '' (all non-draft), 'open', 'resolved', or 'closed'.
+  listTickets: (q: { status?: string; page?: number; limit?: number }) =>
+    api.get<AdminTicketsPage>(`${BASE}/tickets${qs(q)}`),
+  getTicket: (id: string) => api.get<AdminTicket>(`${BASE}/tickets/${id}`),
+  updateTicketStatus: (id: string, status: 'open' | 'resolved' | 'closed') =>
+    api.patch<{ ok: boolean }>(`${BASE}/tickets/${id}/status`, { status }),
 
   // ---- Accidents / Car sell ----
   listAccidents: (q: { status?: string; page?: number; limit?: number }) =>

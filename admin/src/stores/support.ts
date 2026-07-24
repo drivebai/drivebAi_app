@@ -11,6 +11,9 @@ export const useSupportStore = defineStore('support', () => {
   const totalUnread = ref(0)
   // Reactive pointer to the last received WS message — Support.vue watches this.
   const lastMessage = shallowRef<AdminSupportMessage | null>(null)
+  // Ticks up each time a `ticket_submitted` frame arrives. AdminLayout watches
+  // this to refresh the ticket-queue badge live, without opening a 2nd socket.
+  const ticketEvent = ref(0)
 
   let socket: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -45,6 +48,10 @@ export const useSupportStore = defineStore('support', () => {
           const msg = event.payload as AdminSupportMessage
           lastMessage.value = msg
           if (msg.sender_kind === 'user') totalUnread.value++
+        } else if (event.type === 'ticket_submitted') {
+          // A new (or reopened) request landed in the queue. Nudge watchers;
+          // they re-fetch the authoritative open count.
+          ticketEvent.value++
         }
       } catch { /* ignore malformed frames */ }
     }
@@ -67,5 +74,5 @@ export const useSupportStore = defineStore('support', () => {
   function setTotalUnread(n: number) { totalUnread.value = n }
   function decrementUnread(n: number) { totalUnread.value = Math.max(0, totalUnread.value - n) }
 
-  return { totalUnread, lastMessage, connect, disconnect, setTotalUnread, decrementUnread }
+  return { totalUnread, lastMessage, ticketEvent, connect, disconnect, setTotalUnread, decrementUnread }
 })
