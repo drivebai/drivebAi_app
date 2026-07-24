@@ -1004,6 +1004,22 @@ func emptyPage(w http.ResponseWriter) {
 	})
 }
 
+// signAccidentRow signs every private evidence URL on an admin accident row.
+// The admin accident path lives here in AdminHandler, separate from the
+// user-facing AccidentHandler.signURLs — and originally forgot to sign, so admin
+// accident evidence + the signature image 404'd in production under signature
+// enforcement (the bug tickets/support were built to avoid). One signer, applied
+// on every emit.
+func (h *AdminHandler) signAccidentRow(row *repository.AdminAccidentRow) {
+	if row == nil {
+		return
+	}
+	row.SignatureURL = h.urlSigner.Sign(row.SignatureURL)
+	for i := range row.Attachments {
+		row.Attachments[i].FileURL = h.urlSigner.Sign(row.Attachments[i].FileURL)
+	}
+}
+
 func (h *AdminHandler) ListAccidents(w http.ResponseWriter, r *http.Request) {
 	page, limit := parsePage(r)
 	status := r.URL.Query().Get("status")
@@ -1012,6 +1028,9 @@ func (h *AdminHandler) ListAccidents(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("admin list accidents", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
+	}
+	for i := range result.Items {
+		h.signAccidentRow(&result.Items[i])
 	}
 	httputil.WriteJSON(w, http.StatusOK, result)
 }
@@ -1027,6 +1046,7 @@ func (h *AdminHandler) GetAccident(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "accident not found"))
 		return
 	}
+	h.signAccidentRow(accident)
 	httputil.WriteJSON(w, http.StatusOK, accident)
 }
 
