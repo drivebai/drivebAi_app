@@ -21,6 +21,15 @@
   --row-alt: #fafafa;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --radius: 8px;
+
+  /* Phone (≤640px) master-detail LIST rhythm. The desktop lists are ~300px
+     columns where dense rows read as efficient; stretched full-width on a phone
+     that same density reads as squashed. These are the shared reference so the
+     conversation/queue lists (Support, Chats, Tickets, Accidents) land on ONE
+     density instead of four. Used only inside @media (max-width:640px). */
+  --m-row-py: 14px;   /* vertical padding inside a list row */
+  --m-row-px: 16px;   /* horizontal padding / edge breathing room + search field */
+  --m-row-gap: 14px;  /* avatar ↔ text gap */
 }
 
 * { box-sizing: border-box; }

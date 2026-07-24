@@ -784,6 +784,19 @@ loadChats()
   .support-layout:not(.show-detail) .conversation { display: none; }
   .support-layout.show-detail .chat-list { display: none; }
 
+  /* Phone list: generous vertical rhythm so rows read as distinct, comfortable
+     units at full width instead of one squashed block. Shared values (:root
+     --m-row-*) so Chats/Tickets/Accidents land on the same density. */
+  .list-toolbar { padding: var(--m-row-px); }
+  .chat-row {
+    padding: var(--m-row-py) var(--m-row-px);
+    gap: var(--m-row-gap);
+  }
+  .chat-top { margin-bottom: 5px; }
+  .chat-name { font-size: 15px; }
+  .chat-preview { font-size: 13px; }
+  .chat-time { font-size: 12px; }
+
   .conv-header { padding: 12px 12px; }
   .msg-bubble { max-width: 85%; }
 
