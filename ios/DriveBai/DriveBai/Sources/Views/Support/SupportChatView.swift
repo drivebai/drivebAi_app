@@ -226,13 +226,25 @@ private struct SupportBubbleView: View {
 
 // MARK: - Attachment bubble
 
-/// Renders one in-chat attachment: images inline, other files as a tappable
-/// tile that opens the signed URL. The URL is already signed by the server.
+/// Renders one in-chat attachment: images inline, documents (PDFs) as a file
+/// card that opens an IN-APP preview — never bounces the user out to Safari.
+/// The document viewer is the app's shared `DocumentPreviewSheet` (QuickLook),
+/// the same one the Bill of Sale, vehicle Title, and licences use, so signed
+/// remote URLs (downloaded + TTL-stable-cached via AttachmentDownloadService)
+/// preview inline with Share / Save-to-Files.
 private struct SupportAttachmentView: View {
     let attachment: SupportAttachmentAPI
     let isFromAdmin: Bool
+    @State private var showPreview = false
 
     private var url: URL? { URL(string: AppConfig.serverBaseURL.absoluteString + attachment.fileUrl) }
+    private var isPDF: Bool { attachment.mimeType == "application/pdf" }
+    private var sizeText: String {
+        ByteCountFormatter.string(fromByteCount: attachment.fileSize, countStyle: .file)
+    }
+    // No original filename is stored (files land as attach_<uuid>.<ext>), so the
+    // preview title is derived from the type.
+    private var previewFilename: String { isPDF ? "Document.pdf" : "Attachment" }
 
     var body: some View {
         if attachment.isImage, let url {
@@ -243,20 +255,29 @@ private struct SupportAttachmentView: View {
                     RoundedRectangle(cornerRadius: 16)
                         .stroke(Color(.systemGray4), lineWidth: 0.5)
                 )
-        } else if let url {
-            Link(destination: url) {
-                HStack(spacing: 10) {
-                    Image(systemName: "doc.fill").font(.system(size: 22))
+        } else {
+            Button { showPreview = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: isPDF ? "doc.richtext.fill" : "doc.fill")
+                        .font(.system(size: 26))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(attachment.mimeType == "application/pdf" ? "PDF document" : "Attachment")
+                        Text(isPDF ? "PDF document" : "Attachment")
                             .font(.subheadline.weight(.semibold))
-                        Text("Tap to open").font(.caption2).foregroundColor(.secondary)
+                        Text(sizeText).font(.caption2).opacity(0.85)
                     }
+                    Spacer(minLength: 8)
+                    Image(systemName: "eye.fill").font(.caption)
                 }
                 .foregroundColor(isFromAdmin ? .primary : .white)
                 .padding(.horizontal, 14).padding(.vertical, 12)
+                .frame(width: 220, alignment: .leading)
                 .background(isFromAdmin ? Color.driveBaiPrimary.opacity(0.12) : Color.driveBaiPrimary)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showPreview) {
+                DocumentPreviewSheet(source: .remoteURL(attachment.fileUrl, filename: previewFilename))
             }
         }
     }

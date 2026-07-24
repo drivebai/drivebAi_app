@@ -25,6 +25,9 @@ const draft = ref('')
 const sending = ref(false)
 const messagesEl = ref<HTMLDivElement | null>(null)
 
+// Attachment preview modal: { url, mime } while open, null while closed.
+const preview = ref<{ url: string; mime: string } | null>(null)
+
 // ─── Derived ─────────────────────────────────────────────────────────────────
 
 const filteredChats = computed(() => {
@@ -192,6 +195,13 @@ function isImage(mime: string) {
   return mime.startsWith('image/')
 }
 
+function fmtBytes(n: number): string {
+  if (!n) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)))
+  return `${(n / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${units[i]}`
+}
+
 function handleDraftKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -295,19 +305,21 @@ loadChats()
           >
             <div class="msg-bubble">
               <div v-if="m.attachments?.length" class="msg-attachments">
-                <a
+                <button
                   v-for="att in m.attachments"
                   :key="att.id"
-                  :href="imgUrl(att.file_url)"
-                  target="_blank"
-                  rel="noopener"
+                  type="button"
                   class="msg-attach"
+                  @click="preview = { url: imgUrl(att.file_url) || '', mime: att.mime_type }"
                 >
                   <img v-if="isImage(att.mime_type)" :src="imgUrl(att.file_url)" class="msg-attach-img" />
                   <span v-else class="msg-attach-file">
-                    &#128206; {{ att.mime_type === 'application/pdf' ? 'PDF' : 'File' }}
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18">
+                      <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>
+                    </svg>
+                    {{ att.mime_type === 'application/pdf' ? 'PDF' : 'File' }} · {{ fmtBytes(att.file_size) }}
                   </span>
-                </a>
+                </button>
               </div>
               <p v-if="m.body" class="msg-body">{{ m.body }}</p>
               <span class="msg-time">
@@ -334,6 +346,20 @@ loadChats()
         </form>
       </template>
     </section>
+
+    <!-- In-console attachment preview. PDFs render in an embedded frame and
+         images inline, so opening one never leaves the console (was a bare
+         target=_blank link). "Open in new tab" stays as a fallback. -->
+    <div v-if="preview" class="preview-overlay" @click.self="preview = null">
+      <div class="preview-modal">
+        <div class="preview-bar">
+          <a :href="preview.url" target="_blank" rel="noopener" class="preview-link">Open in new tab ↗</a>
+          <button type="button" class="preview-close" aria-label="Close preview" @click="preview = null">×</button>
+        </div>
+        <img v-if="preview.mime.startsWith('image/')" :src="preview.url" class="preview-img" />
+        <iframe v-else :src="preview.url" class="preview-frame" title="Attachment preview" />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -575,7 +601,14 @@ loadChats()
   flex-wrap: wrap;
   gap: 6px;
 }
-.msg-attach { display: block; text-decoration: none; }
+.msg-attach {
+  display: block;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
 .msg-attach-img {
   max-width: 220px;
   max-height: 220px;
@@ -586,6 +619,7 @@ loadChats()
 .msg-attach-file {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   padding: 10px 14px;
   border-radius: 12px;
   background: var(--bg);
@@ -594,6 +628,52 @@ loadChats()
   font-size: 13px;
   font-weight: 600;
 }
+.msg-attach-file:hover { border-color: var(--accent-strong); }
+
+/* ── In-console attachment preview modal ── */
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(17, 24, 39, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.preview-modal {
+  background: var(--surface);
+  border-radius: var(--radius);
+  width: min(900px, 92vw);
+  height: min(90vh, 1000px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.preview-link { font-size: 13px; color: var(--accent-strong); text-decoration: none; }
+.preview-link:hover { text-decoration: underline; }
+.preview-close {
+  width: 32px; height: 32px;
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.preview-close:hover { background: var(--bg); color: var(--text); }
+.preview-frame { flex: 1; width: 100%; border: none; }
+.preview-img { flex: 1; width: 100%; object-fit: contain; background: var(--bg); min-height: 0; }
 
 /* ── Composer ─────────────────────────────────────────────── */
 .composer {
