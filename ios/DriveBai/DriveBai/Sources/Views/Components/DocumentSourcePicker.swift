@@ -76,6 +76,11 @@ struct DocumentSourcePickerModifier: ViewModifier {
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
     @State private var pickerItem: PhotosPickerItem?
+    /// Set when the in-camera "Library" button is tapped: the camera cover
+    /// dismisses first, and onDismiss opens the photo picker. Presenting the
+    /// picker while the cover is still animating away is the glitch the
+    /// guided-capture flow hit twice — never present both at once.
+    @State private var libraryAfterCamera = false
 
     private var cameraAvailable: Bool {
         CameraCaptureView.isCameraAvailable
@@ -91,16 +96,27 @@ struct DocumentSourcePickerModifier: ViewModifier {
                 Button("Files") { showFilePicker = true }
                 Button("Cancel", role: .cancel) {}
             }
-            .fullScreenCover(isPresented: $showCamera) {
-                CameraCaptureView { data in
-                    showCamera = false
-                    guard let data else { return }
-                    onPicked(PickedDocument(
-                        data: data,
-                        filename: "\(filenameBase).jpg",
-                        mimeType: "image/jpeg"
-                    ))
+            .fullScreenCover(isPresented: $showCamera, onDismiss: {
+                if libraryAfterCamera {
+                    libraryAfterCamera = false
+                    showPhotoPicker = true
                 }
+            }) {
+                CameraCaptureView(
+                    onCapture: { data in
+                        showCamera = false
+                        guard let data else { return }
+                        onPicked(PickedDocument(
+                            data: data,
+                            filename: "\(filenameBase).jpg",
+                            mimeType: "image/jpeg"
+                        ))
+                    },
+                    onLibraryRequested: {
+                        libraryAfterCamera = true
+                        showCamera = false
+                    }
+                )
                 .ignoresSafeArea()
             }
             .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItem, matching: .images)
@@ -206,6 +222,9 @@ struct PhotoSourcePickerModifier: ViewModifier {
     @State private var showCamera = false
     @State private var showPhotoPicker = false
     @State private var pickerItem: PhotosPickerItem?
+    /// See DocumentSourcePickerModifier.libraryAfterCamera — same dismiss-
+    /// then-present sequencing for the in-camera Library button.
+    @State private var libraryAfterCamera = false
 
     private var cameraAvailable: Bool { CameraCaptureView.isCameraAvailable }
 
@@ -228,13 +247,24 @@ struct PhotoSourcePickerModifier: ViewModifier {
                 Button("Choose from Library") { showPhotoPicker = true }
                 Button("Cancel", role: .cancel) {}
             }
-            .fullScreenCover(isPresented: $showCamera) {
-                CameraCaptureView { data in
-                    showCamera = false
-                    guard let data else { return }
-                    // CameraCaptureView already emits JPEG 0.85.
-                    onPicked(data)
+            .fullScreenCover(isPresented: $showCamera, onDismiss: {
+                if libraryAfterCamera {
+                    libraryAfterCamera = false
+                    showPhotoPicker = true
                 }
+            }) {
+                CameraCaptureView(
+                    onCapture: { data in
+                        showCamera = false
+                        guard let data else { return }
+                        // CameraCaptureView already emits JPEG 0.85.
+                        onPicked(data)
+                    },
+                    onLibraryRequested: {
+                        libraryAfterCamera = true
+                        showCamera = false
+                    }
+                )
                 .ignoresSafeArea()
             }
             .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItem, matching: .images)
