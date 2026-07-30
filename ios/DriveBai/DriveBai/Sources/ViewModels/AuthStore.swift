@@ -478,7 +478,11 @@ final class AuthStore: ObservableObject {
     /// a registration doc still see it on the card, but it no longer
     /// blocks them from completing onboarding.
     func hasRequiredDocuments() -> Bool {
-        documents.contains { $0.type == .driversLicense }
+        // Mirrors the backend gate exactly (document_repository.go
+        // HasRequiredDocuments: `status <> 'rejected'`): a rejected licence
+        // does not satisfy the requirement. Counting it here made Continue
+        // enabled client-side only for the server to 400/409 — the F2 drift.
+        documents.contains { $0.type == .driversLicense && $0.status != .rejected }
     }
 
     // MARK: - Helpers

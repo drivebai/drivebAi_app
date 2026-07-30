@@ -49,6 +49,11 @@ struct AuthenticatedProfileView: View {
     @State private var shouldRetrySwitchAfterDocs = false
     @State private var switchError: String?
     @State private var showSupportHub = false
+    /// Standing "My documents" management sheet (F2): the decline
+    /// notification tells the driver to re-upload, but there was no
+    /// reachable surface without switching modes twice. This row is the
+    /// permanent route in.
+    @State private var showMyDocuments = false
     @State private var showEditProfile = false
     /// Set when a replayed tip was armed for its own screen rather than played here.
     @State private var armedTourNotice: String?
@@ -162,6 +167,13 @@ struct AuthenticatedProfileView: View {
                 VStack(spacing: 0) {
                     ProfileActionRow(icon: "person.fill", title: "Edit Profile", action: { showEditProfile = true })
                     Divider().padding(.leading, 56)
+                    ProfileActionRow(
+                        icon: "doc.text.fill",
+                        title: "My documents",
+                        badge: rejectedDocumentsCount,
+                        action: { showMyDocuments = true }
+                    )
+                    Divider().padding(.leading, 56)
                     ProfileActionRow(icon: "bell.fill", title: "Notifications", action: {})
                     Divider().padding(.leading, 56)
                     ProfileActionRow(icon: "lock.fill", title: "Privacy & Security", action: {})
@@ -191,8 +203,21 @@ struct AuthenticatedProfileView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+        // Keep documents fresh so the "My documents" rejected badge reflects
+        // an admin decline without the user opening the sheet first.
+        .task {
+            await authStore.fetchDocuments()
+        }
         .sheet(isPresented: $showSupportHub) {
             SupportHubView().environmentObject(supportInboxStore)
+        }
+        .sheet(isPresented: $showMyDocuments) {
+            DriverDocsRequiredSheet(
+                management: true,
+                onCompleted: { showMyDocuments = false },
+                onCancel: { showMyDocuments = false }
+            )
+            .environmentObject(authStore)
         }
         .sheet(isPresented: $showEditProfile) {
             EditProfileView(user: user)
@@ -257,6 +282,12 @@ struct AuthenticatedProfileView: View {
     /// "Help & product tour" — replay the tour, re-show the setup checklist, and
     /// re-run any individual tip. Every action just calls the coordinator; an
     /// explicit replay bypasses the new-user gate, so legacy users can opt in.
+    /// Red badge on "My documents" when any document was declined by admin —
+    /// the visual cue that pairs with the decline push notification.
+    private var rejectedDocumentsCount: Int {
+        authStore.documents.filter { $0.status == .rejected }.count
+    }
+
     private var helpAndTipsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Help & product tour")
@@ -506,6 +537,11 @@ private struct DriverDocsRequiredSheet: View {
     @EnvironmentObject private var authStore: AuthStore
     @Environment(\.dismiss) private var dismiss
 
+    /// Management mode (Profile → "My documents"): same cards, but framed as
+    /// standing document management rather than a mode-switch gate — the
+    /// bottom CTA is a plain Done and the copy explains the decline→re-upload
+    /// loop instead of demanding documents "to continue".
+    var management: Bool = false
     let onCompleted: () -> Void
     let onCancel: () -> Void
 
@@ -522,7 +558,11 @@ private struct DriverDocsRequiredSheet: View {
     }
 
     private var canContinue: Bool {
-        licenseDocument != nil
+        // A rejected licence does NOT count (F2): the server excludes
+        // rejected in HasRequiredDocuments, so counting it here just let the
+        // user hit a confusing 409 after tapping Continue.
+        guard let licenseDocument else { return false }
+        return licenseDocument.status != .rejected
     }
 
     var body: some View {
@@ -530,10 +570,12 @@ private struct DriverDocsRequiredSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Driver documents required")
+                        Text(management ? "My documents" : "Driver documents required")
                             .font(.title2)
                             .fontWeight(.bold)
-                        Text("Driver's License is required to continue. Commercial License and other documents are optional and help with faster approval.")
+                        Text(management
+                            ? "Your driver documents live here. If support declines one, you'll get a notification with the reason — upload a new copy below to restore it."
+                            : "Driver's License is required to continue. Commercial License and other documents are optional and help with faster approval.")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -585,15 +627,15 @@ private struct DriverDocsRequiredSheet: View {
             .background(Color(.systemGroupedBackground))
             .safeAreaInset(edge: .bottom) {
                 Button(action: onCompleted) {
-                    Text("Continue to Driver mode")
+                    Text(management ? "Done" : "Continue to Driver mode")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(DriveBaiButtonStyle())
-                .disabled(!canContinue)
+                .disabled(!management && !canContinue)
                 .padding()
                 .background(Color(.systemBackground))
             }
-            .navigationTitle("Verify Driver")
+            .navigationTitle(management ? "My documents" : "Verify Driver")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
