@@ -219,6 +219,35 @@ func (r *PurchaseRequestRepository) MarkPaymentFailed(ctx context.Context, inten
 	return p, nil
 }
 
+// HealBlankBOSVehicleFields backfills vehicle identity fields on a
+// Bill-of-Sale row that was seeded blank by the pre-fix Accept bug (C2).
+// The line drawn deliberately narrow:
+//   - each field heals INDEPENDENTLY and only when genuinely blank
+//     ('' / year 0) — a value the seller typed by hand is never overwritten;
+//   - rows the seller has already signed are never touched — a signed BoS is
+//     an attested instrument, even if it carries legacy blanks.
+// Copies from the cars row (the same source Accept seeds from). The
+// updated_at trigger fires on change. Returns true when anything changed.
+func (r *PurchaseRequestRepository) HealBlankBOSVehicleFields(ctx context.Context, purchaseRequestID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE purchase_bill_of_sales b
+		SET vehicle_year  = CASE WHEN b.vehicle_year = 0   THEN c.year                       ELSE b.vehicle_year  END,
+		    vehicle_make  = CASE WHEN b.vehicle_make = ''  THEN LEFT(c.make, 64)             ELSE b.vehicle_make  END,
+		    vehicle_model = CASE WHEN b.vehicle_model = '' THEN LEFT(c.model, 64)            ELSE b.vehicle_model END,
+		    vin           = CASE WHEN b.vin = ''           THEN LEFT(COALESCE(c.vin,''), 17) ELSE b.vin           END
+		FROM purchase_requests p
+		JOIN cars c ON c.id = p.car_id
+		WHERE b.purchase_request_id = $1
+		  AND p.id = b.purchase_request_id
+		  AND b.seller_signed_at IS NULL
+		  AND (b.vehicle_year = 0 OR b.vehicle_make = '' OR b.vehicle_model = '' OR b.vin = '')
+	`, purchaseRequestID)
+	if err != nil {
+		return false, fmt.Errorf("heal blank bos vehicle fields: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // GetByPaymentIntentID returns the row whose Stripe intent id matches.
 // Used by the webhook handler.
 func (r *PurchaseRequestRepository) GetByPaymentIntentID(ctx context.Context, intentID string) (*models.PurchaseRequest, error) {
@@ -1649,6 +1678,42 @@ func (r *PurchaseRequestRepository) ResolveRejection(ctx context.Context, reject
 
 // ListAuthExpired returns non-terminal rows whose Stripe auth window has
 // elapsed and need to be flipped to `expired_auth`.
+// ListStuckCaptures returns purchases parked at inspection_accepted whose
+// Stripe capture never landed (C5): the buyer accepted the vehicle, the
+// synchronous capture in InspectAccept failed (Stripe blip, crash between
+// capture and MarkCaptured), and nothing retried — both parties sat on
+// "Completing payment…" forever. olderThan keeps the scanner from racing a
+// capture that is happening right now on the request path.
+func (r *PurchaseRequestRepository) ListStuckCaptures(ctx context.Context, olderThan time.Duration, limit int) ([]models.PurchaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+purchaseRequestColumns+`
+		FROM purchase_requests
+		WHERE status = 'inspection_accepted'
+		  AND payment_intent_id IS NOT NULL
+		  AND payment_status IS DISTINCT FROM 'succeeded'
+		  AND updated_at < NOW() - $1::interval
+		ORDER BY updated_at ASC
+		LIMIT $2
+	`, olderThan.String(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []models.PurchaseRequest{}
+	for rows.Next() {
+		p, err := scanPurchaseRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, nil
+}
+
 func (r *PurchaseRequestRepository) ListAuthExpired(ctx context.Context, limit int) ([]models.PurchaseRequest, error) {
 	if limit <= 0 {
 		limit = 50

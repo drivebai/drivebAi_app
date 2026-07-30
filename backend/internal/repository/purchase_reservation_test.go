@@ -218,3 +218,68 @@ func TestMarkPaymentFailed_RecordsAndNeverDowngrades(t *testing.T) {
 		t.Errorf("payment_status downgraded to %q — must remain succeeded", payStatus)
 	}
 }
+
+// TestHealBlankBOSVehicleFields_TheLine proves C2's heal boundary exactly:
+// (1) genuinely-blank fields are backfilled from the car row; (2) a value the
+// seller typed by hand is NEVER overwritten, even when sibling fields heal;
+// (3) a seller-signed row is never touched at all.
+func TestHealBlankBOSVehicleFields_TheLine(t *testing.T) {
+	db := reservationTestDB(t)
+	repo := NewPurchaseRequestRepository(db)
+	_, purchaseID := seedPurchaseFixture(t, db)
+	ctx := context.Background()
+
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO purchase_bill_of_sales
+		(purchase_request_id, vehicle_year, vehicle_make, vehicle_model, vin, sale_amount_cents)
+		VALUES ($1, 0, '', '', '', 500000)`, purchaseID); err != nil {
+		t.Fatalf("seed blank bos: %v", err)
+	}
+
+	// (1) blank row heals from the car (fixture car: Test / Car / 2020, no VIN).
+	healed, err := repo.HealBlankBOSVehicleFields(ctx, purchaseID)
+	if err != nil || !healed {
+		t.Fatalf("heal blank row: healed=%v err=%v", healed, err)
+	}
+	var year int
+	var make, model, vin string
+	fetch := func() {
+		if err := db.Pool.QueryRow(ctx, `SELECT vehicle_year, vehicle_make, vehicle_model, vin
+			FROM purchase_bill_of_sales WHERE purchase_request_id = $1`, purchaseID).
+			Scan(&year, &make, &model, &vin); err != nil {
+			t.Fatalf("refetch bos: %v", err)
+		}
+	}
+	fetch()
+	if year != 2020 || make != "Test" || model != "Car" {
+		t.Errorf("blank fields not healed from car: year=%d make=%q model=%q", year, make, model)
+	}
+
+	// (2) hand-edited value survives while a re-blanked sibling heals.
+	if _, err := db.Pool.Exec(ctx, `UPDATE purchase_bill_of_sales
+		SET vehicle_make = 'CustomMake', vehicle_model = '' WHERE purchase_request_id = $1`, purchaseID); err != nil {
+		t.Fatalf("hand-edit: %v", err)
+	}
+	if healed, err := repo.HealBlankBOSVehicleFields(ctx, purchaseID); err != nil || !healed {
+		t.Fatalf("heal after hand-edit: healed=%v err=%v", healed, err)
+	}
+	fetch()
+	if make != "CustomMake" {
+		t.Errorf("hand-edited make was overwritten: %q", make)
+	}
+	if model != "Car" {
+		t.Errorf("re-blanked model not healed: %q", model)
+	}
+
+	// (3) seller-signed rows are untouchable, blanks and all.
+	if _, err := db.Pool.Exec(ctx, `UPDATE purchase_bill_of_sales
+		SET seller_signed_at = NOW(), vehicle_model = '' WHERE purchase_request_id = $1`, purchaseID); err != nil {
+		t.Fatalf("sign+blank: %v", err)
+	}
+	if healed, err := repo.HealBlankBOSVehicleFields(ctx, purchaseID); err != nil || healed {
+		t.Fatalf("signed row must never heal: healed=%v err=%v", healed, err)
+	}
+	fetch()
+	if model != "" {
+		t.Errorf("signed row was modified: model=%q", model)
+	}
+}

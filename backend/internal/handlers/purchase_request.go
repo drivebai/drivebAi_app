@@ -1373,6 +1373,16 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("BILL_OF_SALE_NOT_FOUND", "Bill of Sale hasn't been created yet"))
 		return
 	}
+	// Lazy heal (C2): rows seeded blank by the pre-fix Accept bug stayed
+	// blank forever (ON CONFLICT DO NOTHING + nothing backfilled). Re-copy
+	// from the car row — but only genuinely-blank fields, and never on a
+	// seller-signed row (see HealBlankBOSVehicleFields for the line drawn).
+	if healed, healErr := h.repo.HealBlankBOSVehicleFields(r.Context(), id); healErr == nil && healed {
+		if fresh, refetchErr := h.repo.GetBillOfSale(r.Context(), id); refetchErr == nil && fresh != nil {
+			bos = fresh
+			h.logger.Info("purchase: healed blank BoS vehicle fields", "purchase_id", id)
+		}
+	}
 	// Lazy self-heal: if both parties have signed but the finalized PDF was
 	// never produced (e.g. the client missed the WS event, or the async
 	// finalize errored transiently), kick a background regenerate. The
@@ -2310,6 +2320,32 @@ func (h *PurchaseRequestHandler) StartExpiryScanner(ctx context.Context, interva
 		case <-ticker.C:
 			h.runOfferExpiry(ctx)
 			h.runAuthExpiry(ctx)
+			h.runCaptureRetry(ctx)
+		}
+	}
+}
+
+// runCaptureRetry re-attempts Stripe capture for purchases parked at
+// inspection_accepted (C5): the buyer accepted the vehicle but the
+// synchronous capture failed, and previously nothing retried — both parties
+// sat on "Completing payment…" indefinitely. capturePayment's idempotency key
+// is stable per purchase, so a retry of an already-captured intent is a
+// Stripe no-op; success notifications arrive via the payment_intent.succeeded
+// webhook (whose priorStatus guard prevents duplicates). If the auth expired
+// meanwhile, Stripe cancels the intent and the payment_intent.canceled
+// webhook resolves the row — so every stuck row has a way out.
+func (h *PurchaseRequestHandler) runCaptureRetry(ctx context.Context) {
+	// 2m grace so we never race the request-path capture that just started.
+	rows, err := h.repo.ListStuckCaptures(ctx, 2*time.Minute, 50)
+	if err != nil {
+		h.logger.Error("purchase: list stuck captures", "error", err)
+		return
+	}
+	for i := range rows {
+		p := &rows[i]
+		h.logger.Info("purchase: retrying stuck capture", "id", p.ID)
+		if updated := h.capturePayment(ctx, p); updated != nil {
+			h.broadcast("purchase_request_updated", updated, nil)
 		}
 	}
 }
