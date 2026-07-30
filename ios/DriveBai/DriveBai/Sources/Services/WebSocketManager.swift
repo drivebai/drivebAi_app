@@ -60,6 +60,13 @@ final class WebSocketManager: ObservableObject {
     /// without the user reopening the app.
     let profileUpdatedPublisher = PassthroughSubject<String?, Never>()
 
+    /// `car_updated` — a car this user is party to changed server-side
+    /// (keys handed over → reserved, or sale captured → sold). Subscribers
+    /// refetch rather than patch, so no payload is forwarded. OwnerCarsStore
+    /// listens so a just-sold car leaves My Cars live instead of lingering
+    /// with a stale "Resume listing" button until the next manual refresh.
+    let carUpdatedPublisher = PassthroughSubject<Void, Never>()
+
     private var webSocketTask: URLSessionWebSocketTask?
     private let session: URLSession = .shared
     private let keychain: KeychainService = .shared
@@ -282,6 +289,11 @@ final class WebSocketManager: ObservableObject {
             // Payload: { "active_role": "driver" | "car_owner" }
             let role = (try? JSONSerialization.jsonObject(with: payloadData) as? [String: String])?["active_role"]
             profileUpdatedPublisher.send(role)
+        case "car_updated":
+            // {"id":…, "status":"sold"} on sale capture, or
+            // {"id":…, "reserved_by_purchase_request_id":…} on key handover.
+            // Subscribers refetch from the server, so no payload is decoded.
+            carUpdatedPublisher.send()
         default:
             #if DEBUG
             print("[WebSocket] Unknown event type: \(type)")

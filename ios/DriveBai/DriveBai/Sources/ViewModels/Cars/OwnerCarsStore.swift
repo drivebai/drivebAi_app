@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 /// Shared store for managing owner's cars - backend-backed
 @MainActor
@@ -17,6 +18,7 @@ final class OwnerCarsStore: ObservableObject {
     @Published var errorCode: String?
 
     private let apiClient: APIClient
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Computed Properties
 
@@ -40,6 +42,18 @@ final class OwnerCarsStore: ObservableObject {
 
     private init(apiClient: APIClient = .shared) {
         self.apiClient = apiClient
+
+        // Server-side car mutation (sale captured → sold, keys handed over →
+        // reserved) — refetch so My Cars reflects it live. Without this, a
+        // seller whose car sells mid-session keeps a stale "Resume listing"
+        // button until the next manual refresh (the tap is server-rejected
+        // with 404/409 either way; this is presentation, not protection).
+        WebSocketManager.shared.carUpdatedPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                Task { await self?.fetchCars() }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Fetch Cars from Backend
