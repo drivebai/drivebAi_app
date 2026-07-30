@@ -769,7 +769,9 @@ struct BillOfSaleFlowView: View {
     private func chipState(_ step: BoSStep) -> ChipState {
         switch step {
         case .vehicle:
-            let missing = vehicleMake.isEmpty || vehicleModel.isEmpty || vin.isEmpty
+            // Year "0" (a pre-fix blank-seeded row) counts as missing too.
+            let yearMissing = (Int(vehicleYear) ?? 0) <= 0
+            let missing = vehicleMake.isEmpty || vehicleModel.isEmpty || vin.isEmpty || yearMissing
             return missing
                 ? ChipState(icon: "exclamationmark.circle", color: .orange)
                 : ChipState(icon: "checkmark.circle.fill", color: .green)
@@ -949,6 +951,7 @@ struct BillOfSaleFlowView: View {
     private var canSign: Bool {
         if isSeller {
             return !vehicleMake.isEmpty && !vehicleModel.isEmpty && !vin.isEmpty
+                && (Int(vehicleYear) ?? 0) > 0
                 && !sellerName.isEmpty && !sellerAddress.isEmpty
         } else if isBuyer {
             return !buyerName.isEmpty && !buyerAddress.isEmpty
@@ -1214,7 +1217,8 @@ struct BillOfSaleFlowView: View {
             let saleClean = !dirty.contains(.sale)
             let sellerClean = !dirty.contains(.seller)
             if vehicleClean {
-                vehicleYear = String(domain.vehicleYear)
+                // 0 = blank-seeded legacy row; show an empty field, not "0".
+                vehicleYear = domain.vehicleYear > 0 ? String(domain.vehicleYear) : ""
                 vehicleMake = domain.vehicleMake
                 vehicleModel = domain.vehicleModel
                 vin = domain.vin
@@ -1234,7 +1238,7 @@ struct BillOfSaleFlowView: View {
         } else {
             // Buyer viewer: vehicle / sale / seller are read-only, so
             // always snap to backend truth.
-            vehicleYear = String(domain.vehicleYear)
+            vehicleYear = domain.vehicleYear > 0 ? String(domain.vehicleYear) : ""
             vehicleMake = domain.vehicleMake
             vehicleModel = domain.vehicleModel
             vin = domain.vin
