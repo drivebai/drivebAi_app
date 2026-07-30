@@ -10,7 +10,7 @@ import StarRating from '../components/StarRating.vue'
 import { adminApi } from '../api/admin'
 import type { AdminUser, AdminUserDocument } from '../api/types'
 import { useToastStore } from '../stores/toast'
-import { fmtDate } from '../utils/format'
+import { fmtDate, imgUrl } from '../utils/format'
 
 const toast = useToastStore()
 const router = useRouter()
@@ -141,6 +141,17 @@ function docStatusTone(s: string): 'success' | 'danger' | 'warning' {
 function docIsImage(doc: AdminUserDocument) {
   if (doc.mime_type?.startsWith('image/')) return true
   return /\.(jpe?g|png|webp|heic)$/i.test(doc.file_url.split('?')[0] ?? '')
+}
+
+// In-console document preview (same pattern as Support.vue's attachment
+// modal): { url, mime } while open, null while closed. url is absolute via
+// imgUrl() so it hits the API host, not the SPA.
+const docPreview = ref<{ url: string; mime: string } | null>(null)
+function openDocPreview(doc: AdminUserDocument) {
+  docPreview.value = {
+    url: imgUrl(doc.file_url) || '',
+    mime: doc.mime_type || (docIsImage(doc) ? 'image/jpeg' : 'application/pdf'),
+  }
 }
 
 // --- block confirm ---
@@ -444,16 +455,21 @@ function onboardingLabel(s: string) {
             <strong>{{ docLabel(doc.type) }}</strong>
             <StatusBadge :label="docStatusLabel(doc.status)" :tone="docStatusTone(doc.status)" />
           </div>
-          <a :href="doc.file_url" target="_blank" rel="noopener" class="doc-link">
+          <!-- In-console preview. The raw file_url is a RELATIVE signed path;
+               opened in a new tab it resolved against the admin origin, whose
+               SPA fallback served index.html → the router bounced to /users
+               (the client's "it just shows the user list again"). imgUrl()
+               prefixes the API base and preserves the ?sig=&exp= query. -->
+          <button type="button" class="doc-link" @click="openDocPreview(doc)">
             <img
               v-if="docIsImage(doc)"
-              :src="doc.file_url"
+              :src="imgUrl(doc.file_url)"
               :alt="docLabel(doc.type)"
               class="doc-image"
               loading="lazy"
             />
-            <span v-else>Open {{ doc.file_name }}</span>
-          </a>
+            <span v-else class="doc-open-file">Open {{ doc.file_name }}</span>
+          </button>
           <div class="doc-actions">
             <button
               class="primary"
@@ -586,6 +602,19 @@ function onboardingLabel(s: string) {
     @confirm="confirmBlock"
     @cancel="pendingBlock = null"
   />
+
+  <!-- In-console document preview (licence etc.) — images inline, PDFs in an
+       embedded frame; "Open in new tab" (now absolute-URL'd) as a fallback. -->
+  <div v-if="docPreview" class="preview-overlay" @click.self="docPreview = null">
+    <div class="preview-modal">
+      <div class="preview-bar">
+        <a :href="docPreview.url" target="_blank" rel="noopener" class="preview-link">Open in new tab ↗</a>
+        <button type="button" class="preview-close" aria-label="Close preview" @click="docPreview = null">×</button>
+      </div>
+      <img v-if="docPreview.mime.startsWith('image/')" :src="docPreview.url" class="preview-img" />
+      <iframe v-else :src="docPreview.url" class="preview-frame" title="Document preview" />
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -626,11 +655,65 @@ select { width: 160px; }
   display: flex; flex-direction: column; gap: 10px;
 }
 .doc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.doc-link { display: block; }
+.doc-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+.doc-open-file { color: var(--accent-strong); font-size: 13px; font-weight: 600; }
 .doc-image {
   display: block; width: 100%; max-height: 260px; object-fit: contain;
   border-radius: 8px; background: var(--bg); border: 1px solid var(--border);
 }
+
+/* ── In-console document preview modal (same pattern as Support.vue) ── */
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(17, 24, 39, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.preview-modal {
+  background: var(--surface);
+  border-radius: var(--radius);
+  width: min(900px, 92vw);
+  height: min(90vh, 1000px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.preview-link { font-size: 13px; color: var(--accent-strong); text-decoration: none; }
+.preview-link:hover { text-decoration: underline; }
+.preview-close {
+  width: 32px; height: 32px;
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.preview-close:hover { background: var(--bg); color: var(--text); }
+.preview-frame { flex: 1; width: 100%; border: none; }
+.preview-img { flex: 1; width: 100%; object-fit: contain; background: var(--bg); min-height: 0; }
 .doc-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .modal textarea {
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
