@@ -47,7 +47,6 @@
 		E0000001000000000000001C /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000C /* KeychainService.swift */; };
 		E0000001000000000000001D /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000D /* APIClient.swift */; };
 		E0000001000000000000001E /* AuthStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000E /* AuthStore.swift */; };
-		F3CECA0001000000000000001 /* GuestOnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3CECA0002000000000000001 /* GuestOnboardingStore.swift */; };
 		E0000001000000000000001F /* Styles.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0000001000000000000000F /* Styles.swift */; };
 		E00000010000000000000020 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000010 /* LoginView.swift */; };
 		E00000010000000000000024 /* ForgotPasswordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000014 /* ForgotPasswordView.swift */; };
@@ -89,8 +88,6 @@
 		E000000100000000000000A1 /* LikedListingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000A0 /* LikedListingsStore.swift */; };
 		E000000100000000000000A3 /* RemoteImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000A2 /* RemoteImage.swift */; };
 		E000000100000000000000B3 /* DiscoverMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000B0 /* DiscoverMapView.swift */; };
-		F2BECA0001000000000000001 /* GuestTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BECA0002000000000000001 /* GuestTabView.swift */; };
-		F4DECA0001000000000000001 /* HowDriveBaiWorksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DECA0002000000000000001 /* HowDriveBaiWorksView.swift */; };
 		E000000100000000000000B4 /* CarLocationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000B1 /* CarLocationMapView.swift */; };
 		E000000100000000000000B5 /* OwnerEditCarLocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000B2 /* OwnerEditCarLocationView.swift */; };
 		E000000100000000000000D3 /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000000C0 /* ChatModels.swift */; };
@@ -131,10 +128,6 @@
 		E00000010000000000000371 /* SupportChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000370 /* SupportChatView.swift */; };
 		E000000100000000000003A1 /* SupportInboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003A0 /* SupportInboxStore.swift */; };
 		E000000100000000000003B1 /* AccidentAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003B0 /* AccidentAPIModels.swift */; };
-		F600010000000000000000B1 /* TicketAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F600010000000000000000B0 /* TicketAPIModels.swift */; };
-		F610010000000000000000B1 /* TicketFlowViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F610010000000000000000B0 /* TicketFlowViewModel.swift */; };
-		F620010000000000000000B1 /* TicketFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F620010000000000000000B0 /* TicketFlowView.swift */; };
-		F630010000000000000000B1 /* SupportRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F630010000000000000000B0 /* SupportRequestsView.swift */; };
 		E000000100000000000003C1 /* AccidentReportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003C0 /* AccidentReportViewModel.swift */; };
 		E000000100000000000003D1 /* AccidentReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E000000100000000000003D0 /* AccidentReportView.swift */; };
 		E00000010000000000000401 /* PickupCountdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E00000010000000000000400 /* PickupCountdownView.swift */; };
@@ -153,16 +146,23 @@
 		F0DECA0001000000000000002 /* TourCatalogue.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000002 /* TourCatalogue.swift */; };
 		F0DECA0001000000000000003 /* TourLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000003 /* TourLogic.swift */; };
 		F0DECA0001000000000000004 /* ProductTourAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000004 /* ProductTourAnalytics.swift */; };
-		F1AECA0001000000000000001 /* ReviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AECA0002000000000000001 /* ReviewModels.swift */; };
-		F1AECA0001000000000000002 /* RatingPromptSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AECA0002000000000000002 /* RatingPromptSheet.swift */; };
 		F0DECA0001000000000000005 /* TourProgressAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000005 /* TourProgressAPI.swift */; };
 		F0DECA0001000000000000006 /* TourProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000006 /* TourProgressStore.swift */; };
 		F0DECA0001000000000000007 /* ProductTourCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000007 /* ProductTourCoordinator.swift */; };
 		F0DECA0001000000000000008 /* SpotlightOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000008 /* SpotlightOverlay.swift */; };
 		F0DECA0001000000000000009 /* TabBarSpotlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000009 /* TabBarSpotlight.swift */; };
-		F5EECA0001000000000000009 /* OverlayGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EECA0002000000000000009 /* OverlayGeometry.swift */; };
 		F0DECA000100000000000000A /* GettingStartedCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA000200000000000000A /* GettingStartedCard.swift */; };
+		F1AECA0001000000000000001 /* ReviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AECA0002000000000000001 /* ReviewModels.swift */; };
+		F1AECA0001000000000000002 /* RatingPromptSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AECA0002000000000000002 /* RatingPromptSheet.swift */; };
+		F2BECA0001000000000000001 /* GuestTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BECA0002000000000000001 /* GuestTabView.swift */; };
 		F35542ECB7F4C82C17922ACD /* PDFKitRepresentedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F42ED8594EFB3B9A17214 /* PDFKitRepresentedView.swift */; };
+		F3CECA0001000000000000001 /* GuestOnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3CECA0002000000000000001 /* GuestOnboardingStore.swift */; };
+		F4DECA0001000000000000001 /* HowDriveBaiWorksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DECA0002000000000000001 /* HowDriveBaiWorksView.swift */; };
+		F5EECA0001000000000000009 /* OverlayGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EECA0002000000000000009 /* OverlayGeometry.swift */; };
+		F600010000000000000000B1 /* TicketAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F600010000000000000000B0 /* TicketAPIModels.swift */; };
+		F610010000000000000000B1 /* TicketFlowViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F610010000000000000000B0 /* TicketFlowViewModel.swift */; };
+		F620010000000000000000B1 /* TicketFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F620010000000000000000B0 /* TicketFlowView.swift */; };
+		F630010000000000000000B1 /* SupportRequestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F630010000000000000000B0 /* SupportRequestsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -227,7 +227,6 @@
 		E0000001000000000000000C /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		E0000001000000000000000D /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		E0000001000000000000000E /* AuthStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthStore.swift; sourceTree = "<group>"; };
-		F3CECA0002000000000000001 /* GuestOnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestOnboardingStore.swift; sourceTree = "<group>"; };
 		E0000001000000000000000F /* Styles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Styles.swift; sourceTree = "<group>"; };
 		E00000010000000000000010 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		E00000010000000000000014 /* ForgotPasswordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForgotPasswordView.swift; sourceTree = "<group>"; };
@@ -270,8 +269,6 @@
 		E000000100000000000000A0 /* LikedListingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedListingsStore.swift; sourceTree = "<group>"; };
 		E000000100000000000000A2 /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
 		E000000100000000000000B0 /* DiscoverMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverMapView.swift; sourceTree = "<group>"; };
-		F2BECA0002000000000000001 /* GuestTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestTabView.swift; sourceTree = "<group>"; };
-		F4DECA0002000000000000001 /* HowDriveBaiWorksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HowDriveBaiWorksView.swift; sourceTree = "<group>"; };
 		E000000100000000000000B1 /* CarLocationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarLocationMapView.swift; sourceTree = "<group>"; };
 		E000000100000000000000B2 /* OwnerEditCarLocationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerEditCarLocationView.swift; sourceTree = "<group>"; };
 		E000000100000000000000C0 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
@@ -312,10 +309,6 @@
 		E00000010000000000000370 /* SupportChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportChatView.swift; sourceTree = "<group>"; };
 		E000000100000000000003A0 /* SupportInboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportInboxStore.swift; sourceTree = "<group>"; };
 		E000000100000000000003B0 /* AccidentAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentAPIModels.swift; sourceTree = "<group>"; };
-		F600010000000000000000B0 /* TicketAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketAPIModels.swift; sourceTree = "<group>"; };
-		F610010000000000000000B0 /* TicketFlowViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketFlowViewModel.swift; sourceTree = "<group>"; };
-		F620010000000000000000B0 /* TicketFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketFlowView.swift; sourceTree = "<group>"; };
-		F630010000000000000000B0 /* SupportRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportRequestsView.swift; sourceTree = "<group>"; };
 		E000000100000000000003C0 /* AccidentReportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportViewModel.swift; sourceTree = "<group>"; };
 		E000000100000000000003D0 /* AccidentReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccidentReportView.swift; sourceTree = "<group>"; };
 		E00000010000000000000400 /* PickupCountdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickupCountdownView.swift; sourceTree = "<group>"; };
@@ -335,17 +328,24 @@
 		F0DECA0002000000000000002 /* TourCatalogue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourCatalogue.swift; path = DriveBai/Sources/Onboarding/TourCatalogue.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000003 /* TourLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourLogic.swift; path = DriveBai/Sources/Onboarding/TourLogic.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000004 /* ProductTourAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProductTourAnalytics.swift; path = DriveBai/Sources/Onboarding/ProductTourAnalytics.swift; sourceTree = SOURCE_ROOT; };
-		F1AECA0002000000000000001 /* ReviewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReviewModels.swift; path = DriveBai/Sources/Models/Reviews/ReviewModels.swift; sourceTree = SOURCE_ROOT; };
-		F1AECA0002000000000000002 /* RatingPromptSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RatingPromptSheet.swift; path = DriveBai/Sources/Views/Reviews/RatingPromptSheet.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000005 /* TourProgressAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourProgressAPI.swift; path = DriveBai/Sources/Onboarding/TourProgressAPI.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000006 /* TourProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourProgressStore.swift; path = DriveBai/Sources/Onboarding/TourProgressStore.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000007 /* ProductTourCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProductTourCoordinator.swift; path = DriveBai/Sources/Onboarding/ProductTourCoordinator.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000008 /* SpotlightOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpotlightOverlay.swift; path = DriveBai/Sources/Onboarding/SpotlightOverlay.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000009 /* TabBarSpotlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TabBarSpotlight.swift; path = DriveBai/Sources/Onboarding/TabBarSpotlight.swift; sourceTree = SOURCE_ROOT; };
-		F5EECA0002000000000000009 /* OverlayGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OverlayGeometry.swift; path = DriveBai/Sources/Onboarding/OverlayGeometry.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA000200000000000000A /* GettingStartedCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GettingStartedCard.swift; path = DriveBai/Sources/Onboarding/GettingStartedCard.swift; sourceTree = SOURCE_ROOT; };
+		F1AECA0002000000000000001 /* ReviewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReviewModels.swift; path = DriveBai/Sources/Models/Reviews/ReviewModels.swift; sourceTree = SOURCE_ROOT; };
+		F1AECA0002000000000000002 /* RatingPromptSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RatingPromptSheet.swift; path = DriveBai/Sources/Views/Reviews/RatingPromptSheet.swift; sourceTree = SOURCE_ROOT; };
 		F23642CA82731C1438425E6D /* ImagePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ImagePipeline.swift; path = DriveBai/Sources/Services/ImagePipeline.swift; sourceTree = SOURCE_ROOT; };
+		F2BECA0002000000000000001 /* GuestTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestTabView.swift; sourceTree = "<group>"; };
+		F3CECA0002000000000000001 /* GuestOnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestOnboardingStore.swift; sourceTree = "<group>"; };
 		F42541A6ADADAAC2EF8371F5 /* KeyHandoverModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverModels.swift; path = DriveBai/Sources/Models/KeyHandover/KeyHandoverModels.swift; sourceTree = SOURCE_ROOT; };
+		F4DECA0002000000000000001 /* HowDriveBaiWorksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HowDriveBaiWorksView.swift; sourceTree = "<group>"; };
+		F5EECA0002000000000000009 /* OverlayGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OverlayGeometry.swift; path = DriveBai/Sources/Onboarding/OverlayGeometry.swift; sourceTree = SOURCE_ROOT; };
+		F600010000000000000000B0 /* TicketAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketAPIModels.swift; sourceTree = "<group>"; };
+		F610010000000000000000B0 /* TicketFlowViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketFlowViewModel.swift; sourceTree = "<group>"; };
+		F620010000000000000000B0 /* TicketFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TicketFlowView.swift; sourceTree = "<group>"; };
+		F630010000000000000000B0 /* SupportRequestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportRequestsView.swift; sourceTree = "<group>"; };
 		F71D43E99C9CCB27E9C8FA57 /* KeyHandoverDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KeyHandoverDetailView.swift; path = DriveBai/Sources/Views/KeyHandover/KeyHandoverDetailView.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -1094,7 +1094,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
@@ -1125,7 +1125,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
@@ -1277,7 +1277,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DriveBai/DriveBai.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
@@ -1312,7 +1312,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DriveBai/DriveBai.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
