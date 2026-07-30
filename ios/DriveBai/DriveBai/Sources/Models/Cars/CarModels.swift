@@ -513,6 +513,12 @@ struct Car: Identifiable, Equatable, Hashable {
     /// the car goes live. Defaults to `true` for locally-constructed cars.
     var isApproved: Bool
     var isPaused: Bool
+    /// Another buyer's purchase of this car is past acceptance and not yet
+    /// terminal (server-computed, listings payload only). Discover disables
+    /// "Buy this car" for everyone else; the buyer party to the purchase
+    /// still sees their own "Purchase in progress" CTA, which takes
+    /// precedence in ListingDetailView.
+    var hasActivePurchase: Bool
 
     // Media
     var photoSlots: [CarPhotoSlot]
@@ -575,7 +581,8 @@ struct Car: Identifiable, Equatable, Hashable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         activeRental: ActiveRentalSummary? = nil,
-        isSold: Bool = false
+        isSold: Bool = false,
+        hasActivePurchase: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -598,6 +605,7 @@ struct Car: Identifiable, Equatable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.activeRental = activeRental
+        self.hasActivePurchase = hasActivePurchase
         self.isSold = isSold
     }
 }

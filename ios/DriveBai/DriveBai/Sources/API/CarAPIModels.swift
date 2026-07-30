@@ -31,6 +31,7 @@ struct CarAPIResponse: Codable {
     /// so non-owner / older endpoints that omit the key don't break the whole
     /// response — a missing value is treated as approved (see `toCar`).
     let isApproved: Bool?
+    let hasActivePurchase: Bool?
     let isPaused: Bool
     let rentedWeeks: Int
     let totalEarned: Double
@@ -54,6 +55,7 @@ struct CarAPIResponse: Codable {
         case salePrice = "sale_price"
         case currency, requirements, status
         case isApproved = "is_approved"
+        case hasActivePurchase = "has_active_purchase"
         case isPaused = "is_paused"
         case rentedWeeks = "rented_weeks"
         case totalEarned = "total_earned"
@@ -474,7 +476,8 @@ extension CarAPIResponse {
             activeRental: activeRental?.toDomain(),
             // CarListingStatus has no .sold case (see Car.isSold docs), so a
             // sold car decodes with status fallback .pending + this flag set.
-            isSold: status.lowercased() == "sold"
+            isSold: status.lowercased() == "sold",
+            hasActivePurchase: hasActivePurchase ?? false
         )
     }
 }

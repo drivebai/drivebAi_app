@@ -1273,7 +1273,13 @@ struct ListingDetailView: View {
 
                 if car.isForSale {
                     if let purchase = activePurchase {
+                        // My own purchase always wins — I stay in my flow.
                         purchaseInProgressCTA(purchase)
+                    } else if car.hasActivePurchase {
+                        // Another buyer's purchase is past acceptance: the
+                        // server would 409 CAR_SALE_IN_PROGRESS anyway, so
+                        // don't offer a green button that can only fail.
+                        saleInProgressNotice
                     } else {
                         buyThisCarButton
                     }
@@ -1325,6 +1331,29 @@ struct ListingDetailView: View {
     /// Replacement CTA shown when the buyer already has a non-terminal
     /// purchase for this car: a status pill + a "View purchase" action that
     /// routes to the existing purchase card in Chat → Requests.
+    /// Shown to OTHER viewers while some buyer's purchase of this car is past
+    /// acceptance and in flight. Not a button — there is nothing to do but
+    /// wait; the listing frees automatically if that purchase falls through.
+    private var saleInProgressNotice: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.badge.exclamationmark")
+                Text("Sale in progress")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color(.systemGray5))
+            .cornerRadius(12)
+
+            Text("Another buyer is completing a purchase. If it falls through, the car becomes available again.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
     private func purchaseInProgressCTA(_ purchase: PurchaseRequest) -> some View {
         let waitingOnSeller = purchase.status == .requested
         return VStack(spacing: 10) {
