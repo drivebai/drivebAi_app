@@ -528,7 +528,16 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 			c.is_for_rent, c.weekly_rent_price, c.is_for_sale, c.sale_price, c.currency,
 			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
 			c.status, c.is_paused, c.is_approved, c.rented_weeks, c.total_earned,
-			c.created_at, c.updated_at
+			c.created_at, c.updated_at,
+			EXISTS (
+				SELECT 1 FROM purchase_requests pr
+				WHERE pr.car_id = c.id
+				  AND pr.status IN (
+				    'accepted','bos_pending_seller','bos_pending_buyer','bos_signed',
+				    'payment_authorized','handover_scheduled','awaiting_inspection',
+				    'inspection_accepted','inspection_rejected'
+				  )
+			) AS has_active_purchase
 		FROM cars c
 		JOIN users u ON u.id = c.owner_id
 		WHERE c.is_paused = false
@@ -575,6 +584,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
 			&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 			&car.CreatedAt, &car.UpdatedAt,
+			&car.HasActivePurchase,
 		)
 		if err != nil {
 			return nil, err

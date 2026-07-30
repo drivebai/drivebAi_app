@@ -612,6 +612,10 @@ const (
 	ErrCodeCarNotForSale             = "CAR_NOT_FOR_SALE"
 	ErrCodeCarSold                   = "CAR_SOLD"
 	ErrCodeDuplicatePurchase         = "DUPLICATE_ACTIVE_REQUEST"
+	// Another buyer's purchase of this car is past acceptance and not yet
+	// terminal — no new offer may be created and no second offer accepted
+	// until it resolves (completes, or falls through and self-releases).
+	ErrCodeCarSaleInProgress = "CAR_SALE_IN_PROGRESS"
 	ErrCodeInvalidPurchaseAction     = "INVALID_PURCHASE_ACTION"
 	ErrCodeBOSLocked                 = "BOS_LOCKED"
 	ErrCodeBOSNotSigned              = "BOS_NOT_SIGNED"
@@ -644,6 +648,7 @@ var (
 	ErrCarNotForSale         = &APIError{Code: ErrCodeCarNotForSale, Message: "This car is not currently listed for sale"}
 	ErrCarSold               = &APIError{Code: ErrCodeCarSold, Message: "This car has already been sold or is reserved for another purchase"}
 	ErrDuplicatePurchase     = &APIError{Code: ErrCodeDuplicatePurchase, Message: "You already have an active purchase offer for this car"}
+	ErrCarSaleInProgress     = &APIError{Code: ErrCodeCarSaleInProgress, Message: "Another buyer's purchase of this car is already in progress"}
 	ErrInvalidPurchaseAction = &APIError{Code: ErrCodeInvalidPurchaseAction, Message: "This action is not allowed for the current purchase state"}
 	// ErrBOSSelfLocked is returned by PATCH /bos and /bos/buyer-fields when
 	// the current caller's role has already signed. iOS shows this to the

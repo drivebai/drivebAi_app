@@ -169,6 +169,56 @@ func (r *PurchaseRequestRepository) GetActiveByCarAndBuyer(ctx context.Context, 
 	return p, nil
 }
 
+// HasBlockingPurchase reports whether the car has a purchase at `accepted`
+// or later that is not terminal — the reservation predicate. A bare
+// `requested` offer does NOT block (sellers may field several offers); every
+// failure path (declined/cancelled/expired/expired_auth/rejected_refunded)
+// is a terminal status, so the car self-releases the moment a purchase falls
+// through — there is no stored flag to go stale. excludeID lets Accept skip
+// the row it is itself accepting (pass uuid.Nil from Create).
+func (r *PurchaseRequestRepository) HasBlockingPurchase(ctx context.Context, carID, excludeID uuid.UUID) (bool, error) {
+	var blocked bool
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM purchase_requests
+			WHERE car_id = $1
+			  AND id <> $2
+			  AND status IN (
+			    'accepted','bos_pending_seller','bos_pending_buyer','bos_signed',
+			    'payment_authorized','handover_scheduled','awaiting_inspection',
+			    'inspection_accepted','inspection_rejected'
+			  )
+		)`, carID, excludeID).Scan(&blocked)
+	if err != nil {
+		return false, fmt.Errorf("has blocking purchase: %w", err)
+	}
+	return blocked, nil
+}
+
+// MarkPaymentFailed records a Stripe payment_intent.payment_failed for the
+// purchase owning the intent: payment_status = 'failed', nothing else. The
+// purchase status is deliberately untouched — a failed authorization leaves
+// the row at bos_signed so the buyer can simply retry, and a failed capture
+// stays at inspection_accepted for the retry path. Never downgrades a
+// payment that already succeeded (late/duplicate webhook delivery).
+func (r *PurchaseRequestRepository) MarkPaymentFailed(ctx context.Context, intentID string) (*models.PurchaseRequest, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE purchase_requests
+		SET payment_status = 'failed',
+		    updated_at = NOW()
+		WHERE payment_intent_id = $1
+		  AND payment_status IS DISTINCT FROM 'succeeded'
+		RETURNING `+purchaseRequestColumns, intentID)
+	p, err := scanPurchaseRequest(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("mark payment failed: %w", err)
+	}
+	return p, nil
+}
+
 // GetByPaymentIntentID returns the row whose Stripe intent id matches.
 // Used by the webhook handler.
 func (r *PurchaseRequestRepository) GetByPaymentIntentID(ctx context.Context, intentID string) (*models.PurchaseRequest, error) {

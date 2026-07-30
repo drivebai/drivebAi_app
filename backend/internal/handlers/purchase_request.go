@@ -514,6 +514,21 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 		httputil.WriteError(w, http.StatusConflict, models.ErrDuplicatePurchase)
 		return
 	}
+	// Reservation guard: once ANY buyer's purchase is past acceptance and not
+	// terminal, no other buyer may open a new offer — otherwise buyer B can
+	// authorize a payment hold on a car mid-sale to buyer A. Self-releasing:
+	// the predicate is computed from purchase statuses, so a declined/
+	// cancelled/expired/refunded purchase frees the car with no cleanup step.
+	// (Checked AFTER the duplicate check so the original buyer still gets
+	// their own DUPLICATE_ACTIVE_REQUEST, not a misleading sale-in-progress.)
+	if blocked, err := h.repo.HasBlockingPurchase(r.Context(), carID, uuid.Nil); err != nil {
+		h.logger.Error("purchase: reservation check", "car_id", carID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	} else if blocked {
+		httputil.WriteError(w, http.StatusConflict, models.ErrCarSaleInProgress)
+		return
+	}
 
 	chatID, err := h.findOrCreatePurchaseChat(r.Context(), carID, userID, car.OwnerID)
 	if err != nil {
@@ -633,6 +648,18 @@ func (h *PurchaseRequestHandler) Accept(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidPurchaseAction)
+		return
+	}
+
+	// Seller-side reservation guard (mirror of Create's): accepting offer B
+	// while offer A is already past acceptance would run two concurrent
+	// sales of one car. The row being accepted is excluded from the check.
+	if blocked, err := h.repo.HasBlockingPurchase(r.Context(), existing.CarID, existing.ID); err != nil {
+		h.logger.Error("purchase.accept: reservation check", "purchase_id", id, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	} else if blocked {
+		httputil.WriteError(w, http.StatusConflict, models.ErrCarSaleInProgress)
 		return
 	}
 
@@ -2230,6 +2257,19 @@ func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventTyp
 						fmt.Sprintf("The buyer's payment of %s is complete. Funds are on the way.", amount))
 				}
 			}
+		}
+	case "payment_intent.payment_failed":
+		// Previously dropped on the floor: a buyer whose card declined
+		// OUTSIDE the open PaymentSheet (backgrounded app, async issuer
+		// decline) was never told and the row kept payment_status as-is.
+		// Record it and tell the buyer to retry; the purchase status is
+		// untouched, so the existing "Authorize payment" CTA doubles as
+		// the retry button.
+		if p, err := h.repo.MarkPaymentFailed(ctx, intentID); err == nil && p != nil {
+			h.broadcast("purchase_payment_updated", p, map[string]any{"payment_status": "failed"})
+			h.notifyPurchaseParty(p, p.BuyerID, models.NotificationTypePurchasePayment,
+				"Payment failed",
+				"Your payment didn't go through — you were not charged. Open the purchase and try again.")
 		}
 	case "payment_intent.canceled":
 		p, err := h.repo.GetByPaymentIntentID(ctx, intentID)

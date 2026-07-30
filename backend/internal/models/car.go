@@ -175,6 +175,13 @@ type Car struct {
 	// the raw Car JSON — surfaced to clients via CarResponse.IsApproved.
 	IsApproved bool `json:"-"`
 
+	// HasActivePurchase is a computed (not stored) flag: another buyer's
+	// purchase of this car is past acceptance and not terminal. Populated
+	// only by the listings query so Discover can disable "Buy this car"
+	// for everyone else while a sale is in flight; the server-side guard
+	// (HasBlockingPurchase in Create/Accept) is the real enforcement.
+	HasActivePurchase bool `json:"-"`
+
 	// Stats
 	RentedWeeks int     `json:"rented_weeks"`
 	TotalEarned float64 `json:"total_earned"`
@@ -278,6 +285,12 @@ type CarResponse struct {
 	// yet visible in Discover; true means approved (and, when status is
 	// available and not paused, live).
 	IsApproved bool `json:"is_approved"`
+
+	// HasActivePurchase: another buyer's purchase of this car is past
+	// acceptance and not yet terminal. Clients disable/relabel the Buy CTA
+	// for other viewers; the buyer party to the purchase still sees their
+	// own "Purchase in progress" state from the Today feed.
+	HasActivePurchase bool `json:"has_active_purchase"`
 
 	// Stats
 	RentedWeeks int     `json:"rented_weeks"`
@@ -408,15 +421,16 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 			DepositAmount:     c.DepositAmount,
 			InsuranceCoverage: c.InsuranceCoverage,
 		},
-		Status:      c.Status,
-		IsPaused:    c.IsPaused,
-		IsApproved:  c.IsApproved,
-		RentedWeeks: c.RentedWeeks,
-		TotalEarned: c.TotalEarned,
-		Photos:      make([]CarPhotoResponse, 0),
-		Documents:   make([]CarDocumentResponse, 0),
-		CreatedAt:   RFC3339Time(c.CreatedAt),
-		UpdatedAt:   RFC3339Time(c.UpdatedAt),
+		Status:            c.Status,
+		IsPaused:          c.IsPaused,
+		IsApproved:        c.IsApproved,
+		HasActivePurchase: c.HasActivePurchase,
+		RentedWeeks:       c.RentedWeeks,
+		TotalEarned:       c.TotalEarned,
+		Photos:            make([]CarPhotoResponse, 0),
+		Documents:         make([]CarDocumentResponse, 0),
+		CreatedAt:         RFC3339Time(c.CreatedAt),
+		UpdatedAt:         RFC3339Time(c.UpdatedAt),
 	}
 
 	// Handle nullable fields
