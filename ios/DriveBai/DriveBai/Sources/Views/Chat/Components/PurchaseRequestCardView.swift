@@ -466,10 +466,16 @@ struct BillOfSalePDFRow: View {
     var isTourTarget: Bool = false
 
     @State private var showPreview = false
+    @State private var showTitlePreview = false
 
     private var bothSigned: Bool { billOfSale?.isFullySigned == true }
     private var pdfURL: String? {
         guard let url = billOfSale?.finalizedPdfUrl, !url.isEmpty else { return nil }
+        return url
+    }
+    private var titleURL: String? {
+        guard billOfSale?.titleUploaded == true,
+              let url = billOfSale?.titleDocumentUrl, !url.isEmpty else { return nil }
         return url
     }
 
@@ -480,6 +486,37 @@ struct BillOfSalePDFRow: View {
             } else {
                 preparingRow
             }
+            // C3: post-signing the BoS wizard and InspectionView are
+            // unmountable, which left paymentAuthorized/handoverScheduled/
+            // completed with a BoS PDF one tap away but NO route to the
+            // title. The signed title URL is already in this card's model —
+            // surface it beside the PDF row.
+            if let url = titleURL {
+                titleButton(url: url)
+            }
+        }
+    }
+
+    private func titleButton(url: String) -> some View {
+        Button {
+            showTitlePreview = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                Text("View Title")
+            }
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(Color.driveBaiPrimary.opacity(0.12))
+            .foregroundColor(.driveBaiPrimary)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showTitlePreview) {
+            DocumentPreviewSheet(
+                source: .remoteURL(url, filename: "Vehicle Title")
+            )
         }
     }
 
