@@ -51,3 +51,20 @@ func TestPaymentFailed_WiredIntoStripeEvents(t *testing.T) {
 		t.Error("payment_failed branch must record via repo.MarkPaymentFailed")
 	}
 }
+
+// TestLicenceGate_WiredIntoLeaseCreate (F2a): a rejected/missing licence must
+// block NEW lease requests — and only there (locked decision: never rip a
+// driver out of an active rental).
+func TestLicenceGate_WiredIntoLeaseCreate(t *testing.T) {
+	src, err := os.ReadFile("lease_request.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := extractFunc(t, string(src), "func (h *LeaseRequestHandler) CreateLeaseRequest(")
+	if !strings.Contains(body, "HasRequiredDocuments(") {
+		t.Error("CreateLeaseRequest must gate on docRepo.HasRequiredDocuments")
+	}
+	if !strings.Contains(body, "DRIVER_LICENSE_INVALID") {
+		t.Error("CreateLeaseRequest must reject with DRIVER_LICENSE_INVALID naming the re-upload path")
+	}
+}

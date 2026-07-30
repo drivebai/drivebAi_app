@@ -101,6 +101,18 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// F2(a), locked decision: a driver whose licence was declined by admin
+	// (or is missing) may not START a new rental. Scoped deliberately to
+	// request-creation only — active rentals and anything already committed
+	// are untouched. HasRequiredDocuments excludes rejected licences, so
+	// this is the same gate onboarding and mode-switching already use.
+	if hasDocs, derr := h.docRepo.HasRequiredDocuments(r.Context(), userID); derr == nil && !hasDocs {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError(
+			"DRIVER_LICENSE_INVALID",
+			"Your driver's license was declined or is missing. Upload a new copy in Profile → My documents to book a car."))
+		return
+	}
+
 	listingID, err := uuid.Parse(chi.URLParam(r, "listingId"))
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid listing ID"))
