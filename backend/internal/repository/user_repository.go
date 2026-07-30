@@ -264,6 +264,27 @@ func (r *UserRepository) EmailExists(ctx context.Context, email string) (bool, e
 	return exists, err
 }
 
+// PhoneExists mirrors EmailExists for the A3 phone-uniqueness flow. Callers
+// pass a NORMALIZED E.164 value (models.NormalizePhone); junk legacy phones
+// that never normalized are invisible to this check by construction, matching
+// the partial unique index predicate.
+func (r *UserRepository) PhoneExists(ctx context.Context, phone string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM users WHERE phone = $1)`
+	var exists bool
+	err := r.db.Pool.QueryRow(ctx, query, phone).Scan(&exists)
+	return exists, err
+}
+
+// PhoneExistsExcludingUser is the UpdateProfile-side companion (the VIN
+// ExistsByVINExcludingID pattern): lets a user round-trip their own phone
+// unchanged without a false-positive 409.
+func (r *UserRepository) PhoneExistsExcludingUser(ctx context.Context, phone string, excludeID uuid.UUID) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM users WHERE phone = $1 AND id <> $2)`
+	var exists bool
+	err := r.db.Pool.QueryRow(ctx, query, phone, excludeID).Scan(&exists)
+	return exists, err
+}
+
 // OTP Rate Limiting
 
 func (r *UserRepository) GetOTPSendCount(ctx context.Context, email string, since time.Time) (int, error) {

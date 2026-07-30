@@ -147,10 +147,28 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create user - no email verification required
+	// Create user - no email verification required. Phone (optional) is
+	// stored NORMALIZED (E.164) and checked for uniqueness the same way the
+	// email is above; the partial unique index (migration 000041) is the
+	// race backstop.
 	var phone *string
 	if req.Phone != "" {
-		phone = &req.Phone
+		normalized, ok := models.NormalizePhone(req.Phone)
+		if !ok {
+			WriteError(w, http.StatusBadRequest, models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234"))
+			return
+		}
+		taken, perr := h.userRepo.PhoneExists(ctx, normalized)
+		if perr != nil {
+			h.logger.Error("failed to check phone", "error", perr)
+			WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if taken {
+			WriteError(w, http.StatusConflict, models.ErrPhoneTaken)
+			return
+		}
+		phone = &normalized
 	}
 
 	// Set initial onboarding status based on whether role was provided
@@ -563,6 +581,37 @@ func (h *AuthHandler) CheckEmail(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, CheckEmailResponse{Available: !exists})
 }
 
+type CheckPhoneRequest struct {
+	Phone string `json:"phone"`
+}
+
+type CheckPhoneResponse struct {
+	Available bool `json:"available"`
+}
+
+// CheckPhone is the phone twin of CheckEmail (A3): the debounced inline
+// availability probe behind the signup field. Normalizes to E.164 first so
+// formatting differences can't dodge the answer.
+func (h *AuthHandler) CheckPhone(w http.ResponseWriter, r *http.Request) {
+	var req CheckPhoneRequest
+	if err := DecodeJSON(r, &req); err != nil {
+		WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+	normalized, ok := models.NormalizePhone(req.Phone)
+	if !ok {
+		WriteError(w, http.StatusBadRequest, models.NewValidationError("A valid phone number is required"))
+		return
+	}
+	exists, err := h.userRepo.PhoneExists(r.Context(), normalized)
+	if err != nil {
+		h.logger.Error("check-phone: lookup failed", "error", err)
+		WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	WriteJSON(w, http.StatusOK, CheckPhoneResponse{Available: !exists})
+}
+
 // Helper methods
 
 func (h *AuthHandler) validateRegisterRequest(req *RegisterRequest) *models.APIError {
@@ -586,6 +635,11 @@ func (h *AuthHandler) validateRegisterRequest(req *RegisterRequest) *models.APIE
 	}
 	if !req.Role.IsValid() || req.Role == models.RoleAdmin {
 		return models.NewValidationError("Role must be 'driver' or 'car_owner'")
+	}
+	if req.Phone != "" {
+		if _, ok := models.NormalizePhone(req.Phone); !ok {
+			return models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234")
+		}
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ type authUserStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*models.User, error)
 	GetByEmail(ctx context.Context, email string) (*models.User, error)
 	EmailExists(ctx context.Context, email string) (bool, error)
+	PhoneExists(ctx context.Context, phone string) (bool, error)
 	UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
 	SetActiveProfile(ctx context.Context, userID uuid.UUID, profileID uuid.UUID, role models.Role) error
 	GetOTPSendCount(ctx context.Context, email string, since time.Time) (int, error)

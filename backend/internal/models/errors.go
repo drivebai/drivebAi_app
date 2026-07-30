@@ -8,6 +8,7 @@ import (
 // Error codes for API responses
 const (
 	ErrCodeEmailTaken                = "EMAIL_TAKEN"
+	ErrCodePhoneTaken                = "PHONE_TAKEN"
 	ErrCodeInvalidCredentials        = "INVALID_CREDENTIALS"
 	ErrCodeOTPInvalid                = "OTP_INVALID"
 	ErrCodeOTPExpired                = "OTP_EXPIRED"
@@ -56,6 +57,7 @@ func (e *APIError) WithDetails(details map[string]interface{}) *APIError {
 // Predefined errors
 var (
 	ErrEmailTaken                = &APIError{Code: ErrCodeEmailTaken, Message: "This email is already registered"}
+	ErrPhoneTaken                = &APIError{Code: ErrCodePhoneTaken, Message: "This phone number is already in use"}
 	ErrInvalidCredentials        = &APIError{Code: ErrCodeInvalidCredentials, Message: "Invalid email or password"}
 	ErrOTPInvalid                = &APIError{Code: ErrCodeOTPInvalid, Message: "Invalid verification code"}
 	ErrOTPExpired                = &APIError{Code: ErrCodeOTPExpired, Message: "Verification code has expired"}

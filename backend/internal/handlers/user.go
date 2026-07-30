@@ -139,8 +139,22 @@ func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		updated = true
 	}
 	if req.Phone != nil {
-		user.Phone = req.Phone
-		updated = true
+		if *req.Phone == "" {
+			user.Phone = nil
+			updated = true
+		} else {
+			normalized, ok := models.NormalizePhone(*req.Phone)
+			if !ok {
+				WriteError(w, http.StatusBadRequest, models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234"))
+				return
+			}
+			if taken, perr := h.userRepo.PhoneExistsExcludingUser(r.Context(), normalized, userID); perr == nil && taken {
+				WriteError(w, http.StatusConflict, models.ErrPhoneTaken)
+				return
+			}
+			user.Phone = &normalized
+			updated = true
+		}
 	}
 
 	if updated {

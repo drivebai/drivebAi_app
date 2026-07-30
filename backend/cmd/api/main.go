@@ -302,6 +302,7 @@ func main() {
 			// posture matches /auth/otp/verify which already reveals account
 			// existence via its kind discriminator.
 			r.Post("/check-email", authHandler.CheckEmail)
+			r.Post("/check-phone", authHandler.CheckPhone)
 
 			// OTP email login (passwordless)
 			r.Post("/otp/request", otpAuthHandler.RequestOTP)

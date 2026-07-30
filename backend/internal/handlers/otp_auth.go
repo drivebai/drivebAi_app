@@ -381,7 +381,16 @@ func (h *OTPAuthHandler) CompleteRegistration(w http.ResponseWriter, r *http.Req
 
 	var phone *string
 	if req.Phone != "" {
-		phone = &req.Phone
+		normalized, ok := models.NormalizePhone(req.Phone)
+		if !ok {
+			WriteError(w, http.StatusBadRequest, models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234"))
+			return
+		}
+		if taken, perr := h.userRepo.PhoneExists(r.Context(), normalized); perr == nil && taken {
+			WriteError(w, http.StatusConflict, models.ErrPhoneTaken)
+			return
+		}
+		phone = &normalized
 	}
 
 	onboardingStatus := models.OnboardingCreated
