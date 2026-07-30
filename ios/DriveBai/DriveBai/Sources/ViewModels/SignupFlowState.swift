@@ -70,6 +70,46 @@ enum EmailAvailability: Equatable {
     case networkError
 }
 
+// MARK: - Phone country (A3)
+
+/// A dial-code entry for the signup phone field. `minDigits...maxDigits`
+/// bounds the NATIONAL number (after the dial code) so the field can cap
+/// input per country; the assembled value is E.164 (dialCode + digits),
+/// which is exactly what the backend validates and stores.
+struct PhoneCountry: Identifiable, Equatable {
+    let id: String        // ISO-ish key
+    let flag: String
+    let name: String
+    let dialCode: String  // includes "+"
+    let minDigits: Int
+    let maxDigits: Int
+
+    static let `default` = all[0]
+
+    static let all: [PhoneCountry] = [
+        PhoneCountry(id: "US", flag: "🇺🇸", name: "United States", dialCode: "+1", minDigits: 10, maxDigits: 10),
+        PhoneCountry(id: "CA", flag: "🇨🇦", name: "Canada", dialCode: "+1", minDigits: 10, maxDigits: 10),
+        PhoneCountry(id: "KZ", flag: "🇰🇿", name: "Kazakhstan", dialCode: "+7", minDigits: 10, maxDigits: 10),
+        PhoneCountry(id: "GB", flag: "🇬🇧", name: "United Kingdom", dialCode: "+44", minDigits: 9, maxDigits: 10),
+        PhoneCountry(id: "DE", flag: "🇩🇪", name: "Germany", dialCode: "+49", minDigits: 9, maxDigits: 11),
+        PhoneCountry(id: "FR", flag: "🇫🇷", name: "France", dialCode: "+33", minDigits: 9, maxDigits: 9),
+        PhoneCountry(id: "ES", flag: "🇪🇸", name: "Spain", dialCode: "+34", minDigits: 9, maxDigits: 9),
+        PhoneCountry(id: "IT", flag: "🇮🇹", name: "Italy", dialCode: "+39", minDigits: 9, maxDigits: 10),
+        PhoneCountry(id: "NL", flag: "🇳🇱", name: "Netherlands", dialCode: "+31", minDigits: 9, maxDigits: 9),
+        PhoneCountry(id: "PL", flag: "🇵🇱", name: "Poland", dialCode: "+48", minDigits: 9, maxDigits: 9),
+        PhoneCountry(id: "UA", flag: "🇺🇦", name: "Ukraine", dialCode: "+380", minDigits: 9, maxDigits: 9),
+        PhoneCountry(id: "TR", flag: "🇹🇷", name: "Türkiye", dialCode: "+90", minDigits: 10, maxDigits: 10),
+        PhoneCountry(id: "AE", flag: "🇦🇪", name: "UAE", dialCode: "+971", minDigits: 8, maxDigits: 9),
+        PhoneCountry(id: "IN", flag: "🇮🇳", name: "India", dialCode: "+91", minDigits: 10, maxDigits: 10),
+        PhoneCountry(id: "CN", flag: "🇨🇳", name: "China", dialCode: "+86", minDigits: 11, maxDigits: 11),
+        PhoneCountry(id: "JP", flag: "🇯🇵", name: "Japan", dialCode: "+81", minDigits: 9, maxDigits: 10),
+        PhoneCountry(id: "AU", flag: "🇦🇺", name: "Australia", dialCode: "+61", minDigits: 9, maxDigits: 9),
+        PhoneCountry(id: "BR", flag: "🇧🇷", name: "Brazil", dialCode: "+55", minDigits: 10, maxDigits: 11),
+        PhoneCountry(id: "MX", flag: "🇲🇽", name: "Mexico", dialCode: "+52", minDigits: 10, maxDigits: 10),
+        PhoneCountry(id: "OTHER", flag: "🌐", name: "Other", dialCode: "+", minDigits: 6, maxDigits: 14),
+    ]
+}
+
 // MARK: - Signup Flow State
 
 @MainActor
@@ -106,6 +146,40 @@ final class SignupFlowState: ObservableObject {
     /// Last email value we kicked a check for. Lets us skip duplicate work
     /// when SwiftUI fires .onChange for no-op edits.
     private var lastCheckedEmail: String = ""
+
+    // Phone entry (A3): country + national digits; `phone` (above) is kept
+    // as the assembled E.164 value so the register call sites are untouched.
+    @Published var phoneCountry: PhoneCountry = .default {
+        didSet { recomputePhone() }
+    }
+    @Published var phoneNational: String = "" {
+        didSet { recomputePhone() }
+    }
+    /// Same state machine as the email check — reused type, phone twin.
+    @Published var phoneAvailability: EmailAvailability = .idle
+    private var phoneCheckTask: Task<Void, Never>?
+
+    private func recomputePhone() {
+        let digits = phoneNational.filter(\.isNumber)
+        if phoneCountry.id == "OTHER" {
+            // "Other": the user types the dial code themselves in the field.
+            phone = digits.isEmpty ? "" : "+" + digits
+        } else {
+            phone = digits.isEmpty ? "" : phoneCountry.dialCode + digits
+        }
+    }
+
+    /// Phone is OPTIONAL at signup; when present it must be a complete
+    /// national number for the chosen country.
+    var isValidPhone: Bool {
+        let digits = phoneNational.filter(\.isNumber)
+        if digits.isEmpty { return true }
+        return digits.count >= phoneCountry.minDigits && digits.count <= phoneCountry.maxDigits
+    }
+    var isPhoneComplete: Bool {
+        let digits = phoneNational.filter(\.isNumber)
+        return !digits.isEmpty && isValidPhone
+    }
 
     // General State
     @Published var isLoading: Bool = false
@@ -146,9 +220,25 @@ final class SignupFlowState: ObservableObject {
             }
             emailOK = true
         }
+        // Phone is optional, but when present it must be complete and not
+        // known-taken — the same timing contract as the email field.
+        let phoneOK: Bool
+        if phoneNational.filter(\.isNumber).isEmpty {
+            phoneOK = true
+        } else {
+            guard isValidPhone else { return false }
+            switch phoneAvailability {
+            case .taken, .checking:
+                return false
+            case .idle, .available, .networkError:
+                break
+            }
+            phoneOK = true
+        }
         return !firstName.isEmpty &&
         !lastName.isEmpty &&
         emailOK &&
+        phoneOK &&
         password.count >= 8 &&
         password == confirmPassword &&
         acceptedTerms
@@ -261,6 +351,42 @@ final class SignupFlowState: ObservableObject {
             } catch {
                 if Task.isCancelled { return }
                 self.emailAvailability = .networkError
+            }
+        }
+    }
+
+    /// Phone twin of scheduleEmailAvailabilityCheck: same 600ms debounce,
+    /// same cancel-stale semantics, same fall-through-to-409 on network
+    /// errors (register's PHONE_TAKEN backstop).
+    func schedulePhoneAvailabilityCheck(
+        debounceMillis: Int = 600,
+        apiClient: APIClientProtocol = APIClient.shared
+    ) {
+        phoneCheckTask?.cancel()
+
+        guard isPhoneComplete else {
+            // Empty or incomplete number: nothing to ask the server yet.
+            phoneAvailability = .idle
+            return
+        }
+        let candidate = phone
+
+        phoneAvailability = .checking
+        phoneCheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(debounceMillis))
+            guard let self else { return }
+            if Task.isCancelled { return }
+            guard candidate == self.phone else { return }
+
+            do {
+                let available = try await apiClient.checkPhone(candidate)
+                if Task.isCancelled { return }
+                self.phoneAvailability = available ? .available : .taken
+            } catch is CancellationError {
+                // Superseded by a later check; nothing to do.
+            } catch {
+                if Task.isCancelled { return }
+                self.phoneAvailability = .networkError
             }
         }
     }

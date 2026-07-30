@@ -119,6 +119,7 @@ protocol APIClientProtocol {
     /// the caller may proceed with signup). Throws on network/server errors;
     /// callers fail open and let the final submit be the source of truth.
     func checkEmail(_ email: String) async throws -> Bool
+    func checkPhone(_ phone: String) async throws -> Bool
 
     // OTP passwordless login
     func requestLoginOTP(email: String) async throws -> MessageResponse
@@ -339,6 +340,16 @@ final class APIClient: APIClientProtocol {
         let resp: Resp = try await post(
             path: "auth/check-email",
             body: Req(email: email)
+        )
+        return resp.available
+    }
+
+    func checkPhone(_ phone: String) async throws -> Bool {
+        struct Req: Encodable { let phone: String }
+        struct Resp: Decodable { let available: Bool }
+        let resp: Resp = try await post(
+            path: "auth/check-phone",
+            body: Req(phone: phone)
         )
         return resp.available
     }

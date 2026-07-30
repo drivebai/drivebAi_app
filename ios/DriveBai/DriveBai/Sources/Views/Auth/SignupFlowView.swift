@@ -223,18 +223,63 @@ struct SignupUserInfoStepView: View {
                     }
                 }
 
-                // Phone Section
+                // Phone Section (A3): country code + digit-limited national
+                // number, stored E.164, with the same debounced inline
+                // availability check the email field has.
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Phone number")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
 
-                    TextField("+1 234 567 8901", text: $signupFlow.phone)
+                    HStack(spacing: 8) {
+                        Menu {
+                            ForEach(PhoneCountry.all) { country in
+                                Button {
+                                    signupFlow.phoneCountry = country
+                                    signupFlow.schedulePhoneAvailabilityCheck()
+                                } label: {
+                                    Text("\(country.flag) \(country.name) (\(country.dialCode))")
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(signupFlow.phoneCountry.flag)
+                                Text(signupFlow.phoneCountry.dialCode)
+                                    .font(.body.monospacedDigit())
+                                Image(systemName: "chevron.down")
+                                    .font(.caption2)
+                            }
+                            .foregroundColor(.primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 14)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(10)
+                        }
+
+                        TextField(
+                            signupFlow.phoneCountry.id == "OTHER" ? "Full number with country code" : "Phone number",
+                            text: $signupFlow.phoneNational
+                        )
                         .textFieldStyle(DriveBaiTextFieldStyle())
                         .textContentType(.telephoneNumber)
                         .keyboardType(.phonePad)
+                        .onChange(of: signupFlow.phoneNational) { _, newValue in
+                            // Digits only, capped at the country's max length.
+                            let digits = String(newValue.filter(\.isNumber).prefix(signupFlow.phoneCountry.maxDigits))
+                            if digits != newValue {
+                                signupFlow.phoneNational = digits
+                                return // onChange re-fires with the clean value
+                            }
+                            if signupFlow.phoneAvailability != .idle {
+                                signupFlow.phoneAvailability = .idle
+                            }
+                            signupFlow.schedulePhoneAvailabilityCheck()
+                        }
+                    }
 
-                    Text("We'll text you trip updates and receipts.")
+                    phoneValidationRow
+
+                    Text("Optional — we'll text you trip updates and receipts.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -343,6 +388,52 @@ struct SignupUserInfoStepView: View {
                 }
                 .font(.caption)
                 .foregroundColor(.green)
+            }
+        }
+    }
+
+    /// Phone twin of emailValidationRow — same states, same voice. Only
+    /// rendered once the user has typed something.
+    @ViewBuilder
+    private var phoneValidationRow: some View {
+        if !signupFlow.phoneNational.isEmpty {
+            if !signupFlow.isValidPhone {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle")
+                    Text("Enter \(signupFlow.phoneCountry.minDigits == signupFlow.phoneCountry.maxDigits ? "\(signupFlow.phoneCountry.minDigits)" : "\(signupFlow.phoneCountry.minDigits)–\(signupFlow.phoneCountry.maxDigits)") digits for \(signupFlow.phoneCountry.name)")
+                }
+                .font(.caption)
+                .foregroundColor(.orange)
+            } else {
+                switch signupFlow.phoneAvailability {
+                case .checking:
+                    HStack(spacing: 6) {
+                        ProgressView().scaleEffect(0.7)
+                        Text("Checking number…")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                case .taken:
+                    HStack(spacing: 6) {
+                        Image(systemName: "xmark.circle.fill")
+                        Text("This number is already in use. Try logging in instead.")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.red)
+                case .available:
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("Number is available")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.green)
+                case .networkError:
+                    Text("Couldn't verify the number right now — we'll check when you continue.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                case .idle:
+                    EmptyView()
+                }
             }
         }
     }
