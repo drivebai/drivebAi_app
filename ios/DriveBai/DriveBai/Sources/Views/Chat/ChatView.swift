@@ -15,6 +15,11 @@ struct ChatView: View {
     /// step with the chatSegments coach mark. Read-only — no tour is started
     /// or mutated from here.
     @ObservedObject private var tourCoordinator = ProductTourCoordinator.shared
+    /// Foreground reconciliation (C5): a WS event missed while backgrounded
+    /// (screen locked through a handover, say) left the purchase card frozen
+    /// on "Awaiting inspection" after the sale completed. Same fix the Today
+    /// tabs got — refetch request state when the scene becomes active.
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showRequestComposer = false
     @State private var showDetails = false
     @State private var showProfile = false
@@ -248,6 +253,21 @@ struct ChatView: View {
         .onDisappear {
             if ChatsListViewModel.shared.activelyReadingChatId == chatId {
                 ChatsListViewModel.shared.activelyReadingChatId = nil
+            }
+        }
+        // Mirror of the Today tabs' scenePhase reconciliation: WS replays
+        // nothing on reconnect, so any purchase/lease transition that landed
+        // while the app was backgrounded must be refetched on return or the
+        // Requests tab keeps showing the stale state ("Awaiting inspection"
+        // after the sale completed — client item C5).
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            Task {
+                async let leases: () = viewModel.loadLeaseRequests()
+                async let reqs: () = viewModel.loadRequests()
+                async let vrets: () = viewModel.loadVehicleReturnsForChatLeases()
+                async let purs: () = viewModel.loadPurchaseRequests()
+                _ = await (leases, reqs, vrets, purs)
             }
         }
         .task {
