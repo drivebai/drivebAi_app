@@ -138,10 +138,18 @@ function logout() {
         <RouterLink v-for="i in items" :key="i.to" :to="i.to" class="nav-item" active-class="active">
           <span class="nav-icon" :data-icon="i.icon" />
           <span>{{ i.label }}</span>
-          <span v-if="i.icon === 'support' && support.totalUnread > 0" class="badge">
+          <span
+            v-if="i.icon === 'support' && support.totalUnread > 0"
+            class="badge"
+            title="Unread messages"
+          >
             {{ support.totalUnread > 99 ? '99+' : support.totalUnread }}
           </span>
-          <span v-else-if="i.icon === 'ticket' && tickets.openCount > 0" class="badge">
+          <span
+            v-else-if="i.icon === 'ticket' && tickets.openCount > 0"
+            class="badge badge-count"
+            title="Open tickets"
+          >
             {{ tickets.openCount > 99 ? '99+' : tickets.openCount }}
           </span>
         </RouterLink>
@@ -297,6 +305,12 @@ nav { display: flex; flex-direction: column; gap: 2px; }
   border-radius: 999px;
   min-width: 18px;
   text-align: center;
+}
+
+/* Red means "unread — needs a reply". Workload tallies (open tickets) wear
+   a neutral pill so a queue count never reads as unread messages. */
+.badge-count {
+  background: #64748b;
 }
 
 .logout { margin-top: auto; text-align: left; }
