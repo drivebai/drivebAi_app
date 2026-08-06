@@ -227,6 +227,8 @@ func main() {
 	ticketRepo := repository.NewTicketRepository(db)
 	ticketHandler := handlers.NewTicketHandler(ticketRepo, adminRepo, wsHub, uploadDir, privateURLSigner, logger)
 	ticketHandler.SetNotificationHandler(notifHandler)
+	// Ticket ratings write through the shared reviews table (7/24 item 3f).
+	ticketHandler.SetReviewRepository(reviewRepo)
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
 	vehicleReturnRepo := repository.NewVehicleReturnRepository(db)
 	vehicleReturnHandler := handlers.NewVehicleReturnHandler(vehicleReturnRepo, leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, notifHandler, logger)
@@ -506,6 +508,7 @@ func main() {
 					r.Delete("/attachments/{attachId}", ticketHandler.DeleteAttachment)
 					r.Post("/submit", ticketHandler.Submit)
 					r.Post("/reopen", ticketHandler.Reopen)
+					r.Post("/rating", ticketHandler.RateTicket)
 				})
 			})
 

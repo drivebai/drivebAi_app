@@ -57,9 +57,15 @@ type SupportTicket struct {
 	Description string             `json:"description"`
 	Status      TicketStatus       `json:"status"`
 	LastStep    int                `json:"last_step"`
-	SubmittedAt *time.Time         `json:"submitted_at,omitempty"`
-	ResolvedAt  *time.Time         `json:"resolved_at,omitempty"`
-	ClosedAt    *time.Time         `json:"closed_at,omitempty"`
+	// NeedsFollowup is set (in the same transaction as the rating insert)
+	// when the user rates a finished request 3★ or below.
+	NeedsFollowup bool       `json:"needs_followup"`
+	SubmittedAt   *time.Time `json:"submitted_at,omitempty"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	ClosedAt      *time.Time `json:"closed_at,omitempty"`
+	// Rating is the user's 1–5★ rating of how the request was handled,
+	// hydrated from reviews (subject_ticket_id); nil = not rated yet.
+	Rating      *int               `json:"rating,omitempty"`
 	Attachments []TicketAttachment `json:"attachments"`
 	CreatedAt   time.Time          `json:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at"`
@@ -82,4 +88,7 @@ type AdminTicketRow struct {
 	UserName  string `json:"user_name"`
 	UserEmail string `json:"user_email"`
 	UserRole  string `json:"user_role"`
+	// RatingComment accompanies the embedded Rating for the drawer (the
+	// user's "what could have gone better"); nil when unrated or 5★-silent.
+	RatingComment *string `json:"rating_comment,omitempty"`
 }

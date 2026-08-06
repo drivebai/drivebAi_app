@@ -10,18 +10,25 @@ import (
 type ReviewSubjectType string
 
 const (
-	ReviewSubjectCar  ReviewSubjectType = "car"
-	ReviewSubjectUser ReviewSubjectType = "user"
+	ReviewSubjectCar    ReviewSubjectType = "car"
+	ReviewSubjectUser   ReviewSubjectType = "user"
+	ReviewSubjectTicket ReviewSubjectType = "ticket"
 )
 
 // ReviewTransactionType — the completed transaction a review is anchored to.
+// For a ticket rating the "transaction" IS the ticket (type "support",
+// transaction_id = the ticket id), keeping the 000038 anchoring invariant.
 type ReviewTransactionType string
 
 const (
 	ReviewTransactionPurchase ReviewTransactionType = "purchase"
 	ReviewTransactionRental   ReviewTransactionType = "rental"
+	ReviewTransactionSupport  ReviewTransactionType = "support"
 )
 
+// IsValid gates the generic POST /reviews endpoint, which serves ONLY
+// purchase/rental ratings — ticket ratings go through the dedicated
+// POST /tickets/{id}/rating path with its own comment/follow-up rules.
 func (t ReviewTransactionType) IsValid() bool {
 	return t == ReviewTransactionPurchase || t == ReviewTransactionRental
 }
@@ -36,11 +43,19 @@ type Review struct {
 	SubjectType     ReviewSubjectType     `json:"subject_type"`
 	SubjectCarID    *uuid.UUID            `json:"subject_car_id,omitempty"`
 	SubjectUserID   *uuid.UUID            `json:"subject_user_id,omitempty"`
+	SubjectTicketID *uuid.UUID            `json:"subject_ticket_id,omitempty"`
 	TransactionType ReviewTransactionType `json:"transaction_type"`
 	TransactionID   uuid.UUID             `json:"transaction_id"`
 	Rating          int                   `json:"rating"`
 	Comment         *string               `json:"comment,omitempty"`
 	CreatedAt       time.Time             `json:"created_at"`
+}
+
+// TicketRating is the per-ticket rating hydrated onto ticket responses
+// (nil/absent = not rated yet).
+type TicketRating struct {
+	Rating  int
+	Comment *string
 }
 
 // RatingSummary is the aggregate exposed on cars, owners, and admin rows.

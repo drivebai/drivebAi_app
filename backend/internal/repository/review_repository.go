@@ -43,6 +43,73 @@ func (r *ReviewRepository) Create(ctx context.Context, rev *models.Review) error
 	return nil
 }
 
+// CreateTicketRating inserts a support-ticket rating and — for ratings of 3★
+// or below — flags the ticket for admin follow-up in the SAME transaction, so
+// a flag can never exist without its rating or vice versa. Both unique
+// indexes (one-per-ticket and the 000038 composite) surface as
+// models.ErrAlreadyReviewed.
+func (r *ReviewRepository) CreateTicketRating(ctx context.Context, rev *models.Review, flagFollowup bool) error {
+	if rev.ID == uuid.Nil {
+		rev.ID = uuid.New()
+	}
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+		INSERT INTO reviews (id, author_id, subject_type, subject_ticket_id,
+		                     transaction_type, transaction_id, rating, comment)
+		VALUES ($1, $2, 'ticket', $3, 'support', $4, $5, $6)
+		RETURNING created_at
+	`, rev.ID, rev.AuthorID, rev.SubjectTicketID, rev.TransactionID, rev.Rating, rev.Comment,
+	).Scan(&rev.CreatedAt)
+	if err != nil {
+		if strings.Contains(err.Error(), "reviews_one_per_ticket_idx") ||
+			strings.Contains(err.Error(), "reviews_once_per_transaction_idx") {
+			return models.ErrAlreadyReviewed
+		}
+		return err
+	}
+
+	if flagFollowup {
+		if _, err := tx.Exec(ctx, `
+			UPDATE support_tickets SET needs_followup = TRUE, updated_at = NOW()
+			WHERE id = $1`, rev.SubjectTicketID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// GetTicketRatings batch-loads ratings for many tickets at once (My requests /
+// admin queue) — tickets with no rating are simply absent from the map.
+func (r *ReviewRepository) GetTicketRatings(ctx context.Context, ticketIDs []uuid.UUID) (map[uuid.UUID]models.TicketRating, error) {
+	out := map[uuid.UUID]models.TicketRating{}
+	if len(ticketIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT subject_ticket_id, rating, comment
+		FROM reviews
+		WHERE subject_ticket_id = ANY($1)
+	`, ticketIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var tr models.TicketRating
+		if err := rows.Scan(&id, &tr.Rating, &tr.Comment); err != nil {
+			return nil, err
+		}
+		out[id] = tr
+	}
+	return out, rows.Err()
+}
+
 // GetUserRating returns the aggregate rating a user has received (as seller,
 // buyer, owner, or driver). Average is nil when there are no reviews.
 func (r *ReviewRepository) GetUserRating(ctx context.Context, userID uuid.UUID) (models.RatingSummary, error) {

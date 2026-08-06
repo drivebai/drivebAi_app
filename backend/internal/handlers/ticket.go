@@ -26,6 +26,7 @@ import (
 type TicketHandler struct {
 	ticketRepo   *repository.TicketRepository
 	adminRepo    *repository.AdminRepository
+	reviewRepo   *repository.ReviewRepository
 	wsHub        *ws.Hub
 	uploadDir    string
 	urlSigner    *PrivateURLSigner
@@ -54,6 +55,33 @@ func NewTicketHandler(
 // SetNotificationHandler wires push/notification delivery (setter to avoid
 // touching the constructor call site).
 func (h *TicketHandler) SetNotificationHandler(n *NotificationHandler) { h.notifHandler = n }
+
+// SetReviewRepository wires ticket ratings (7/24 item 3f) — same setter
+// pattern; ratings live in the shared reviews table, not a parallel one.
+func (h *TicketHandler) SetReviewRepository(rr *repository.ReviewRepository) { h.reviewRepo = rr }
+
+// hydrateRating fills SupportTicket.Rating from the reviews table (nil when
+// unrated, or when the review repo isn't wired — e.g. bare test handlers).
+func (h *TicketHandler) hydrateRating(r *http.Request, tickets ...*models.SupportTicket) {
+	if h.reviewRepo == nil || len(tickets) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(tickets))
+	for _, t := range tickets {
+		ids = append(ids, t.ID)
+	}
+	ratings, err := h.reviewRepo.GetTicketRatings(r.Context(), ids)
+	if err != nil {
+		h.logger.Error("hydrate ticket ratings", "error", err)
+		return
+	}
+	for _, t := range tickets {
+		if tr, ok := ratings[t.ID]; ok {
+			rating := tr.Rating
+			t.Rating = &rating
+		}
+	}
+}
 
 // signTicket signs every attachment URL on the way out. DB keeps raw paths.
 func (h *TicketHandler) signTicket(t *models.SupportTicket) {
@@ -120,7 +148,13 @@ func (h *TicketHandler) List(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
-	// Lightweight list: no attachments hydration (the detail endpoint does that).
+	// Lightweight list: no attachments hydration (the detail endpoint does
+	// that). Ratings ARE hydrated — the list gates the "Rate" CTA.
+	ptrs := make([]*models.SupportTicket, len(tickets))
+	for i := range tickets {
+		ptrs[i] = &tickets[i]
+	}
+	h.hydrateRating(r, ptrs...)
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"tickets": tickets})
 }
 
@@ -142,6 +176,7 @@ func (h *TicketHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticket.Attachments, _ = h.ticketRepo.ListAttachments(r.Context(), ticketID)
+	h.hydrateRating(r, ticket)
 	h.signTicket(ticket)
 	httputil.WriteJSON(w, http.StatusOK, ticket)
 }
@@ -417,6 +452,89 @@ func (h *TicketHandler) Reopen(w http.ResponseWriter, r *http.Request) {
 	}
 	h.fanOutToAdmins(r, ticketID, userID, "Support request reopened", "A user reopened a resolved request.")
 	httputil.WriteJSON(w, http.StatusOK, fresh)
+}
+
+// RateTicket — POST /tickets/{id}/rating. The reporter rates how their
+// finished (resolved/closed) request was handled, 1–5★ (7/24 item 3f).
+// Rules: 5★ needs no comment; 4★ and below require one; 3★ and below flag
+// the ticket for admin follow-up in the same DB transaction as the insert.
+// One rating per ticket, enforced by reviews_one_per_ticket_idx → 409.
+func (h *TicketHandler) RateTicket(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid ticket id"))
+		return
+	}
+	var body struct {
+		Rating  int     `json:"rating"`
+		Comment *string `json:"comment,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid JSON"))
+		return
+	}
+	if body.Rating < 1 || body.Rating > 5 {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("rating must be between 1 and 5 stars"))
+		return
+	}
+	// Same comment normalization as the reviews handler: trimmed, empty →
+	// NULL, capped. The DB CHECK (reviews_ticket_comment_rule) relies on it.
+	var comment *string
+	if body.Comment != nil {
+		if c := strings.TrimSpace(*body.Comment); c != "" {
+			if len(c) > 1000 {
+				c = c[:1000]
+			}
+			comment = &c
+		}
+	}
+	if body.Rating <= 4 && comment == nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("please tell us what could have gone better"))
+		return
+	}
+
+	// Ownership is the WHERE clause: only the reporter can load — and
+	// therefore rate — their ticket.
+	ticket, err := h.ticketRepo.GetByIDForUser(r.Context(), ticketID, userID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "ticket not found"))
+		return
+	}
+	if ticket.Status != models.TicketStatusResolved && ticket.Status != models.TicketStatusClosed {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("TICKET_NOT_RATEABLE", "you can rate a request once it's resolved or closed"))
+		return
+	}
+
+	needsFollowup := body.Rating <= 3
+	rev := &models.Review{
+		AuthorID:        userID,
+		SubjectType:     models.ReviewSubjectTicket,
+		SubjectTicketID: &ticketID,
+		TransactionType: models.ReviewTransactionSupport,
+		TransactionID:   ticketID,
+		Rating:          body.Rating,
+		Comment:         comment,
+	}
+	if err := h.reviewRepo.CreateTicketRating(r.Context(), rev, needsFollowup); err != nil {
+		if err == models.ErrAlreadyReviewed {
+			httputil.WriteError(w, http.StatusConflict, models.ErrAlreadyReviewed)
+			return
+		}
+		h.logger.Error("rate ticket", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	if needsFollowup {
+		h.fanOutToAdmins(r, ticketID, userID, "Low support rating",
+			fmt.Sprintf("%d★ on a %s request — flagged for follow-up.", body.Rating, categoryLabel(ticket.Category)))
+	}
+	httputil.WriteJSON(w, http.StatusCreated, map[string]any{"ok": true, "rating": body.Rating})
 }
 
 // fanOutToAdmins refreshes the admin queue live (WS) and drops a durable

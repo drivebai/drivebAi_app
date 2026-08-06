@@ -24,14 +24,14 @@ func NewTicketRepository(db *database.DB) *TicketRepository {
 }
 
 const ticketCols = `id, user_id, category, subject, description, status, last_step,
-	submitted_at, resolved_at, closed_at, created_at, updated_at`
+	needs_followup, submitted_at, resolved_at, closed_at, created_at, updated_at`
 
 func scanTicket(row scanRow) (*models.SupportTicket, error) {
 	var t models.SupportTicket
 	t.Attachments = []models.TicketAttachment{}
 	err := row.Scan(
 		&t.ID, &t.UserID, &t.Category, &t.Subject, &t.Description, &t.Status, &t.LastStep,
-		&t.SubmittedAt, &t.ResolvedAt, &t.ClosedAt, &t.CreatedAt, &t.UpdatedAt,
+		&t.NeedsFollowup, &t.SubmittedAt, &t.ResolvedAt, &t.ClosedAt, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -259,11 +259,13 @@ func (r *TicketRepository) AdminList(ctx context.Context, page, limit int, statu
 	args = append(args, limit, (page-1)*limit)
 	query := fmt.Sprintf(`
 		SELECT t.id, t.user_id, t.category, t.subject, t.description, t.status, t.last_step,
-		       t.submitted_at, t.resolved_at, t.closed_at, t.created_at, t.updated_at,
+		       t.needs_followup, t.submitted_at, t.resolved_at, t.closed_at, t.created_at, t.updated_at,
 		       COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.email) AS user_name,
-		       u.email, u.role::text
+		       u.email, u.role::text,
+		       rv.rating, rv.comment
 		FROM support_tickets t
 		JOIN users u ON u.id = t.user_id
+		LEFT JOIN reviews rv ON rv.subject_ticket_id = t.id
 		%s
 		ORDER BY t.submitted_at ASC NULLS LAST, t.created_at ASC
 		LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
@@ -280,8 +282,9 @@ func (r *TicketRepository) AdminList(ctx context.Context, page, limit int, statu
 		row.Attachments = []models.TicketAttachment{}
 		if err := rows.Scan(
 			&row.ID, &row.UserID, &row.Category, &row.Subject, &row.Description, &row.Status, &row.LastStep,
-			&row.SubmittedAt, &row.ResolvedAt, &row.ClosedAt, &row.CreatedAt, &row.UpdatedAt,
+			&row.NeedsFollowup, &row.SubmittedAt, &row.ResolvedAt, &row.ClosedAt, &row.CreatedAt, &row.UpdatedAt,
 			&row.UserName, &row.UserEmail, &row.UserRole,
+			&row.Rating, &row.RatingComment,
 		); err != nil {
 			return nil, err
 		}
@@ -296,15 +299,18 @@ func (r *TicketRepository) AdminGet(ctx context.Context, ticketID uuid.UUID) (*m
 	row.Attachments = []models.TicketAttachment{}
 	err := r.db.Pool.QueryRow(ctx, `
 		SELECT t.id, t.user_id, t.category, t.subject, t.description, t.status, t.last_step,
-		       t.submitted_at, t.resolved_at, t.closed_at, t.created_at, t.updated_at,
+		       t.needs_followup, t.submitted_at, t.resolved_at, t.closed_at, t.created_at, t.updated_at,
 		       COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.email) AS user_name,
-		       u.email, u.role::text
+		       u.email, u.role::text,
+		       rv.rating, rv.comment
 		FROM support_tickets t
 		JOIN users u ON u.id = t.user_id
+		LEFT JOIN reviews rv ON rv.subject_ticket_id = t.id
 		WHERE t.id = $1`, ticketID).Scan(
 		&row.ID, &row.UserID, &row.Category, &row.Subject, &row.Description, &row.Status, &row.LastStep,
-		&row.SubmittedAt, &row.ResolvedAt, &row.ClosedAt, &row.CreatedAt, &row.UpdatedAt,
+		&row.NeedsFollowup, &row.SubmittedAt, &row.ResolvedAt, &row.ClosedAt, &row.CreatedAt, &row.UpdatedAt,
 		&row.UserName, &row.UserEmail, &row.UserRole,
+		&row.Rating, &row.RatingComment,
 	)
 	if err != nil {
 		return nil, err
