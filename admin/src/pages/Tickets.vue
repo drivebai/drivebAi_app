@@ -137,6 +137,25 @@ function roleBadge(role: string) {
 function attachName(a: TicketAttachment) {
   return isImage(a.mime_type) ? 'Photo' : a.mime_type === 'application/pdf' ? 'PDF' : 'File'
 }
+
+// Days outstanding — derived from submitted_at at render time, never stored.
+// Only open requests age (resolved/closed show their dates instead). Tiers
+// mirror the iOS chip: quiet under 3 days, amber 3–6, red 7 and up.
+function daysOpen(t: AdminTicket): number | null {
+  if (t.status !== 'open') return null
+  const start = new Date(t.submitted_at || t.created_at).getTime()
+  return Math.max(0, Math.floor((Date.now() - start) / 86_400_000))
+}
+function daysOpenLabel(t: AdminTicket): string {
+  const d = daysOpen(t)
+  if (d === null) return '—'
+  return d === 0 ? 'today' : d === 1 ? '1 day' : `${d} days`
+}
+function daysOpenClass(t: AdminTicket): string {
+  const d = daysOpen(t)
+  if (d === null) return ''
+  return d >= 7 ? 'days-late' : d >= 3 ? 'days-warn' : 'days-fresh'
+}
 </script>
 
 <template>
@@ -166,6 +185,7 @@ function attachName(a: TicketAttachment) {
           <thead>
             <tr>
               <th>Submitted</th>
+              <th>Days open</th>
               <th>Reporter</th>
               <th>Category</th>
               <th>Status</th>
@@ -180,6 +200,10 @@ function attachName(a: TicketAttachment) {
               @click="select(t)"
             >
               <td>{{ fmtDateTime(t.submitted_at || t.created_at) }}</td>
+              <td>
+                <span v-if="daysOpen(t) !== null" class="days-open" :class="daysOpenClass(t)">{{ daysOpenLabel(t) }}</span>
+                <span v-else>—</span>
+              </td>
               <td>
                 <div class="reporter-name">{{ t.user_name }}</div>
                 <div class="reporter-email">{{ t.user_email }}</div>
@@ -210,7 +234,10 @@ function attachName(a: TicketAttachment) {
               </span>
             </div>
             <div class="lc-name">{{ t.user_name }}</div>
-            <div class="lc-sub">{{ t.user_email }} · {{ fmtDateTime(t.submitted_at || t.created_at) }}</div>
+            <div class="lc-sub">
+              {{ t.user_email }} · {{ fmtDateTime(t.submitted_at || t.created_at) }}
+              <span v-if="daysOpen(t) !== null" class="days-open" :class="daysOpenClass(t)">open {{ daysOpenLabel(t) }}</span>
+            </div>
           </button>
         </div>
       </template>
@@ -286,6 +313,7 @@ function attachName(a: TicketAttachment) {
         <div class="section-title">Timeline</div>
         <div class="timeline">
           <div class="tl-row"><span class="tl-label">Submitted</span><span class="tl-val">{{ fmtDateTime(selected.submitted_at || selected.created_at) }}</span></div>
+          <div v-if="daysOpen(selected) !== null" class="tl-row"><span class="tl-label">Open for</span><span class="tl-val"><span class="days-open" :class="daysOpenClass(selected)">{{ daysOpenLabel(selected) }}</span></span></div>
           <div v-if="selected.resolved_at" class="tl-row"><span class="tl-label">Resolved</span><span class="tl-val">{{ fmtDateTime(selected.resolved_at) }}</span></div>
           <div v-if="selected.closed_at" class="tl-row"><span class="tl-label">Closed</span><span class="tl-val">{{ fmtDateTime(selected.closed_at) }}</span></div>
         </div>
@@ -367,6 +395,19 @@ function attachName(a: TicketAttachment) {
   font-size: 11px;
   font-weight: 600;
 }
+
+/* Days-outstanding pill — tiers match the iOS chip (quiet/amber/red). */
+.days-open {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.days-fresh { background: #4ecdc422; color: #0d9488; }
+.days-warn  { background: #dd6b2022; color: #dd6b20; }
+.days-late  { background: #e53e3e22; color: #e53e3e; }
 
 /* ── Detail pane ── */
 .detail-pane {

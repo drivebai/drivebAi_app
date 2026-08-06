@@ -164,10 +164,61 @@ private struct TicketRow: View {
             }
             Text(ticket.subject.isEmpty ? ticket.description : ticket.subject)
                 .font(.caption).foregroundColor(.secondary).lineLimit(2)
-            Text((ticket.submittedAt ?? ticket.createdAt).formatted(date: .abbreviated, time: .shortened))
-                .font(.caption2).foregroundColor(.secondary)
+            HStack {
+                Text((ticket.submittedAt ?? ticket.createdAt).formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2).foregroundColor(.secondary)
+                Spacer()
+                if ticket.statusEnum == .open {
+                    DaysOutstandingChip(since: ticket.submittedAt ?? ticket.createdAt)
+                }
+            }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// "Open N days" on a raised request — derived from submitted_at every render,
+/// never stored, with the pickup-countdown's tiered urgency tinting (fresh
+/// teal → aging orange → old red). Only open requests age; resolved/closed
+/// ones show their dates instead.
+struct DaysOutstandingChip: View {
+    let since: Date
+
+    private var days: Int {
+        let cal = Calendar.current
+        return cal.dateComponents(
+            [.day],
+            from: cal.startOfDay(for: since),
+            to: cal.startOfDay(for: Date())
+        ).day ?? 0
+    }
+
+    private var tint: Color {
+        switch days {
+        case ..<3: return .driveBaiPrimary
+        case ..<7: return .orange
+        default:   return .red
+        }
+    }
+
+    private var label: String {
+        switch days {
+        case 0:  return "Opened today"
+        case 1:  return "Open 1 day"
+        default: return "Open \(days) days"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "clock")
+                .font(.system(size: 10, weight: .semibold))
+            Text(label)
+                .font(.caption2.weight(.semibold))
+        }
+        .foregroundColor(tint)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(tint.opacity(0.12)))
     }
 }
 
@@ -201,6 +252,9 @@ struct TicketDetailView: View {
                         Text(t.categoryEnum?.label ?? "Request").font(.title3).fontWeight(.bold)
                         Spacer()
                         TicketStatusChip(status: t.statusEnum)
+                    }
+                    if t.statusEnum == .open {
+                        DaysOutstandingChip(since: t.submittedAt ?? t.createdAt)
                     }
                     if !t.subject.isEmpty { detailRow("Subject", t.subject) }
                     detailRow("Details", t.description.isEmpty ? "—" : t.description)
