@@ -977,6 +977,14 @@ final class APIClient: APIClientProtocol {
         return try await postEmpty(path: "tickets/\(id.uuidString)/reopen", authenticated: true)
     }
 
+    func rateTicket(id: UUID, rating: Int, comment: String?) async throws -> TicketRatingResponse {
+        return try await post(
+            path: "tickets/\(id.uuidString)/rating",
+            body: TicketRatingRequest(rating: rating, comment: comment),
+            authenticated: true
+        )
+    }
+
     // MARK: - Private Request Methods
 
     private func post<T: Encodable, R: Decodable>(

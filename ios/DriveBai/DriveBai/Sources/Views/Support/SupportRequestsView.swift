@@ -170,6 +170,24 @@ private struct TicketRow: View {
                 Spacer()
                 if ticket.statusEnum == .open {
                     DaysOutstandingChip(since: ticket.submittedAt ?? ticket.createdAt)
+                } else if let rating = ticket.rating {
+                    HStack(spacing: 2) {
+                        Image(systemName: "star.fill")
+                        Text("\(rating)")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(.yellow)
+                } else if ticket.canRate {
+                    // Discoverability hint — the actual rating flow lives in
+                    // the detail screen this row opens.
+                    HStack(spacing: 3) {
+                        Image(systemName: "star")
+                        Text("Rate")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(.driveBaiPrimary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Capsule().fill(Color.driveBaiPrimary.opacity(0.12)))
                 }
             }
         }
@@ -242,6 +260,7 @@ struct TicketDetailView: View {
     @State private var isLoading = true
     @State private var isReopening = false
     @State private var showChat = false
+    @State private var showRating = false
     @State private var error: String?
 
     var body: some View {
@@ -273,6 +292,29 @@ struct TicketDetailView: View {
                     detailRow("Submitted", (t.submittedAt ?? t.createdAt).formatted(date: .abbreviated, time: .shortened))
                     if let r = t.resolvedAt { detailRow("Resolved", r.formatted(date: .abbreviated, time: .shortened)) }
 
+                    // Rating (7/24 item 3f): once a request is resolved or
+                    // closed the reporter rates how it was handled — once,
+                    // enforced server- and DB-side.
+                    if let rating = t.rating {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Your rating").font(.caption.weight(.medium)).foregroundColor(.secondary)
+                            HStack(spacing: 4) {
+                                ForEach(1...5, id: \.self) { i in
+                                    Image(systemName: i <= rating ? "star.fill" : "star")
+                                        .font(.subheadline)
+                                        .foregroundColor(i <= rating ? .yellow : .secondary)
+                                }
+                            }
+                        }
+                    } else if t.canRate {
+                        Button { showRating = true } label: {
+                            Label("Rate how we handled this", systemImage: "star.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                        }
+                        .buttonStyle(DriveBaiSecondaryButtonStyle())
+                    }
+
                     Button { showChat = true } label: {
                         Label("Message support about this", systemImage: "bubble.left.and.bubble.right.fill")
                             .font(.subheadline.weight(.semibold))
@@ -300,6 +342,9 @@ struct TicketDetailView: View {
         .navigationTitle("Request").navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .sheet(isPresented: $showChat) { SupportChatView().environmentObject(supportInboxStore) }
+        .sheet(isPresented: $showRating) {
+            TicketRatingSheet(ticketId: ticketId, onFinished: { Task { await load() } })
+        }
         .alert("Something went wrong", isPresented: Binding(
             get: { error != nil }, set: { if !$0 { error = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(error ?? "") }
@@ -325,6 +370,93 @@ struct TicketDetailView: View {
         do { ticket = try await APIClient.shared.reopenTicket(id: ticketId) }
         catch let err { error = err.localizedDescription }
         isReopening = false
+    }
+}
+
+// MARK: - Ticket rating sheet (7/24 item 3f)
+
+/// Rate how a finished request was handled. Client rules: 5★ submits with no
+/// comment; 4★ and below require one; 3★ and below additionally flag the
+/// ticket for admin follow-up (server-side, same transaction). Reuses the
+/// reviews round's StarPickerRow — one star component, not a parallel one.
+struct TicketRatingSheet: View {
+    let ticketId: UUID
+    /// Called after a successful submit — and after a 409 (already rated),
+    /// which the caller treats the same way: reload and stop offering.
+    let onFinished: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var stars = 0
+    @State private var comment = ""
+    @State private var submitting = false
+    @State private var errorMessage: String?
+
+    private var commentRequired: Bool { stars > 0 && stars < 5 }
+    private var canSubmit: Bool {
+        !submitting && stars > 0 &&
+            (!commentRequired || !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("How did we handle your request?") {
+                    StarPickerRow(title: "Your rating", stars: $stars)
+                }
+                if commentRequired {
+                    Section {
+                        TextField("Tell us what happened…", text: $comment, axis: .vertical)
+                            .lineLimit(3...6)
+                    } header: {
+                        Text("What could have gone better?")
+                    } footer: {
+                        Text("Required for ratings under 5 stars.")
+                    }
+                }
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).font(.footnote).foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("Rate this request")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Not now") { dismiss() }
+                        .disabled(submitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(submitting ? "Sending…" : "Submit") { Task { await submit() } }
+                        .disabled(!canSubmit)
+                }
+            }
+            .interactiveDismissDisabled(submitting)
+        }
+    }
+
+    @MainActor
+    private func submit() async {
+        submitting = true
+        errorMessage = nil
+        defer { submitting = false }
+        let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            _ = try await APIClient.shared.rateTicket(
+                id: ticketId,
+                rating: stars,
+                comment: trimmed.isEmpty ? nil : trimmed
+            )
+            onFinished()
+            dismiss()
+        } catch let APIError.serverError(code, _) where code == "REVIEW_ALREADY_EXISTS" {
+            // Already rated (this device, another device) — treat as done
+            // rather than trapping the user in an error loop.
+            onFinished()
+            dismiss()
+        } catch {
+            errorMessage = "Couldn't send your rating. Please check your connection and try again."
+        }
     }
 }
 

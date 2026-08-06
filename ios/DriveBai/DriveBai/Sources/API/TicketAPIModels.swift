@@ -112,6 +112,9 @@ struct TicketAPIResponse: Codable, Identifiable {
     let submittedAt: Date?
     let resolvedAt: Date?
     let closedAt: Date?
+    /// The reporter's 1–5★ rating of how the request was handled;
+    /// nil = not rated yet (gates the "Rate" CTA).
+    let rating: Int?
     let attachments: [TicketAttachmentAPI]
     let createdAt: Date
     let updatedAt: Date
@@ -124,6 +127,7 @@ struct TicketAPIResponse: Codable, Identifiable {
         case submittedAt = "submitted_at"
         case resolvedAt = "resolved_at"
         case closedAt = "closed_at"
+        case rating
         case attachments
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -141,6 +145,7 @@ struct TicketAPIResponse: Codable, Identifiable {
         submittedAt = try c.decodeIfPresent(Date.self, forKey: .submittedAt)
         resolvedAt = try c.decodeIfPresent(Date.self, forKey: .resolvedAt)
         closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
+        rating = try c.decodeIfPresent(Int.self, forKey: .rating)
         attachments = try c.decodeIfPresent([TicketAttachmentAPI].self, forKey: .attachments) ?? []
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
@@ -148,6 +153,8 @@ struct TicketAPIResponse: Codable, Identifiable {
 
     var categoryEnum: TicketCategory? { TicketCategory(rawValue: category) }
     var statusEnum: TicketStatus { TicketStatus(raw: status) }
+    /// A finished, not-yet-rated request may be rated (once, server-enforced).
+    var canRate: Bool { rating == nil && (statusEnum == .resolved || statusEnum == .closed) }
 }
 
 struct TicketListResponse: Codable {
@@ -165,4 +172,16 @@ struct TicketPatchRequest: Codable {
         case category, subject, description
         case lastStep = "last_step"
     }
+}
+
+/// POST /tickets/{id}/rating — rate a finished request. 5★ needs no comment;
+/// 4★ and below require one (also enforced server- and DB-side).
+struct TicketRatingRequest: Codable {
+    let rating: Int
+    let comment: String?
+}
+
+struct TicketRatingResponse: Codable {
+    let ok: Bool
+    let rating: Int
 }
