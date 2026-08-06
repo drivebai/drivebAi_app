@@ -41,13 +41,14 @@ struct DriverTabView: View {
                 .tag(2)
                 .badge(chatsVM.totalUnreadCount)
 
-            // Profile Tab
+            // Profile Tab. Support unread lives on the floating Support
+            // button, not here — a count on Profile pointed at the wrong
+            // surface (7/24 item 2).
             ProfileView(showAuthFlow: .constant(false))
                 .tabItem {
                     Label("Profile", systemImage: "person.fill")
                 }
                 .tag(3)
-                .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
         // Universal Help & Support entry point (QA pt 0). A persistent button
@@ -57,11 +58,18 @@ struct DriverTabView: View {
         // hardcoded email.
         .overlay(alignment: .bottomTrailing) {
             SupportFloatingButton(unreadCount: supportInboxStore.unreadCount) {
-                showSupportHub = true
+                // Unread reply waiting → straight into the chat it lives in;
+                // otherwise the hub chooser as usual (7/24 item 3b).
+                if supportInboxStore.unreadCount > 0 {
+                    showSupport = true
+                } else {
+                    showSupportHub = true
+                }
             }
         }
-        // Floating button opens the Help & Support hub; a support-message push
-        // still opens the chat directly (below).
+        // Floating button opens the Help & Support hub (or the chat directly
+        // when a reply is waiting); a support-message push also opens the
+        // chat directly (below).
         .sheet(isPresented: $showSupportHub) {
             SupportHubView().environmentObject(supportInboxStore)
         }
@@ -132,9 +140,10 @@ struct DriverTabView: View {
 
 /// Persistent circular Help button that floats above the tab bar. Shared by
 /// `DriverTabView` and `OwnerTabView` (QA pt 0) so support is one tap from
-/// every tab in both modes. Shows a small badge when the support inbox has
-/// unread replies. Presentation + routing live with the caller (a sheet over
-/// the existing `SupportChatView`).
+/// every tab in both modes. THE support-unread surface (7/24 item 2): shows
+/// the unread count as a red pill and flips the circle to app-icon black
+/// while replies are waiting (item 3a). Presentation + routing live with the
+/// caller (a sheet over the existing `SupportChatView`).
 struct SupportFloatingButton: View {
     let unreadCount: Int
     let action: () -> Void
@@ -142,8 +151,10 @@ struct SupportFloatingButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
+                // Teal at rest; app-icon black (#000, same as the icon
+                // background) while unread — the color IS the signal.
                 Circle()
-                    .fill(Color.driveBaiPrimary)
+                    .fill(unreadCount > 0 ? Color.black : Color.driveBaiPrimary)
                     .frame(width: 56, height: 56)
 
                 // The DriveBai mark (wing → "b"), template-tinted white.
@@ -169,17 +180,25 @@ struct SupportFloatingButton: View {
                     .frame(width: 36, height: 36)
             }
             .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)
+            // The COUNT, not just a dot — this is where the tab bar's old
+            // Profile badge moved to (7/24 item 2). Styled like a tab badge:
+            // red pill, white number, 99+ cap.
             .overlay(alignment: .topTrailing) {
                 if unreadCount > 0 {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
-                        .offset(x: 1, y: -1)
+                    Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(Capsule().fill(Color.red))
+                        .overlay(Capsule().stroke(Color(.systemBackground), lineWidth: 2))
+                        .offset(x: 4, y: -4)
                 }
             }
         }
-        .accessibilityLabel("Help and support")
+        .accessibilityLabel(unreadCount > 0
+            ? "Help and support, \(unreadCount) unread \(unreadCount == 1 ? "reply" : "replies")"
+            : "Help and support")
         .padding(.trailing, 16)
         // Lift clear of the tab bar so the button never sits on the tab items.
         .padding(.bottom, 72)

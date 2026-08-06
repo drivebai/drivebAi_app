@@ -41,13 +41,14 @@ struct OwnerTabView: View {
                 .tag(2)
                 .badge(chatsVM.totalUnreadCount)
 
-            // Profile Tab
+            // Profile Tab. Support unread lives on the floating Support
+            // button, not here — a count on Profile pointed at the wrong
+            // surface (7/24 item 2).
             ProfileView(showAuthFlow: .constant(false))
                 .tabItem {
                     Label("Profile", systemImage: "person.fill")
                 }
                 .tag(3)
-                .badge(supportInboxStore.unreadCount)
         }
         .tint(.driveBaiPrimary)
         // Universal Help & Support entry point (QA pt 0). A persistent button
@@ -57,12 +58,18 @@ struct OwnerTabView: View {
         // hardcoded email.
         .overlay(alignment: .bottomTrailing) {
             SupportFloatingButton(unreadCount: supportInboxStore.unreadCount) {
-                showSupportHub = true
+                // Unread reply waiting → straight into the chat it lives in;
+                // otherwise the hub chooser as usual (7/24 item 3b).
+                if supportInboxStore.unreadCount > 0 {
+                    showSupport = true
+                } else {
+                    showSupportHub = true
+                }
             }
         }
-        // The floating button now opens the Help & Support hub (start a
-        // request / my requests / chat). A support-message push still opens
-        // the chat directly (below).
+        // The floating button opens the Help & Support hub (or the chat
+        // directly when a reply is waiting). A support-message push also
+        // opens the chat directly (below).
         .sheet(isPresented: $showSupportHub) {
             SupportHubView().environmentObject(supportInboxStore)
         }
