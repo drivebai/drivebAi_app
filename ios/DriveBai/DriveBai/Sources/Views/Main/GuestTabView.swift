@@ -3,34 +3,55 @@ import SwiftUI
 // MARK: - Guest Tab View (guest mode)
 //
 // The signed-out shell: Turo-style, the app opens straight into browsing.
-// Two tabs — Discover (the real listings, server-redacted payload) and
-// Sign in (the OTP flow embedded as a tab root, never a wall). Gated CTAs
-// inside Discover raise `DeepLinkRouter.guestPrompt`, presented here as a
+// The bar mirrors the authenticated shell — Today / Discover / Chats /
+// Profile, same icons and tags — so guests see the app they're signing up
+// for. Discover is fully browsable (server-redacted payload); the three
+// gated tabs embed the OTP flow as their tab root, never a wall, each with
+// a context line explaining what lives behind it. Gated CTAs inside
+// Discover still raise `DeepLinkRouter.guestPrompt`, presented here as a
 // dismissible sheet with a conversion context line.
 //
-// Deliberately absent for guests: Today, Chats, the Ask-for-Help floating
-// button (support chat is per-user; anonymous support is a flagged
-// follow-up, not built).
+// Deliberately absent for guests: the Ask-for-Help floating button
+// (support chat is per-user; anonymous support is a flagged follow-up,
+// not built).
 struct GuestTabView: View {
     @EnvironmentObject private var deepLinkRouter: DeepLinkRouter
     @ObservedObject private var guestStore = GuestOnboardingStore.shared
-    @State private var selectedTab = 0
+    /// Same tags as DriverTabView; guests open on Discover (tag 1) so the
+    /// first screen is still browsing, not a sign-in prompt.
+    @State private var selectedTab = 1
 
     var body: some View {
         TabView(selection: $selectedTab) {
+            gatedTab(
+                title: "Sign in to see your day",
+                body: "Your rentals, pickups and tasks live here."
+            )
+            .tabItem {
+                Label("Today", systemImage: "house.fill")
+            }
+            .tag(0)
+
             DiscoverView()
                 .tabItem {
-                    Image(systemName: "car.2.fill")
-                    Text("Discover")
-                }
-                .tag(0)
-
-            signInTab
-                .tabItem {
-                    Image(systemName: "person.crop.circle")
-                    Text("Sign in")
+                    Label("Discover", systemImage: "car.2.fill")
                 }
                 .tag(1)
+
+            gatedTab(
+                title: "Sign in to see your chats",
+                body: "Messages with owners and renters live here."
+            )
+            .tabItem {
+                Label("Chats", systemImage: "message.fill")
+            }
+            .tag(2)
+
+            profileTab
+                .tabItem {
+                    Label("Profile", systemImage: "person.fill")
+                }
+                .tag(3)
         }
         .tint(.driveBaiPrimary)
         // Conversion prompt raised by a gated CTA (heart / rent / buy /
@@ -46,11 +67,22 @@ struct GuestTabView: View {
         }
     }
 
-    /// The Sign-in tab treats a first-time visitor differently from someone
-    /// returning to log in. First time: the value/trust intro above the email
-    /// field. Returning: straight to a "Welcome back" email prompt.
+    /// A gated tab embeds the existing OTP entry as its root with copy naming
+    /// what the tab holds — the same return-to-context machinery as the old
+    /// Sign-in tab, so nothing downstream (capture/replay) changes.
+    private func gatedTab(title: String, body: String) -> some View {
+        EnterEmailOTPView(
+            showDismissButton: false,
+            contextTitle: title,
+            contextBody: body
+        )
+    }
+
+    /// The Profile tab absorbs the old Sign-in tab's two-state treatment:
+    /// first-time visitors get the value/trust intro above the email field,
+    /// returning visitors go straight to a "Welcome back" email prompt.
     @ViewBuilder
-    private var signInTab: some View {
+    private var profileTab: some View {
         if guestStore.hasEnteredEmailBefore {
             EnterEmailOTPView(
                 showDismissButton: false,
