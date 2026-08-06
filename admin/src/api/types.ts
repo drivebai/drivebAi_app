@@ -363,6 +363,11 @@ export interface AdminTicket {
   user_name: string
   user_email: string
   user_role: string
+  // Ticket rating (7/24 item 3f): the reporter's 1–5★ of how the request
+  // was handled; needs_followup is set when they rated 3★ or below.
+  needs_followup: boolean
+  rating?: number | null
+  rating_comment?: string | null
 }
 
 export interface AdminTicketsPage {

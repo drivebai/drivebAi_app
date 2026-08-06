@@ -2,6 +2,7 @@
 import { ref, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
+import StarRating from '../components/StarRating.vue'
 import { adminApi } from '../api/admin'
 import type { AdminTicket, TicketAttachment, TicketCategory, TicketStatus } from '../api/types'
 import { useToastStore } from '../stores/toast'
@@ -213,6 +214,7 @@ function daysOpenClass(t: AdminTicket): string {
                 <span class="status-chip" :style="{ background: STATUS_COLORS[t.status] + '22', color: STATUS_COLORS[t.status] }">
                   {{ STATUS_LABELS[t.status] }}
                 </span>
+                <span v-if="t.needs_followup" class="followup-chip" title="Rated 3★ or below — needs follow-up">⚑ Follow up</span>
               </td>
             </tr>
           </tbody>
@@ -229,6 +231,7 @@ function daysOpenClass(t: AdminTicket): string {
           >
             <div class="lc-top">
               <span class="lc-title">{{ categoryLabel(t.category) }}</span>
+              <span v-if="t.needs_followup" class="followup-chip" title="Rated 3★ or below — needs follow-up">⚑</span>
               <span class="status-chip" :style="{ background: STATUS_COLORS[t.status] + '22', color: STATUS_COLORS[t.status] }">
                 {{ STATUS_LABELS[t.status] }}
               </span>
@@ -308,6 +311,15 @@ function daysOpenClass(t: AdminTicket): string {
               </div>
             </a>
           </div>
+        </template>
+
+        <template v-if="selected.rating != null">
+          <div class="section-title">User rating</div>
+          <p class="body-text rating-row">
+            <StarRating :rating="selected.rating" :count="1" />
+            <span v-if="selected.needs_followup" class="followup-chip">⚑ Needs follow-up</span>
+          </p>
+          <p v-if="selected.rating_comment" class="body-text rating-comment">“{{ selected.rating_comment }}”</p>
         </template>
 
         <div class="section-title">Timeline</div>
@@ -395,6 +407,21 @@ function daysOpenClass(t: AdminTicket): string {
   font-size: 11px;
   font-weight: 600;
 }
+
+/* Low-rating follow-up flag (≤3★). */
+.followup-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #e53e3e22;
+  color: #e53e3e;
+  white-space: nowrap;
+}
+.rating-row { display: flex; align-items: center; gap: 4px; }
+.rating-comment { font-style: italic; color: var(--text-muted); }
 
 /* Days-outstanding pill — tiers match the iOS chip (quiet/amber/red). */
 .days-open {
