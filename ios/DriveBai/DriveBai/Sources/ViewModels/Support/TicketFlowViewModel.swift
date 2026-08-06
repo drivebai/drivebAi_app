@@ -1,25 +1,12 @@
 import Foundation
 import SwiftUI
 
-enum TicketStep: Int, CaseIterable {
-    case category = 0
-    case describe
-    case attach
-    case review
-
-    var title: String {
-        switch self {
-        case .category: return "What do you need help with?"
-        case .describe: return "Describe the problem"
-        case .attach:   return "Add evidence"
-        case .review:   return "Review & submit"
-        }
-    }
-}
-
+// One-screen "Report a Problem" form state (was a 4-step wizard). The
+// server-side draft machinery is unchanged — a draft is still born on open
+// because evidence uploads against the ticket id — but every field now lives
+// on a single screen with one Submit.
 @MainActor
 final class TicketFlowViewModel: ObservableObject {
-    @Published var currentStep: TicketStep = .category
     @Published var ticket: TicketAPIResponse?
     @Published var isLoading = false
     @Published var isSaving = false
@@ -27,7 +14,7 @@ final class TicketFlowViewModel: ObservableObject {
     @Published var isSubmitted = false
     @Published var error: String?
 
-    // Step data bound to the form.
+    // Form fields.
     @Published var category: TicketCategory?
     @Published var subject: String = ""
     @Published var descriptionText: String = ""
@@ -35,6 +22,12 @@ final class TicketFlowViewModel: ObservableObject {
 
     var ticketId: UUID? { ticket?.id }
     var attachments: [TicketAttachmentAPI] { ticket?.attachments ?? [] }
+
+    /// The same minimum the server validates at submit: a category and a
+    /// non-empty description. The "Other" detail line and evidence are optional.
+    var canSubmit: Bool {
+        category != nil && !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     // MARK: - Lifecycle
 
@@ -62,56 +55,20 @@ final class TicketFlowViewModel: ObservableObject {
         category = t.categoryEnum
         subject = t.subject
         descriptionText = t.description
-        // Resume where the user left off (accidents lost this — restarted at 0).
-        if let step = TicketStep(rawValue: t.lastStep) {
-            currentStep = step
-        }
-    }
-
-    // MARK: - Navigation
-
-    var canGoBack: Bool { currentStep.rawValue > 0 }
-    var isLastStep: Bool { currentStep == .review }
-
-    /// Whether the current step is complete enough to advance.
-    var canAdvance: Bool {
-        switch currentStep {
-        case .category: return category != nil
-        case .describe: return !descriptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        default:        return true
-        }
-    }
-
-    func goBack() {
-        guard canGoBack else { return }
-        currentStep = TicketStep(rawValue: currentStep.rawValue - 1)!
-    }
-
-    func goForward() async {
-        let next = min(currentStep.rawValue + 1, TicketStep.review.rawValue)
-        await saveCurrentStep(lastStep: next)
-        guard error == nil else { return }
-        if isLastStep { return }
-        currentStep = TicketStep(rawValue: next)!
     }
 
     // MARK: - Save
 
-    private func saveCurrentStep(lastStep: Int) async {
-        guard let ticketId else { return }
+    /// Persist the form into the draft. Called before submit and when the
+    /// sheet closes, so an abandoned form comes back filled next time.
+    func saveDraft() async {
+        guard let ticketId, !isSubmitted else { return }
         isSaving = true
         error = nil
         var patch = TicketPatchRequest()
-        patch.lastStep = lastStep
-        switch currentStep {
-        case .category:
-            patch.category = category?.rawValue
-        case .describe:
-            patch.subject = subject
-            patch.description = descriptionText
-        default:
-            break
-        }
+        patch.category = category?.rawValue
+        patch.subject = subject
+        patch.description = descriptionText
         do {
             ticket = try await APIClient.shared.patchTicket(id: ticketId, patch: patch)
         } catch {
@@ -151,8 +108,7 @@ final class TicketFlowViewModel: ObservableObject {
 
     func submit() async {
         guard let ticketId else { return }
-        // Persist the review step's cursor before submitting.
-        await saveCurrentStep(lastStep: TicketStep.review.rawValue)
+        await saveDraft()
         guard error == nil else { return }
         isSubmitting = true
         error = nil

@@ -531,7 +531,9 @@ func categoryLabel(c models.TicketCategory) string {
 	case models.TicketCategoryPayments:
 		return "Payments & refunds"
 	default:
-		return "Report a problem"
+		// The submission screen itself is titled "Report a Problem" (7/24
+		// item 3c), so the catch-all category reads "Other" everywhere.
+		return "Other"
 	}
 }
 

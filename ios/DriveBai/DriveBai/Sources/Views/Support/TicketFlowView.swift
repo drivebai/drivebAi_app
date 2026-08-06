@@ -1,10 +1,12 @@
 import SwiftUI
 
-// MARK: - Ticket wizard (category → describe → attach → review)
+// MARK: - Report a Problem (one screen)
 //
-// A lighter sibling of the accident report: a server-side draft born on open,
-// evidence uploaded against it, autosaved per step (so killing the app and
-// reopening resumes exactly where you were), then a validated submit.
+// A lighter sibling of the accident report, collapsed from a 4-step wizard to
+// a single screen: category dropdown, description, evidence, Submit. The
+// server-side draft is still born on open — evidence can only upload against
+// an existing ticket id — and the form persists into it on close, so an
+// abandoned report comes back filled.
 struct TicketFlowView: View {
     @StateObject private var vm = TicketFlowViewModel()
     @Environment(\.dismiss) private var dismiss
@@ -20,18 +22,15 @@ struct TicketFlowView: View {
                 } else if vm.isLoading && vm.ticket == nil {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    VStack(spacing: 0) {
-                        progressHeader
-                        ScrollView {
-                            stepContent
-                                .padding(16)
-                                .padding(.bottom, 90)
-                        }
+                    ScrollView {
+                        formContent
+                            .padding(16)
+                            .padding(.bottom, 90)
                     }
                     .safeAreaInset(edge: .bottom) { ctaBar }
                 }
             }
-            .navigationTitle("New request")
+            .navigationTitle("Report a Problem")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if !vm.isSubmitted {
@@ -41,107 +40,70 @@ struct TicketFlowView: View {
                 }
             }
             .task { await vm.loadOrCreate() }
+            // Persist whatever was typed when the sheet goes away (Cancel or
+            // swipe-down) so the draft resumes filled next time.
+            .onDisappear {
+                if !vm.isSubmitted {
+                    Task { await vm.saveDraft() }
+                }
+            }
             .alert("Something went wrong", isPresented: Binding(
                 get: { vm.error != nil }, set: { if !$0 { vm.error = nil } }
             )) { Button("OK", role: .cancel) { vm.error = nil } } message: { Text(vm.error ?? "") }
         }
     }
 
-    // MARK: Chrome
+    // MARK: Form
 
-    private var progressHeader: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("Step \(vm.currentStep.rawValue + 1) of \(TicketStep.allCases.count)")
-                    .font(.caption).foregroundColor(.secondary)
-                Spacer()
-                if vm.isSaving {
-                    HStack(spacing: 4) {
-                        ProgressView().scaleEffect(0.7)
-                        Text("Saving…").font(.caption2).foregroundColor(.secondary)
-                    }
-                }
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color(.systemGray5)).frame(height: 4)
-                    Capsule().fill(Color.driveBaiPrimary)
-                        .frame(width: geo.size.width * progressFraction, height: 4)
-                }
-            }
-            .frame(height: 4)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-    }
-
-    private var progressFraction: CGFloat {
-        CGFloat(vm.currentStep.rawValue + 1) / CGFloat(TicketStep.allCases.count)
-    }
-
-    private var ctaBar: some View {
-        VStack(spacing: 0) {
-            Divider()
-            HStack(spacing: 12) {
-                if vm.canGoBack {
-                    Button("Back") { vm.goBack() }
-                        .buttonStyle(.bordered)
-                        .tint(.secondary)
-                }
-                Button(action: { Task { vm.isLastStep ? await vm.submit() : await vm.goForward() } }) {
-                    HStack {
-                        if vm.isSaving || vm.isSubmitting { ProgressView().tint(.white) }
-                        Text(vm.isLastStep ? "Submit request" : "Next").fontWeight(.semibold)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(DriveBaiButtonStyle())
-                .disabled(!vm.canAdvance || vm.isSaving || vm.isSubmitting)
-            }
-            .padding(16)
-            .background(Color(.systemBackground))
-        }
-    }
-
-    // MARK: Steps
-
-    @ViewBuilder
-    private var stepContent: some View {
-        switch vm.currentStep {
-        case .category: categoryStep
-        case .describe: describeStep
-        case .attach:   attachStep
-        case .review:   reviewStep
-        }
-    }
-
-    private var categoryStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(vm.currentStep.title).font(.title3).fontWeight(.bold)
-            Text("Pick the closest match so we can route your request.")
-                .font(.subheadline).foregroundColor(.secondary)
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                ForEach(TicketCategory.allCases) { cat in
-                    CategoryCard(category: cat, isSelected: vm.category == cat) {
-                        vm.category = cat
-                    }
-                }
-            }
-        }
-    }
-
-    private var describeStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(vm.currentStep.title).font(.title3).fontWeight(.bold)
+    private var formContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // Category dropdown. "Other" reveals the free-text topic line.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Subject").font(.caption.weight(.medium)).foregroundColor(.secondary)
-                TextField("Short summary (optional)", text: $vm.subject)
-                    .textFieldStyle(.roundedBorder)
+                Text("Category").font(.caption.weight(.medium)).foregroundColor(.secondary)
+                Menu {
+                    ForEach(TicketCategory.allCases) { cat in
+                        Button {
+                            vm.category = cat
+                        } label: {
+                            Label(cat.label, systemImage: cat.icon)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        if let cat = vm.category {
+                            Image(systemName: cat.icon)
+                                .font(.system(size: 16))
+                                .foregroundColor(.driveBaiPrimary)
+                            Text(cat.label).foregroundColor(.primary)
+                        } else {
+                            Text("Choose a category")
+                                .foregroundColor(Color(.placeholderText))
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(.systemGray6)))
+                }
+                if let cat = vm.category {
+                    Text(cat.blurb).font(.caption2).foregroundColor(.secondary)
+                }
             }
+
+            if vm.category == .other {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("What's it about?").font(.caption.weight(.medium)).foregroundColor(.secondary)
+                    TextField("A few words (optional)", text: $vm.subject)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("What's happening?").font(.caption.weight(.medium)).foregroundColor(.secondary)
                 TextEditor(text: $vm.descriptionText)
-                    .frame(minHeight: 160)
+                    .frame(minHeight: 140)
                     .padding(8)
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(.systemGray4)))
                     .overlay(alignment: .topLeading) {
@@ -153,46 +115,42 @@ struct TicketFlowView: View {
                         }
                     }
             }
-        }
-    }
 
-    private var attachStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(vm.currentStep.title).font(.title3).fontWeight(.bold)
-            Text("Screenshots or documents help us understand faster. Optional.")
-                .font(.subheadline).foregroundColor(.secondary)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 10)], spacing: 10) {
-                ForEach(vm.attachments) { att in
-                    AttachmentThumb(attachment: att) { Task { await vm.deleteAttachment(id: att.id) } }
-                }
-                AddEvidenceButton(isUploading: vm.isUploadingAttachment) { picked in
-                    Task { await vm.uploadAttachment(data: picked.data, filename: picked.filename, mimeType: picked.mimeType) }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Evidence").font(.caption.weight(.medium)).foregroundColor(.secondary)
+                Text("Screenshots or documents help us understand faster. Optional.")
+                    .font(.caption2).foregroundColor(.secondary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 10)], spacing: 10) {
+                    ForEach(vm.attachments) { att in
+                        AttachmentThumb(attachment: att) { Task { await vm.deleteAttachment(id: att.id) } }
+                    }
+                    AddEvidenceButton(isUploading: vm.isUploadingAttachment) { picked in
+                        Task { await vm.uploadAttachment(data: picked.data, filename: picked.filename, mimeType: picked.mimeType) }
+                    }
                 }
             }
-        }
-    }
 
-    private var reviewStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(vm.currentStep.title).font(.title3).fontWeight(.bold)
-            reviewRow("Category", vm.category?.label ?? "—")
-            if !vm.subject.isEmpty { reviewRow("Subject", vm.subject) }
-            reviewRow("Details", vm.descriptionText.isEmpty ? "—" : vm.descriptionText)
-            reviewRow("Evidence", vm.attachments.isEmpty ? "None" : "\(vm.attachments.count) attached")
             Text("Support is a small team — we read every request and reply as soon as we can.")
                 .font(.footnote).foregroundColor(.secondary)
                 .padding(.top, 4)
         }
     }
 
-    private func reviewRow(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.caption.weight(.medium)).foregroundColor(.secondary)
-            Text(value).font(.body).foregroundColor(.primary)
-                .fixedSize(horizontal: false, vertical: true)
+    private var ctaBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Button(action: { Task { await vm.submit() } }) {
+                HStack {
+                    if vm.isSaving || vm.isSubmitting { ProgressView().tint(.white) }
+                    Text("Submit").fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(DriveBaiButtonStyle())
+            .disabled(!vm.canSubmit || vm.isSaving || vm.isSubmitting)
+            .padding(16)
+            .background(Color(.systemBackground))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Submitted
@@ -215,37 +173,6 @@ struct TicketFlowView: View {
 }
 
 // MARK: - Subviews
-
-private struct CategoryCard: View {
-    let category: TicketCategory
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: category.icon)
-                    .font(.system(size: 22))
-                    .foregroundColor(.driveBaiPrimary)
-                Text(category.label).font(.subheadline.weight(.semibold))
-                    .foregroundColor(.primary).multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(category.blurb).font(.caption2).foregroundColor(.secondary)
-                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6)))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(isSelected ? Color.driveBaiPrimary : Color.clear, lineWidth: 2.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(category.label)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-}
 
 private struct AttachmentThumb: View {
     let attachment: TicketAttachmentAPI

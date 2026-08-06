@@ -17,7 +17,7 @@ struct SupportHubView: View {
             List {
                 Section {
                     Button { showTicketFlow = true } label: {
-                        hubRow("plus.bubble.fill", "Start a request",
+                        hubRow("plus.bubble.fill", "Report a Problem",
                                "Tell us what's wrong, attach evidence, and track it")
                     }
                     NavigationLink {
@@ -133,7 +133,7 @@ struct MyRequestsView: View {
         VStack(spacing: 12) {
             Image(systemName: "tray").font(.system(size: 44)).foregroundColor(.secondary)
             Text("No requests yet").font(.headline)
-            Text("When you start a request, it'll show up here with its status.")
+            Text("When you report a problem, it'll show up here with its status.")
                 .font(.subheadline).foregroundColor(.secondary)
                 .multilineTextAlignment(.center).padding(.horizontal, 32)
         }

@@ -36,7 +36,7 @@ const CATEGORY_LABELS: Record<TicketCategory, string> = {
   renting: 'Renting a car',
   buy_sell: 'Buying or selling a car',
   payments: 'Payments & refunds',
-  other: 'Report a problem',
+  other: 'Other',
 }
 
 const STATUS_LABELS: Record<string, string> = {

@@ -23,7 +23,9 @@ enum TicketCategory: String, CaseIterable, Identifiable {
         case .renting:  return "Renting a car"
         case .buySell:  return "Buying or selling a car"
         case .payments: return "Payments & refunds"
-        case .other:    return "Report a problem"
+        // "Other" — the screen itself is now titled "Report a Problem", so
+        // the catch-all category can't share that name.
+        case .other:    return "Other"
         }
     }
 
