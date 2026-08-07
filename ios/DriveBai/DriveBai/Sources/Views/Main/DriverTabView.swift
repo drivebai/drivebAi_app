@@ -157,7 +157,9 @@ struct SupportFloatingButton: View {
                     .fill(unreadCount > 0 ? Color.black : Color.driveBaiPrimary)
                     .frame(width: 56, height: 56)
 
-                // The DriveBai mark (wing → "b"), template-tinted white.
+                // The DriveBai mark (wing → "b"), template-tinted: white at
+                // rest; on the black unread circle it wears the icon's own
+                // lighter teal (#9ED7DD) so the button reads as the logo.
                 //
                 // Centred by its bounding box (no offset). Verified in the
                 // real app via ImageRenderer: offset 0 gives the most EVEN
@@ -176,7 +178,7 @@ struct SupportFloatingButton: View {
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
-                    .foregroundColor(.white)
+                    .foregroundColor(unreadCount > 0 ? .driveBaiIconTeal : .white)
                     .frame(width: 36, height: 36)
             }
             .shadow(color: .black.opacity(0.18), radius: 6, x: 0, y: 2)

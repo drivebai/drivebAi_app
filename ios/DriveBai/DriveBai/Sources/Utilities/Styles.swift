@@ -5,6 +5,9 @@ import SwiftUI
 extension Color {
     static let driveBaiPrimary = Color(red: 78/255, green: 205/255, blue: 196/255) // Teal/Turquoise
     static let driveBaiSecondary = Color(red: 255/255, green: 107/255, blue: 107/255)
+    /// The app icon's mark teal (#9ED7DD) — lighter than driveBaiPrimary.
+    /// Used where UI reproduces the icon's black-plus-teal look.
+    static let driveBaiIconTeal = Color(red: 158/255, green: 215/255, blue: 221/255)
 }
 
 // MARK: - DriveBai Button Style
