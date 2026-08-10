@@ -200,6 +200,12 @@ function currentMode(u: AdminUser): string { return u.active_role ?? u.role }
 function otherMode(u: AdminUser): 'driver' | 'car_owner' {
   return currentMode(u) === 'driver' ? 'car_owner' : 'driver'
 }
+// A user "has both profiles" when they hold a driver AND an owner profile
+// (profile_roles ships on every admin user row; second profile is created
+// lazily on first mode switch).
+function hasBothProfiles(u: AdminUser): boolean {
+  return (u.profile_roles ?? []).includes('driver') && (u.profile_roles ?? []).includes('car_owner')
+}
 function askSwitch(u: AdminUser) {
   switchTarget.value = otherMode(u)
   pendingSwitch.value = u
@@ -358,7 +364,10 @@ function onboardingLabel(s: string) {
       <td>{{ row.email }}</td>
       <td>{{ row.first_name }} {{ row.last_name }}</td>
       <td>{{ roleLabel(row.signup_role ?? row.role) }}</td>
-      <td>{{ roleLabel(currentMode(row)) }}</td>
+      <td>
+        {{ roleLabel(currentMode(row)) }}
+        <span v-if="hasBothProfiles(row)" class="both-badge" title="Holds both driver and owner profiles">Driver + Owner</span>
+      </td>
       <td><StarRating :rating="row.rating" :count="row.rating_count" /></td>
       <td>
         <StatusBadge
@@ -400,7 +409,10 @@ function onboardingLabel(s: string) {
           />
         </div>
         <div class="lc-name">{{ row.email }}</div>
-        <div class="lc-sub">{{ roleLabel(row.signup_role ?? row.role) }} · {{ fmtDate(row.created_at) }}</div>
+        <div class="lc-sub">
+          {{ roleLabel(row.signup_role ?? row.role) }} · {{ fmtDate(row.created_at) }}
+          <span v-if="hasBothProfiles(row)" class="both-badge">Driver + Owner</span>
+        </div>
       </button>
       <footer v-if="total > 0" class="mobile-pager">
         <span class="muted">{{ ((page - 1) * limit) + 1 }}–{{ Math.min(page * limit, total) }} of {{ total }}</span>
@@ -424,6 +436,11 @@ function onboardingLabel(s: string) {
         <button class="ghost" :disabled="switching" @click="askSwitch(drawerUser)">
           Switch to {{ roleLabel(otherMode(drawerUser)) }}
         </button>
+      </dd>
+      <dt>Profiles</dt>
+      <dd>
+        <span v-if="hasBothProfiles(drawerUser)" class="both-badge">Driver + Owner</span>
+        <span v-else>{{ roleLabel(currentMode(drawerUser)) }} only</span>
       </dd>
       <dt>Rating</dt><dd><StarRating :rating="drawerUser.rating" :count="drawerUser.rating_count" /></dd>
       <dt>Email verified</dt><dd>{{ drawerUser.is_email_verified ? 'Yes' : 'No' }}</dd>
@@ -783,5 +800,18 @@ select { width: 160px; }
   }
   .mobile-pager .pager { display: flex; align-items: center; gap: 12px; }
   .mobile-pager .pager button { min-height: 44px; min-width: 72px; }
+}
+
+/* User holds both driver and owner profiles (7/31 batch item 1). */
+.both-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #4ecdc422;
+  color: #0d9488;
+  white-space: nowrap;
 }
 </style>
