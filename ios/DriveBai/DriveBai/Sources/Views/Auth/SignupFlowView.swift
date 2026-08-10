@@ -161,6 +161,19 @@ struct SignupUserInfoStepView: View {
             onContinue: { signupFlow.goToNextStep() }
         ) {
             VStack(spacing: 20) {
+                // Once the account exists (registration fires on the role
+                // step's Continue), these fields are records, not drafts —
+                // edits here would never be re-sent, and retyping the email
+                // or phone would trip the availability checks against the
+                // user's OWN just-registered values. Lock the form and say
+                // where edits actually happen (batch item 4).
+                if signupFlow.isRegistered {
+                    Label("Your account is created — these details can be edited later in Profile.",
+                          systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 // Legal Name Section
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Legal name")
@@ -334,6 +347,10 @@ struct SignupUserInfoStepView: View {
                     SignupErrorBanner(message: error)
                 }
             }
+            // Read-only after registration (see note above). The container's
+            // Continue button lives outside this VStack and stays active, so
+            // the user can still move forward.
+            .disabled(signupFlow.isRegistered)
             .padding(.horizontal)
             .padding(.top, 16)
         }

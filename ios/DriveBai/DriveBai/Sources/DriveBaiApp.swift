@@ -575,10 +575,13 @@ struct ResumeDocumentsStepView: View {
             title: "Driver Verification",
             currentStep: signupFlow.currentStepIndex,
             totalSteps: signupFlow.totalSteps,
-            showBackButton: false,
+            // Back to the photo step is meaningful here (batch item 4):
+            // documents already uploaded live server-side and the step's
+            // refetch restores them, so nothing is lost going back.
+            showBackButton: true,
             isLoading: isCompletingOnboarding,
             canContinue: authStore.hasRequiredDocuments(),
-            onBack: nil,
+            onBack: { signupFlow.goToPreviousStep() },
             onContinue: { completeOnboarding() }
         ) {
             VStack(spacing: 24) {
