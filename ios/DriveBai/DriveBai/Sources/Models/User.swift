@@ -285,8 +285,11 @@ enum DocumentType: String, Codable, CaseIterable {
     /// Vehicle registration is deliberately excluded: it's a car-owner
     /// concern, not a driver's, so the "Add a supporting document" menu must
     /// never offer it to drivers (the backend's required set is license-only).
+    ///
+    /// TLC leads (client-requested order): most of the fleet's drivers are
+    /// TLC-licensed, so it's the most common add.
     static var optionalDriverDocs: [DocumentType] {
-        [.commercialLicense, .tlcLicense, .other]
+        [.tlcLicense, .commercialLicense, .other]
     }
 }
 
