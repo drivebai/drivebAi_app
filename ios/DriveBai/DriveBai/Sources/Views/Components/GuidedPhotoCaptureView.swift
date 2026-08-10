@@ -103,7 +103,7 @@ struct GuidedPhotoCaptureView: View {
 
             // Silhouette overlay for the current slot.
             if let slot = currentSlot {
-                Image(systemName: overlaySymbol(for: slot))
+                overlayImage(for: slot)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: 280, maxHeight: 200)
@@ -300,7 +300,7 @@ struct GuidedPhotoCaptureView: View {
 
             Spacer()
 
-            Image(systemName: currentSlot.map(overlaySymbol(for:)) ?? "car.fill")
+            (currentSlot.map(overlayImage(for:)) ?? Image(systemName: "car.fill"))
                 .resizable()
                 .scaledToFit()
                 .frame(maxWidth: 180, maxHeight: 120)
@@ -390,10 +390,16 @@ struct GuidedPhotoCaptureView: View {
         dismiss()
     }
 
-    private func overlaySymbol(for slot: PhotoSlotType) -> String {
-        // Guard against SF Symbols missing on older runtimes — fall back to
-        // the plain car glyph rather than rendering nothing.
-        UIImage(systemName: slot.overlayAssetName) != nil ? slot.overlayAssetName : "car.fill"
+    private func overlayImage(for slot: PhotoSlotType) -> Image {
+        if slot.overlayIsSystemSymbol {
+            // Guard against SF Symbols missing on older runtimes — fall back
+            // to the plain car glyph rather than rendering nothing.
+            let name = UIImage(systemName: slot.overlayAssetName) != nil
+                ? slot.overlayAssetName : "car.fill"
+            return Image(systemName: name)
+        }
+        // Catalog template assets ship in the bundle — no runtime guard needed.
+        return Image(slot.overlayAssetName)
     }
 
     /// Re-encodes an arbitrary library pick as JPEG so the upload pipeline

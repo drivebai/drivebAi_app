@@ -190,18 +190,29 @@ enum PhotoSlotType: String, CaseIterable, Identifiable {
         }
     }
 
-    /// SF Symbol used as the translucent silhouette overlay in the guided
-    /// capture flow. Simple shapes only — no hand-authored assets.
+    /// Name of the translucent silhouette overlay in the guided capture
+    /// flow. Mostly SF Symbols; the two ¾ angles have no system glyph, so
+    /// they use hand-authored template assets (batch item 6) — every shot
+    /// now shows the actual angle being requested.
     var overlayAssetName: String {
         switch self {
-        case .coverFront: return "car.front.waves.up"
-        case .frontLeft34: return "car.fill"
+        case .coverFront: return "car.fill" // plain front silhouette
+        case .frontLeft34: return "CaptureFrontLeft34"
         case .left: return "car.side"
         case .back: return "car.rear"
-        case .rearRight34: return "car.fill"
+        case .rearRight34: return "CaptureRearRight34"
         case .right: return "car.side.fill"
         case .dashboard: return "steeringwheel"
         case .interior: return "carseat.left.fill"
+        }
+    }
+
+    /// Whether overlayAssetName is an SF Symbol (vs a catalog template
+    /// asset). Drives Image(systemName:) vs Image(_:) at the render sites.
+    var overlayIsSystemSymbol: Bool {
+        switch self {
+        case .frontLeft34, .rearRight34: return false
+        default: return true
         }
     }
 
