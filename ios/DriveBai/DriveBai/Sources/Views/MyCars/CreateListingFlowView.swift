@@ -82,7 +82,10 @@ class CreateListingState: ObservableObject {
     // (Security deposit removed in the QA round — QA pt 7. The backend
     // ignores client-sent deposits and always serves 0.)
     @Published var minYearsLicensed: Int = 2
-    @Published var insuranceCoverage: InsuranceCoverage = .fullCoverage
+    // The CAR's insurance level, confirmed by the owner on the Vehicle
+    // Documents step (moved out of Renter Requirements — batch item 7).
+    // Defaults to the state minimum, not full coverage.
+    @Published var insuranceCoverage: InsuranceCoverage = .liabilityOnly
 
     // Location
     @Published var neighborhood: String = ""
@@ -238,7 +241,7 @@ class CreateListingState: ObservableObject {
         if year != Calendar.current.component(.year, from: Date()) { return true }
         if bodyType != .sedan || fuelType != .gas || mileage != 0 { return true }
         if !isForRent || weeklyRentPrice != 350 || isForSale || salePrice != 25000 { return true }
-        if minYearsLicensed != 2 || insuranceCoverage != .fullCoverage { return true }
+        if minYearsLicensed != 2 || insuranceCoverage != .liabilityOnly { return true }
         if hasSelectedLocation || !description.isEmpty { return true }
         if hasAtLeastOnePhoto || !pendingDocuments.isEmpty { return true }
         return false
@@ -1288,19 +1291,8 @@ struct CreateListingRequirementsStep: View {
                     .cornerRadius(8)
                 }
 
-                // Insurance coverage
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Minimum driver insurance")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-
-                    Picker("Insurance", selection: $state.insuranceCoverage) {
-                        ForEach(InsuranceCoverage.allCases) { coverage in
-                            Text(coverage.displayText).tag(coverage)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
+                // (Insurance moved to Vehicle Documents — it describes the
+                // CAR's coverage, not a demand on the renter. Batch item 7.)
 
                 // Pickup location - map picker row
                 VStack(alignment: .leading, spacing: 8) {
@@ -1768,6 +1760,26 @@ struct CreateListingDocumentsStep: View {
                         type: type,
                         isRequired: state.requiredDocumentTypes.contains(type)
                     )
+
+                    // The coverage level sits directly under the Insurance
+                    // Certificate slot it certifies (batch item 7): the
+                    // owner confirms what the car carries while uploading
+                    // the proof. Default is Liability Only.
+                    if type == .insurance {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Insurance level on this car")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+
+                            Picker("Insurance level", selection: $state.insuranceCoverage) {
+                                ForEach(InsuranceCoverage.allCases) { coverage in
+                                    Text(coverage.displayText).tag(coverage)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        .padding(.bottom, 4)
+                    }
                 }
 
                 if !state.hasAllRequiredDocuments {
@@ -1958,10 +1970,15 @@ struct CreateListingReviewStep: View {
                     }
                 }
 
-                // Requirements card (deposit removed — QA pt 7)
+                // Requirements card (deposit removed — QA pt 7; insurance
+                // moved to the Vehicle card — batch item 7)
                 ReviewSection(title: "Requirements") {
                     ReviewRow(label: "Min. Years Licensed", value: "\(state.minYearsLicensed) years")
-                    ReviewRow(label: "Insurance", value: state.insuranceCoverage.displayText)
+                }
+
+                // Vehicle card — what the car itself carries
+                ReviewSection(title: "Vehicle") {
+                    ReviewRow(label: "Insurance level", value: state.insuranceCoverage.displayText)
                 }
 
                 // Location card

@@ -394,9 +394,15 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	// iOS builds decode deposit_amount as a non-optional Double.
 	car.DepositAmount = 0
 	if req.InsuranceCoverage != nil {
+		if !req.InsuranceCoverage.IsValid() {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("insurance_coverage must be 'liability_only' or 'full_coverage'"))
+			return
+		}
 		car.InsuranceCoverage = *req.InsuranceCoverage
 	} else {
-		car.InsuranceCoverage = models.InsuranceFullCoverage
+		// The car's insurance level defaults to the state minimum, not full
+		// coverage (batch item 7) — matching the DB default from 000043.
+		car.InsuranceCoverage = models.InsuranceLiabilityOnly
 	}
 
 	// Validate pricing
@@ -685,7 +691,7 @@ func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
 	if req.MinYearsLicensed != nil {
 		car.MinYearsLicensed = *req.MinYearsLicensed
 	}
-	if req.InsuranceCoverage != nil {
+	if req.InsuranceCoverage != nil && req.InsuranceCoverage.IsValid() {
 		car.InsuranceCoverage = *req.InsuranceCoverage
 	}
 	// req.Status, req.IsPaused, req.DepositAmount: intentionally not applied.

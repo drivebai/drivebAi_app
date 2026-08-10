@@ -370,7 +370,7 @@ extension CarAPIResponse {
         // back to the default — making autosaved Body/Fuel picks appear lost.
         let bodyType = CarBodyType.allCases.first { $0.rawValue.lowercased() == specs.bodyType.lowercased() } ?? .sedan
         let fuelType = FuelType.allCases.first { $0.rawValue.lowercased() == specs.fuelType.lowercased() } ?? .gas
-        let insuranceCoverage = InsuranceCoverage(rawValue: requirements.insuranceCoverage) ?? .fullCoverage
+        let insuranceCoverage = InsuranceCoverage(rawValue: requirements.insuranceCoverage) ?? .liabilityOnly
         let carStatus = CarListingStatus(rawValue: status) ?? .pending
 
         let carSpecs = CarSpecs(

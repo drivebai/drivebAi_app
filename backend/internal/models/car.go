@@ -51,13 +51,21 @@ const (
 	FuelTypePlugInHybrid FuelType = "plug_in_hybrid"
 )
 
-// InsuranceCoverage represents insurance coverage requirements
+// InsuranceCoverage is the insurance level the owner's CAR carries
+// (owner-confirmed on the Vehicle Documents step — batch item 7; it is not
+// a requirement imposed on the renter).
 type InsuranceCoverage string
 
 const (
 	InsuranceLiabilityOnly InsuranceCoverage = "liability_only"
 	InsuranceFullCoverage  InsuranceCoverage = "full_coverage"
 )
+
+// IsValid gates client-sent values so a bad string 400s instead of failing
+// the Postgres enum cast as a 500.
+func (c InsuranceCoverage) IsValid() bool {
+	return c == InsuranceLiabilityOnly || c == InsuranceFullCoverage
+}
 
 // PhotoSlotType represents the type of photo slot
 type PhotoSlotType string

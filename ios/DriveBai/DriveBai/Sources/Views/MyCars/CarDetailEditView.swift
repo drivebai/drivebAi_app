@@ -149,7 +149,26 @@ struct CarDetailEditView: View {
                             title: "Documents",
                             isExpanded: $isDocumentsExpanded
                         ) {
-                            DocumentsContent(carId: car.id, documents: $editedCar.documents)
+                            VStack(alignment: .leading, spacing: 16) {
+                                // The car's insurance level lives with its
+                                // documents (batch item 7): the owner
+                                // confirms what the car carries next to the
+                                // certificate that proves it.
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Insurance level on this car")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+
+                                    Picker("Insurance level", selection: $editedCar.requirements.insuranceCoverage) {
+                                        ForEach(InsuranceCoverage.allCases) { coverage in
+                                            Text(coverage.displayText).tag(coverage)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                }
+
+                                DocumentsContent(carId: car.id, documents: $editedCar.documents)
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -885,19 +904,8 @@ private struct RequirementsContent: View {
             // payment formula and are no longer part of the product; the
             // backend ignores the value and serves 0.
 
-            // Insurance coverage
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Minimum driver insurance")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                Picker("Insurance", selection: $requirements.insuranceCoverage) {
-                    ForEach(InsuranceCoverage.allCases) { coverage in
-                        Text(coverage.displayText).tag(coverage)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
+            // (Insurance level moved to the Documents section — it describes
+            // the CAR's coverage, not a demand on the renter. Batch item 7.)
         }
     }
 }
