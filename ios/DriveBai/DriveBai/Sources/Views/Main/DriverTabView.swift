@@ -66,6 +66,9 @@ struct DriverTabView: View {
                     showSupportHub = true
                 }
             }
+            // Tour anchor — the host below reads this preference, so the
+            // spotlight cutout lands exactly on the button.
+            .onboardingTarget(.supportButton)
         }
         // Floating button opens the Help & Support hub (or the chat directly
         // when a reply is waiting); a support-message push also opens the

@@ -298,10 +298,11 @@ struct CoachMarkScrim: View {
             .path(in: spotRect(rect))
     }
 
-    /// Capsule-ish for short wide targets (tab cells / pills), soft rectangle
-    /// otherwise.
+    /// Capsule-ish for short wide targets (tab cells / pills), a full circle
+    /// for the round support button, soft rectangle otherwise.
     private func cornerRadius(_ rect: CGRect) -> CGFloat {
         if case .tab = step.target { return min(rect.width, rect.height) / 2 }
+        if step.target == .supportButton { return min(rect.width, rect.height) / 2 }
         return 14
     }
 

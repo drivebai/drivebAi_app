@@ -66,6 +66,9 @@ struct OwnerTabView: View {
                     showSupportHub = true
                 }
             }
+            // Tour anchor — the host below reads this preference, so the
+            // spotlight cutout lands exactly on the button.
+            .onboardingTarget(.supportButton)
         }
         // The floating button opens the Help & Support hub (or the chat
         // directly when a reply is waiting). A support-message push also

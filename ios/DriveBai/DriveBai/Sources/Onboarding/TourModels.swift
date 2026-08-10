@@ -85,6 +85,12 @@ enum TourTargetID: Hashable {
 
     // My cars
     case myCarsEmpty
+
+    // The floating support button, overlaid on both tab roots. The only
+    // target that lives in a tab-root `.overlay`; anchor preferences from
+    // overlay content still reach the onboardingOverlayHost because the
+    // host modifier is applied outside the overlay in the chain.
+    case supportButton
 }
 
 // MARK: - Presentation enums
