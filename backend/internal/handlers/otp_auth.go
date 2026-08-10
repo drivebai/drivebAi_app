@@ -529,5 +529,13 @@ func validateCompleteRegistration(req *CompleteRegistrationRequest) *models.APIE
 	if !req.Role.IsValid() || req.Role == models.RoleAdmin {
 		return models.NewValidationError("Role must be 'driver' or 'car_owner'")
 	}
+	// Phone is required at signup (batch item 3) — mirrors
+	// validateRegisterRequest; both entry points create users.
+	if req.Phone == "" {
+		return models.NewValidationError("Phone number is required")
+	}
+	if _, ok := models.NormalizePhone(req.Phone); !ok {
+		return models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234")
+	}
 	return nil
 }

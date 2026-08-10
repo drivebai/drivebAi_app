@@ -220,21 +220,19 @@ final class SignupFlowState: ObservableObject {
             }
             emailOK = true
         }
-        // Phone is optional, but when present it must be complete and not
-        // known-taken — the same timing contract as the email field.
+        // Phone is REQUIRED at signup (batch item 3): a complete number for
+        // the chosen country, not known-taken — the same timing contract as
+        // the email field. Existing accounts with no phone are untouched;
+        // this gates new signups only.
         let phoneOK: Bool
-        if phoneNational.filter(\.isNumber).isEmpty {
-            phoneOK = true
-        } else {
-            guard isValidPhone else { return false }
-            switch phoneAvailability {
-            case .taken, .checking:
-                return false
-            case .idle, .available, .networkError:
-                break
-            }
-            phoneOK = true
+        guard isValidPhone else { return false }
+        switch phoneAvailability {
+        case .taken, .checking:
+            return false
+        case .idle, .available, .networkError:
+            break
         }
+        phoneOK = true
         return !firstName.isEmpty &&
         !lastName.isEmpty &&
         emailOK &&

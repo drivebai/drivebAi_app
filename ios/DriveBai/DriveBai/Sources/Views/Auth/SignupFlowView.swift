@@ -279,7 +279,7 @@ struct SignupUserInfoStepView: View {
 
                     phoneValidationRow
 
-                    Text("Optional — we'll text you trip updates and receipts.")
+                    Text("We'll text you trip updates and receipts.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

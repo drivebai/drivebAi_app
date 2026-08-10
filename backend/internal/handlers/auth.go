@@ -636,10 +636,14 @@ func (h *AuthHandler) validateRegisterRequest(req *RegisterRequest) *models.APIE
 	if !req.Role.IsValid() || req.Role == models.RoleAdmin {
 		return models.NewValidationError("Role must be 'driver' or 'car_owner'")
 	}
-	if req.Phone != "" {
-		if _, ok := models.NormalizePhone(req.Phone); !ok {
-			return models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234")
-		}
+	// Phone is required at signup (batch item 3). Existing NULL-phone
+	// accounts are untouched: login never reads phone, and the 000041
+	// unique index is partial (WHERE phone IS NOT NULL).
+	if req.Phone == "" {
+		return models.NewValidationError("Phone number is required")
+	}
+	if _, ok := models.NormalizePhone(req.Phone); !ok {
+		return models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234")
 	}
 	return nil
 }
