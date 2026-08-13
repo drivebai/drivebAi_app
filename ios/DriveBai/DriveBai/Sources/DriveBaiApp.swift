@@ -400,18 +400,24 @@ struct ResumeProfilePhotoStepView: View {
 
     @State private var selectedItem: PhotosPickerItem?
     @State private var isUploading = false
+    @State private var showExitConfirm = false
 
     var body: some View {
         SignupStepContainer(
             title: "Finish signing up",
             currentStep: signupFlow.currentStepIndex,
             totalSteps: signupFlow.totalSteps,
-            showBackButton: false,
+            // This is the resume flow's FIRST screen — there is no earlier
+            // step, so Back means "leave the flow" (batch item 4): the
+            // root-view analog of the main flow's step-1 dismiss-to-login.
+            // Before this, the screen was a trap: no back, no sign-out, and
+            // relaunching the app lands right back here.
+            showBackButton: true,
             isLoading: isUploading || signupFlow.isLoading,
             canContinue: true,
             continueTitle: signupFlow.hasProfilePhoto ? "Continue" : "Upload",
             showSkip: !signupFlow.hasProfilePhoto,
-            onBack: nil,
+            onBack: { showExitConfirm = true },
             onContinue: { handleContinue() },
             onSkip: onSkip
         ) {
@@ -481,6 +487,21 @@ struct ResumeProfilePhotoStepView: View {
                     selectedItem = nil
                 }
             }
+        }
+        // Leaving mid-onboarding is safe — the account exists server-side
+        // and resumeFromStatus lands the user right back here on the next
+        // sign-in. Confirmed so an accidental tap doesn't sign anyone out.
+        .confirmationDialog(
+            "Finish signing up later?",
+            isPresented: $showExitConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Log out", role: .destructive) {
+                Task { await authStore.logout() }
+            }
+            Button("Keep going", role: .cancel) {}
+        } message: {
+            Text("Your account is saved. Log back in any time to pick up where you left off.")
         }
     }
 
