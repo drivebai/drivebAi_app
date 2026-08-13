@@ -109,6 +109,14 @@ func TestHasRequiredDocuments_LicenseOnly(t *testing.T) {
 	if strings.Contains(fn, ">= 2") {
 		t.Error("HasRequiredDocuments must not demand two document types anymore")
 	}
+	// The client's point-9 question hinges on exactly this filter: a
+	// REJECTED license blocks new lease requests, while an uploaded-but-
+	// unreviewed one counts (drivers are active without admin pre-approval;
+	// admin spot-checks and can reject). Pin it so the distinction can't
+	// silently regress.
+	if !strings.Contains(fn, "status <> 'rejected'") {
+		t.Error("HasRequiredDocuments must exclude rejected documents (status <> 'rejected')")
+	}
 }
 
 // ── Admin approval publishes (item 7) ────────────────────────────────────────
