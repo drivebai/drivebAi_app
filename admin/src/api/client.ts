@@ -110,12 +110,46 @@ async function request<T>(method: Method, path: string, body?: unknown): Promise
   return data as T
 }
 
+/// Multipart POST — same auth/error/401 handling as request(), but hands
+/// fetch a FormData body so the browser sets the multipart boundary itself
+/// (no Content-Type header here; setting it manually would break the
+/// boundary). Used by the support-composer attachment upload.
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const res = await fetch(resolveURL(path), { method: 'POST', headers, body: form })
+  if (res.status === 204) return undefined as T
+
+  let data: any = null
+  const ct = res.headers.get('content-type') || ''
+  if (ct.includes('application/json')) {
+    try { data = await res.json() } catch { /* ignore */ }
+  }
+  if (!res.ok) {
+    const apiErr = data?.error
+    const msg = apiErr?.message || res.statusText || 'Request failed'
+    if (res.status === 401) {
+      setToken(null)
+      if (router.currentRoute.value.name !== 'login') {
+        router.replace({ name: 'login', query: { redirect: router.currentRoute.value.fullPath } })
+      }
+    } else if (res.status === 403) {
+      useToastStore().error(msg)
+    }
+    throw new ApiError(msg, res.status, apiErr?.code, apiErr?.details)
+  }
+  return data as T
+}
+
 export const api = {
   get:  <T>(path: string)              => request<T>('GET',    path),
   post: <T>(path: string, body?: any)  => request<T>('POST',   path, body),
   put:  <T>(path: string, body?: any)  => request<T>('PUT',    path, body),
   patch:<T>(path: string, body?: any)  => request<T>('PATCH',  path, body),
   del:  <T>(path: string)              => request<T>('DELETE', path),
+  postForm: <T>(path: string, form: FormData) => requestForm<T>(path, form),
 }
 
 // Build a query string, omitting empty values.

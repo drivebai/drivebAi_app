@@ -233,8 +233,13 @@ func (h *SupportHandler) UploadAttachment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := r.ParseMultipartForm(25 << 20); err != nil { // 25 MB
-		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("failed to parse form data"))
+	// Hard request-size cap (the ParseMultipartForm arg below is only a
+	// memory threshold, not a limit): 50 MB to leave room for the video
+	// types the admin composer sends (batch item 2). Oversized requests
+	// fail the parse and surface as the 400 below.
+	r.Body = http.MaxBytesReader(w, r.Body, 50<<20)
+	if err := r.ParseMultipartForm(25 << 20); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("failed to parse form data (max 50 MB)"))
 		return
 	}
 	caption := strings.TrimSpace(r.FormValue("body"))
@@ -252,6 +257,9 @@ func (h *SupportHandler) UploadAttachment(w http.ResponseWriter, r *http.Request
 		contentType = http.DetectContentType(buf)
 		file.Seek(0, 0)
 	}
+	// Images + PDF (the user side), plus MP4/QuickTime video for the admin
+	// composer (batch item 2). iOS renders video attachments through the
+	// existing QuickLook preview card, so no client change is needed there.
 	validTypes := map[string]string{
 		"image/jpeg":      ".jpg",
 		"image/jpg":       ".jpg",
@@ -259,6 +267,8 @@ func (h *SupportHandler) UploadAttachment(w http.ResponseWriter, r *http.Request
 		"image/heic":      ".heic",
 		"image/heif":      ".heif",
 		"application/pdf": ".pdf",
+		"video/mp4":       ".mp4",
+		"video/quicktime": ".mov",
 	}
 	ext, valid := validTypes[contentType]
 	if !valid {

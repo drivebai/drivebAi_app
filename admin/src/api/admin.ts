@@ -105,6 +105,16 @@ export const adminApi = {
     api.get<{ messages: AdminSupportMessage[] }>(`${BASE}/support/chats/${id}/messages`),
   sendSupportMessage: (id: string, body: string) =>
     api.post<AdminSupportMessage>(`${BASE}/support/chats/${id}/messages`, { body }),
+  // Attachment upload rides the SHARED support endpoint (not /admin): the
+  // handler is owner-or-admin and posts an admin token's upload with
+  // sender_kind 'admin', fanning out WS + push to the user. Images, PDFs,
+  // and MP4/QuickTime video; 50 MB server cap.
+  uploadSupportAttachment: (chatId: string, file: File, caption?: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (caption) form.append('body', caption)
+    return api.postForm<AdminSupportMessage>(`/api/v1/support/chats/${chatId}/attachments`, form)
+  },
   markSupportRead: (id: string) =>
     api.post<{ ok: boolean }>(`${BASE}/support/chats/${id}/read`, {}),
 

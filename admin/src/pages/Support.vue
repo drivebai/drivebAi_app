@@ -137,6 +137,49 @@ async function send() {
   }
 }
 
+// ─── Attachments (batch item 2 — the deferred v1.1 composer tail) ────────────
+// The upload rides the shared support endpoint (owner-or-admin server-side);
+// the response is the saved message, appended directly — the WS fan-out goes
+// to the user only, so there is no echo to dedupe.
+
+const ACCEPT_ATTACH = 'image/jpeg,image/png,image/heic,image/heif,application/pdf,video/mp4,video/quicktime'
+const MAX_ATTACH_BYTES = 50 * 1024 * 1024 // mirrors the server's MaxBytesReader
+
+const attaching = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+
+function pickFile() {
+  if (!attaching.value) fileInput.value?.click()
+}
+
+async function onFilePicked(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // allow re-picking the same file later
+  if (!file || !selected.value || attaching.value) return
+  if (file.size > MAX_ATTACH_BYTES) {
+    toast.error('File is too large — the limit is 50 MB')
+    return
+  }
+  attaching.value = true
+  try {
+    const caption = draft.value.trim()
+    const saved = await adminApi.uploadSupportAttachment(selected.value.id, file, caption || undefined)
+    messages.value.push(saved)
+    if (caption) draft.value = ''
+    updateChatPreview(selected.value.id, saved.body || '📎 Attachment', saved.created_at)
+    await scrollToBottom()
+  } catch (err: any) {
+    toast.error(err?.message || 'Failed to send attachment')
+  } finally {
+    attaching.value = false
+  }
+}
+
+function isVideo(mime: string): boolean {
+  return mime.startsWith('video/')
+}
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
 const unsubscribe = watch(() => support.lastMessage, (msg) => {
@@ -342,7 +385,7 @@ loadChats()
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18">
                       <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>
                     </svg>
-                    {{ att.mime_type === 'application/pdf' ? 'PDF' : 'File' }} · {{ fmtBytes(att.file_size) }}
+                    {{ att.mime_type === 'application/pdf' ? 'PDF' : isVideo(att.mime_type) ? 'Video' : 'File' }} · {{ fmtBytes(att.file_size) }}
                   </span>
                 </button>
               </div>
@@ -356,6 +399,26 @@ loadChats()
 
         <!-- Composer -->
         <form class="composer" @submit.prevent="send">
+          <input
+            ref="fileInput"
+            type="file"
+            :accept="ACCEPT_ATTACH"
+            class="attach-input"
+            @change="onFilePicked"
+          />
+          <button
+            type="button"
+            class="attach-btn"
+            :disabled="attaching || sending"
+            :title="attaching ? 'Uploading…' : 'Attach a photo, video or file'"
+            aria-label="Attach a file"
+            @click="pickFile"
+          >
+            <svg v-if="!attaching" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="20" height="20">
+              <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 01-7.78-7.78l8.49-8.49a3.5 3.5 0 014.95 4.95l-8.49 8.49a1.5 1.5 0 01-2.12-2.12l7.78-7.78" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span v-else class="attach-spinner" />
+          </button>
           <textarea
             v-model="draft"
             rows="1"
@@ -382,6 +445,7 @@ loadChats()
           <button type="button" class="preview-close" aria-label="Close preview" @click="preview = null">×</button>
         </div>
         <img v-if="preview.mime.startsWith('image/')" :src="preview.url" class="preview-img" />
+        <video v-else-if="preview.mime.startsWith('video/')" :src="preview.url" class="preview-img" controls autoplay />
         <iframe v-else :src="preview.url" class="preview-frame" title="Attachment preview" />
       </div>
     </div>
@@ -743,6 +807,34 @@ loadChats()
   transition: opacity 150ms;
 }
 .send-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Attach control (batch item 2): ghost twin of the send button. */
+.attach-input { display: none; }
+.attach-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 150ms, color 150ms;
+}
+.attach-btn:hover:not(:disabled) { color: var(--accent-strong); }
+.attach-btn:disabled { opacity: 0.4; cursor: default; }
+.attach-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: attach-spin 0.8s linear infinite;
+}
+@keyframes attach-spin { to { transform: rotate(360deg); } }
 .send-btn:not(:disabled):hover { opacity: 0.85; }
 
 /* ── Misc ─────────────────────────────────────────────────── */
