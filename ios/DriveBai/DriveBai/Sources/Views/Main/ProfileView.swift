@@ -55,6 +55,10 @@ struct AuthenticatedProfileView: View {
     /// permanent route in.
     @State private var showMyDocuments = false
     @State private var showEditProfile = false
+    // Batch item 6: these rows were dead buttons (empty action closures
+    // wearing chevrons). Now they open real screens.
+    @State private var showNotificationSettings = false
+    @State private var showPrivacySecurity = false
     /// Set when a replayed tip was armed for its own screen rather than played here.
     @State private var armedTourNotice: String?
 
@@ -160,11 +164,17 @@ struct AuthenticatedProfileView: View {
                     .padding(.horizontal)
                 }
 
-                // Help & product tour
-                helpAndTipsSection
-
-                // Actions
+                // Actions first, with Help & Support leading — the client
+                // wants support reachable at the top, above the tour rows
+                // (batch item 5). The tour section moved below.
                 VStack(spacing: 0) {
+                    ProfileActionRow(
+                        icon: "questionmark.circle.fill",
+                        title: "Help & Support",
+                        badge: supportInboxStore.unreadCount,
+                        action: { showSupportHub = true }
+                    )
+                    Divider().padding(.leading, 56)
                     ProfileActionRow(icon: "person.fill", title: "Edit Profile", action: { showEditProfile = true })
                     Divider().padding(.leading, 56)
                     ProfileActionRow(
@@ -174,20 +184,16 @@ struct AuthenticatedProfileView: View {
                         action: { showMyDocuments = true }
                     )
                     Divider().padding(.leading, 56)
-                    ProfileActionRow(icon: "bell.fill", title: "Notifications", action: {})
+                    ProfileActionRow(icon: "bell.fill", title: "Notifications", action: { showNotificationSettings = true })
                     Divider().padding(.leading, 56)
-                    ProfileActionRow(icon: "lock.fill", title: "Privacy & Security", action: {})
-                    Divider().padding(.leading, 56)
-                    ProfileActionRow(
-                        icon: "questionmark.circle.fill",
-                        title: "Help & Support",
-                        badge: supportInboxStore.unreadCount,
-                        action: { showSupportHub = true }
-                    )
+                    ProfileActionRow(icon: "lock.fill", title: "Privacy & Security", action: { showPrivacySecurity = true })
                 }
                 .background(Color(.systemBackground))
                 .cornerRadius(12)
                 .padding(.horizontal)
+
+                // Help & product tour (moved below the actions — item 5)
+                helpAndTipsSection
 
                 // Logout Button
                 Button(action: { showLogoutConfirmation = true }) {
@@ -222,6 +228,12 @@ struct AuthenticatedProfileView: View {
         .sheet(isPresented: $showEditProfile) {
             EditProfileView(user: user)
                 .environmentObject(authStore)
+        }
+        .sheet(isPresented: $showNotificationSettings) {
+            NotificationSettingsView()
+        }
+        .sheet(isPresented: $showPrivacySecurity) {
+            PrivacySecurityView(email: user.email)
         }
         .sheet(isPresented: $showDriverDocsSheet, onDismiss: {
             // Run the retry AFTER the sheet has fully dismissed and SwiftUI's
@@ -688,4 +700,227 @@ private struct DriverDocsRequiredSheet: View {
 #Preview {
     ProfileView(showAuthFlow: .constant(false))
         .environmentObject(AuthStore.shared)
+}
+
+// MARK: - Notification Settings (batch item 6)
+
+/// A REAL notifications screen, not a stub: reads the actual OS push
+/// permission, offers the correct next action for each state (request
+/// permission / open OS Settings), and says plainly what DriveBai sends.
+/// Notification delivery itself is OS-level — there are no server-side
+/// per-category toggles today, and this screen doesn't pretend there are.
+struct NotificationSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var authStatus: UNAuthorizationStatus = .notDetermined
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        Image(systemName: statusIcon)
+                            .foregroundColor(statusColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Push notifications")
+                                .font(.body.weight(.medium))
+                            Text(statusText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+
+                    if authStatus == .notDetermined {
+                        Button("Enable notifications") {
+                            Task { await requestPermission() }
+                        }
+                        .foregroundColor(.driveBaiPrimary)
+                    } else if authStatus == .denied {
+                        Button("Open Settings to enable") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        .foregroundColor(.driveBaiPrimary)
+                    }
+                } footer: {
+                    Text("Delivery is controlled by iOS. Turning notifications off in Settings stops all DriveBai pushes.")
+                }
+
+                Section("What we send") {
+                    notifRow("message.fill", "Messages", "New chat messages from owners, renters and buyers")
+                    notifRow("key.fill", "Rentals", "Booking updates, pickup reminders and returns")
+                    notifRow("dollarsign.circle.fill", "Buying & selling", "Offers, signatures and sale progress")
+                    notifRow("doc.text.fill", "Documents", "Decisions on your license and vehicle paperwork")
+                    notifRow("questionmark.circle.fill", "Support", "Replies from the DriveBai team")
+                }
+            }
+            .navigationTitle("Notifications")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+            }
+            .task { await refreshStatus() }
+            // Coming back from OS Settings re-reads the real state.
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await refreshStatus() } }
+            }
+        }
+    }
+
+    private func notifRow(_ icon: String, _ title: String, _ detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundColor(.driveBaiPrimary)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(detail).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var statusText: String {
+        switch authStatus {
+        case .authorized, .provisional, .ephemeral: return "On — you'll get updates as they happen"
+        case .denied: return "Off — enable them in Settings to get updates"
+        case .notDetermined: return "Not set up yet"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    private var statusIcon: String {
+        switch authStatus {
+        case .authorized, .provisional, .ephemeral: return "bell.badge.fill"
+        case .denied: return "bell.slash.fill"
+        default: return "bell"
+        }
+    }
+
+    private var statusColor: Color {
+        switch authStatus {
+        case .authorized, .provisional, .ephemeral: return .driveBaiPrimary
+        case .denied: return .orange
+        default: return .secondary
+        }
+    }
+
+    @MainActor
+    private func refreshStatus() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        authStatus = settings.authorizationStatus
+    }
+
+    @MainActor
+    private func requestPermission() async {
+        _ = try? await UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .badge, .sound])
+        await refreshStatus()
+        if authStatus == .authorized {
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    }
+}
+
+// MARK: - Privacy & Security (batch item 6)
+
+/// A REAL privacy screen: password change via the existing reset-email flow
+/// (reused, not rebuilt), the actual policy pages on drivebai.com, and an
+/// honest note on how documents are stored. No invented toggles.
+struct PrivacySecurityView: View {
+    let email: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var sendingReset = false
+    @State private var resetSent = false
+    @State private var resetError: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        Task { await sendReset() }
+                    } label: {
+                        HStack {
+                            Image(systemName: "key.fill")
+                                .foregroundColor(.driveBaiPrimary)
+                                .frame(width: 26)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Change password")
+                                    .font(.body.weight(.medium))
+                                    .foregroundColor(.primary)
+                                Text(resetSent
+                                     ? "Reset link sent to \(email)"
+                                     : "We'll email you a secure reset link")
+                                    .font(.caption)
+                                    .foregroundColor(resetSent ? .driveBaiPrimary : .secondary)
+                            }
+                            Spacer()
+                            if sendingReset { ProgressView() }
+                        }
+                    }
+                    .disabled(sendingReset || resetSent)
+
+                    if let resetError {
+                        Text(resetError).font(.caption).foregroundColor(.red)
+                    }
+                } header: {
+                    Text("Security")
+                } footer: {
+                    Text("Passwords are stored as one-way hashes — nobody at DriveBai can read yours.")
+                }
+
+                Section("Your data") {
+                    privacyRow("doc.badge.ellipsis", "Documents stay private",
+                               "Your license and vehicle paperwork are stored privately; links to them expire and are never public.")
+                    privacyRow("mappin.slash", "Location is approximate until booking",
+                               "Browsers see a car's neighborhood only — exact addresses unlock after sign-in with a booking.")
+                }
+
+                Section("Policies") {
+                    Link(destination: URL(string: "https://drivebai.com/privacy")!) {
+                        Label("Privacy Policy", systemImage: "hand.raised.fill")
+                    }
+                    Link(destination: URL(string: "https://drivebai.com/terms")!) {
+                        Label("Terms of Service", systemImage: "doc.plaintext.fill")
+                    }
+                }
+            }
+            .navigationTitle("Privacy & Security")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+            }
+        }
+    }
+
+    private func privacyRow(_ icon: String, _ title: String, _ detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundColor(.driveBaiPrimary)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.medium))
+                Text(detail).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @MainActor
+    private func sendReset() async {
+        sendingReset = true
+        resetError = nil
+        defer { sendingReset = false }
+        do {
+            _ = try await APIClient.shared.forgotPassword(request: ForgotPasswordRequest(email: email))
+            resetSent = true
+        } catch {
+            resetError = "Couldn't send the reset email. Please try again."
+        }
+    }
 }
