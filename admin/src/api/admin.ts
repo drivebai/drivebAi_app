@@ -18,6 +18,9 @@ export const adminApi = {
   getUser: (id: string) => api.get<AdminUser>(`${BASE}/users/${id}`),
   blockUser: (id: string, blocked: boolean) =>
     api.patch<{ ok: boolean; blocked: boolean }>(`${BASE}/users/${id}/block`, { blocked }),
+  // Soft delete (batch item 3): anonymize-in-place — frees email + phone,
+  // blocks the account, keeps transaction history. Never a hard row delete.
+  deleteUser: (id: string) => api.del<{ ok: boolean }>(`${BASE}/users/${id}`),
 
   /**
    * Admin edit of safe profile fields (first_name, last_name, phone).

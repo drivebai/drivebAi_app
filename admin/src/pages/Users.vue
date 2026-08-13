@@ -172,6 +172,30 @@ async function confirmBlock() {
   }
 }
 
+// --- account deletion (batch item 3 — soft delete / anonymize) ---
+// The server tombstones the row: email renamed, phone NULLed (both freed
+// for re-registration), name anonymized, account blocked, deleted_at
+// stamped. Transaction history survives attributed to "Deleted User".
+const pendingDelete = ref<AdminUser | null>(null)
+const deleting = ref(false)
+function askDelete(u: AdminUser) { pendingDelete.value = u }
+async function confirmDelete() {
+  const u = pendingDelete.value
+  if (!u || deleting.value) return
+  deleting.value = true
+  try {
+    await adminApi.deleteUser(u.id)
+    toast.success('Account deleted — the email and phone are free to register again')
+    pendingDelete.value = null
+    drawerUser.value = null
+    load()
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to delete account')
+  } finally {
+    deleting.value = false
+  }
+}
+
 // --- live chat (admin-initiated support conversation) ---
 // Opens (or creates) the user's ONE support chat — the same thread their
 // in-app Ask-for-Help button uses — and jumps to Support with it selected.
@@ -371,8 +395,8 @@ function onboardingLabel(s: string) {
       <td><StarRating :rating="row.rating" :count="row.rating_count" /></td>
       <td>
         <StatusBadge
-          :label="row.is_blocked ? 'Blocked' : 'Active'"
-          :tone="row.is_blocked ? 'danger' : 'success'"
+          :label="row.deleted_at ? 'Deleted' : row.is_blocked ? 'Blocked' : 'Active'"
+          :tone="row.deleted_at ? 'neutral' : row.is_blocked ? 'danger' : 'success'"
         />
       </td>
       <td>{{ fmtDate(row.created_at) }}</td>
@@ -524,6 +548,12 @@ function onboardingLabel(s: string) {
       <button :class="drawerUser.is_blocked ? 'primary' : 'danger'" @click="askBlock(drawerUser)">
         {{ drawerUser.is_blocked ? 'Unblock user' : 'Block user' }}
       </button>
+      <button
+        v-if="!drawerUser.deleted_at"
+        class="danger"
+        @click="askDelete(drawerUser)"
+      >Delete account</button>
+      <span v-else class="deleted-note">Account deleted</span>
     </div>
   </Drawer>
 
@@ -589,6 +619,15 @@ function onboardingLabel(s: string) {
       </div>
     </div>
   </div>
+
+  <ConfirmDialog
+    :open="!!pendingDelete"
+    title="Delete this account?"
+    :message="`${pendingDelete?.email} will be permanently signed out and anonymized: the name becomes 'Deleted User', the email and phone are FREED so the person can register a fresh account, and their rentals, purchases and chats stay on record attributed to the deleted account. This cannot be undone from the console.`"
+    :confirm-label="deleting ? 'Deleting…' : 'Delete account'"
+    @confirm="confirmDelete"
+    @cancel="pendingDelete = null"
+  />
 
   <ConfirmDialog
     :open="!!pendingReset"
@@ -658,6 +697,7 @@ select { width: 160px; }
   line-height: 1.5;
 }
 .drawer-actions { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.deleted-note { align-self: center; font-size: 13px; color: var(--text-muted); font-style: italic; }
 
 /* Mobile card list hidden on desktop. */
 .mobile-only { display: none; }

@@ -26,6 +26,8 @@ export interface AdminUser {
   onboarding_status: string
   is_blocked: boolean
   blocked_at?: string | null
+  /** Set when the account was soft-deleted (anonymized tombstone). */
+  deleted_at?: string | null
   profile_photo_url?: string | null
   has_license: boolean
   // Real review aggregate (rating received as a transaction party).

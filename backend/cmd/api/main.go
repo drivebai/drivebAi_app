@@ -549,6 +549,9 @@ func main() {
 				// Admin-initiated live chat: open/create this user's ONE
 				// support chat (same thread as their Ask-for-Help button).
 				r.Post("/users/{id}/support-chat", adminHandler.OpenSupportChatWithUser)
+				// Account deletion = anonymize-in-place (batch item 3);
+				// hard row deletion is deliberately not exposed.
+				r.Delete("/users/{id}", adminHandler.DeleteUser)
 
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)

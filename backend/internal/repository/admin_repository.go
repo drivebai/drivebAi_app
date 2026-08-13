@@ -46,6 +46,9 @@ type AdminUserRow struct {
 	OnboardingStatus string     `json:"onboarding_status"`
 	IsBlocked        bool       `json:"is_blocked"`
 	BlockedAt        *time.Time `json:"blocked_at,omitempty"`
+	// DeletedAt marks an anonymized tombstone (admin account deletion,
+	// batch item 3). The row stays so counterparties' history survives.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	ProfilePhotoURL *string `json:"profile_photo_url,omitempty"`
 	// HasLicense is the quick list-level signal; the drawer loads the full
 	// document rows (with status + signed URLs) via ListUserDocuments.
@@ -106,7 +109,7 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 		       ARRAY(SELECT p.role::text FROM user_profiles p WHERE p.user_id = u.id ORDER BY p.created_at ASC)     AS profile_roles,
 		       u.first_name, u.last_name, u.phone,
 		       u.is_email_verified, u.onboarding_status,
-		       u.is_blocked, u.blocked_at, u.profile_photo_url,
+		       u.is_blocked, u.blocked_at, u.deleted_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license') AS has_license,
 		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_user_id = u.id) AS rating,
 		       (SELECT COUNT(*) FROM reviews rv WHERE rv.subject_user_id = u.id)               AS rating_count,
@@ -130,7 +133,7 @@ func (r *AdminRepository) ListUsers(ctx context.Context, query, role, status str
 			&u.SignupRole, &u.ActiveRole, &u.ProfileRoles,
 			&u.FirstName, &u.LastName, &u.Phone,
 			&u.IsEmailVerified, &u.OnboardingStatus,
-			&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
+			&u.IsBlocked, &u.BlockedAt, &u.DeletedAt, &u.ProfilePhotoURL,
 			&u.HasLicense, &u.Rating, &u.RatingCount,
 			&u.CreatedAt); err != nil {
 			return nil, err
@@ -149,7 +152,7 @@ func (r *AdminRepository) GetUserDetail(ctx context.Context, id uuid.UUID) (*Adm
 		       ARRAY(SELECT p.role::text FROM user_profiles p WHERE p.user_id = u.id ORDER BY p.created_at ASC),
 		       u.first_name, u.last_name, u.phone,
 		       u.is_email_verified, u.onboarding_status,
-		       u.is_blocked, u.blocked_at, u.profile_photo_url,
+		       u.is_blocked, u.blocked_at, u.deleted_at, u.profile_photo_url,
 		       EXISTS(SELECT 1 FROM documents d WHERE d.user_id = u.id AND d.type = 'drivers_license'),
 		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_user_id = u.id),
 		       (SELECT COUNT(*) FROM reviews rv WHERE rv.subject_user_id = u.id),
@@ -160,7 +163,7 @@ func (r *AdminRepository) GetUserDetail(ctx context.Context, id uuid.UUID) (*Adm
 		&u.SignupRole, &u.ActiveRole, &u.ProfileRoles,
 		&u.FirstName, &u.LastName, &u.Phone,
 		&u.IsEmailVerified, &u.OnboardingStatus,
-		&u.IsBlocked, &u.BlockedAt, &u.ProfilePhotoURL,
+		&u.IsBlocked, &u.BlockedAt, &u.DeletedAt, &u.ProfilePhotoURL,
 		&u.HasLicense, &u.Rating, &u.RatingCount,
 		&u.CreatedAt)
 	if err != nil {
@@ -1237,4 +1240,36 @@ func jsonUnmarshal(data []byte, v any) {
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, v)
 	}
+}
+
+// SoftDeleteUser anonymizes an account in place (batch item 3): frees the
+// email (renamed to a tombstone address — signups insert lowercased, and the
+// UNIQUE constraint is exact-match, so the original becomes registrable
+// again) and the phone (NULL leaves the 000041 partial index), blanks the
+// identity, clears the password hash, blocks the account, and stamps
+// deleted_at. The row — and with it every counterparty's chats, payments,
+// and reviews — survives. Idempotent: a second call reports not-found.
+func (r *AdminRepository) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE users SET
+			email             = 'deleted+' || id::text || '@deleted.drivebai.com',
+			phone             = NULL,
+			first_name        = 'Deleted',
+			last_name         = 'User',
+			profile_photo_url = NULL,
+			password_hash     = NULL,
+			is_email_verified = FALSE,
+			is_blocked        = TRUE,
+			blocked_at        = COALESCE(blocked_at, NOW()),
+			deleted_at        = NOW(),
+			updated_at        = NOW()
+		WHERE id = $1 AND deleted_at IS NULL
+	`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return models.ErrUserNotFound
+	}
+	return nil
 }
