@@ -180,6 +180,68 @@ function isVideo(mime: string): boolean {
   return mime.startsWith('video/')
 }
 
+// ─── Apply a chat attachment as a vehicle document (batch item 1) ────────────
+// The owner sent the corrected paperwork in this chat; the admin grafts it
+// onto the right car slot. The server copies the file, replaces older docs
+// of that type, verifies the attachment came from the car owner's own chat,
+// and notifies the owner.
+
+const DOC_TYPES: { value: string; label: string }[] = [
+  { value: 'registration', label: 'Registration' },
+  { value: 'inspection', label: 'Vehicle Inspection' },
+  { value: 'insurance', label: 'Insurance Certificate' },
+  { value: 'title', label: 'Title' },
+  { value: 'permit', label: 'Parking Permit' },
+]
+
+const applyTarget = ref<{ attachmentId: string } | null>(null)
+const applyCars = ref<{ id: string; label: string }[]>([])
+const applyCarsLoading = ref(false)
+const applyCarId = ref('')
+const applyDocType = ref('registration')
+const applying = ref(false)
+
+function canApplyAsDocument(mime: string): boolean {
+  return mime === 'image/jpeg' || mime === 'image/jpg' || mime === 'image/png' || mime === 'application/pdf'
+}
+
+async function openApplyDialog(attachmentId: string) {
+  if (!selected.value) return
+  applyTarget.value = { attachmentId }
+  applyCarId.value = ''
+  applyCarsLoading.value = true
+  applyCars.value = []
+  try {
+    // The cars list searches owner email; the server still enforces that
+    // the attachment sender owns the chosen car.
+    const res = await adminApi.listCars({ query: selected.value.user_email, limit: 50 })
+    applyCars.value = (res.items || []).map((c: any) => ({
+      id: c.id,
+      label: c.title || `${c.year ?? ''} ${c.make ?? ''} ${c.model ?? ''}`.trim() || c.id,
+    }))
+    if (applyCars.value.length === 1) applyCarId.value = applyCars.value[0].id
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to load this user\'s vehicles')
+  } finally {
+    applyCarsLoading.value = false
+  }
+}
+
+async function confirmApply() {
+  if (!applyTarget.value || !applyCarId.value || applying.value) return
+  applying.value = true
+  try {
+    await adminApi.applyChatAttachmentToCar(applyCarId.value, applyTarget.value.attachmentId, applyDocType.value)
+    const label = DOC_TYPES.find(d => d.value === applyDocType.value)?.label || applyDocType.value
+    toast.success(`${label} set on the vehicle — the owner was notified`)
+    applyTarget.value = null
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to set the document')
+  } finally {
+    applying.value = false
+  }
+}
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
 const unsubscribe = watch(() => support.lastMessage, (msg) => {
@@ -373,21 +435,30 @@ loadChats()
           >
             <div class="msg-bubble">
               <div v-if="m.attachments?.length" class="msg-attachments">
-                <button
-                  v-for="att in m.attachments"
-                  :key="att.id"
-                  type="button"
-                  class="msg-attach"
-                  @click="preview = { url: imgUrl(att.file_url) || '', mime: att.mime_type }"
-                >
-                  <img v-if="isImage(att.mime_type)" :src="imgUrl(att.file_url)" class="msg-attach-img" />
-                  <span v-else class="msg-attach-file">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18">
-                      <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>
-                    </svg>
-                    {{ att.mime_type === 'application/pdf' ? 'PDF' : isVideo(att.mime_type) ? 'Video' : 'File' }} · {{ fmtBytes(att.file_size) }}
-                  </span>
-                </button>
+                <template v-for="att in m.attachments" :key="att.id">
+                  <button
+                    type="button"
+                    class="msg-attach"
+                    @click="preview = { url: imgUrl(att.file_url) || '', mime: att.mime_type }"
+                  >
+                    <img v-if="isImage(att.mime_type)" :src="imgUrl(att.file_url)" class="msg-attach-img" />
+                    <span v-else class="msg-attach-file">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="18" height="18">
+                        <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>
+                      </svg>
+                      {{ att.mime_type === 'application/pdf' ? 'PDF' : isVideo(att.mime_type) ? 'Video' : 'File' }} · {{ fmtBytes(att.file_size) }}
+                    </span>
+                  </button>
+                  <!-- Only user-sent images/PDFs can become vehicle documents -->
+                  <button
+                    v-if="m.sender_kind === 'user' && canApplyAsDocument(att.mime_type)"
+                    type="button"
+                    class="msg-attach-apply"
+                    @click="openApplyDialog(att.id)"
+                  >
+                    Use as vehicle document…
+                  </button>
+                </template>
               </div>
               <p v-if="m.body" class="msg-body">{{ m.body }}</p>
               <span class="msg-time">
@@ -434,6 +505,37 @@ loadChats()
         </form>
       </template>
     </section>
+
+    <!-- Apply a chat attachment as a vehicle document (batch item 1) -->
+    <div v-if="applyTarget" class="preview-overlay" @click.self="applyTarget = null">
+      <div class="apply-modal">
+        <h3 class="apply-title">Use as vehicle document</h3>
+        <p class="apply-sub">
+          Copies this file onto the owner's car, replacing the current document
+          of that type. The owner is notified.
+        </p>
+        <label class="apply-label">Vehicle</label>
+        <select v-model="applyCarId" class="apply-select" :disabled="applyCarsLoading">
+          <option value="" disabled>{{ applyCarsLoading ? 'Loading vehicles…' : (applyCars.length ? 'Choose a vehicle' : 'No vehicles found for this user') }}</option>
+          <option v-for="c in applyCars" :key="c.id" :value="c.id">{{ c.label }}</option>
+        </select>
+        <label class="apply-label">Document slot</label>
+        <select v-model="applyDocType" class="apply-select">
+          <option v-for="d in DOC_TYPES" :key="d.value" :value="d.value">{{ d.label }}</option>
+        </select>
+        <div class="apply-actions">
+          <button type="button" class="ghost" @click="applyTarget = null">Cancel</button>
+          <button
+            type="button"
+            class="apply-confirm"
+            :disabled="!applyCarId || applying"
+            @click="confirmApply"
+          >
+            {{ applying ? 'Setting…' : 'Set document' }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- In-console attachment preview. PDFs render in an embedded frame and
          images inline, so opening one never leaves the console (was a bare
@@ -807,6 +909,50 @@ loadChats()
   transition: opacity 150ms;
 }
 .send-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* Apply-as-document (batch item 1). */
+.msg-attach-apply {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--accent-strong);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+}
+.msg-attach-apply:hover { text-decoration: underline; }
+.apply-modal {
+  background: var(--surface, #fff);
+  border-radius: 12px;
+  padding: 20px;
+  width: min(420px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.apply-title { margin: 0; font-size: 16px; }
+.apply-sub { margin: 0 0 8px; font-size: 13px; color: var(--text-muted); }
+.apply-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.apply-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+}
+.apply-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.apply-confirm {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent-strong);
+  color: #fff;
+  cursor: pointer;
+}
+.apply-confirm:disabled { opacity: 0.5; cursor: default; }
 
 /* Attach control (batch item 2): ghost twin of the send button. */
 .attach-input { display: none; }

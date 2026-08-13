@@ -57,6 +57,43 @@ async function openDetails(c: AdminCar) {
   }
 }
 
+// --- admin document replacement (batch item 1) ---
+// Per-slot Replace: the endpoint swaps every older document of the type and
+// notifies the owner; the drawer refetches so the new file shows signed.
+const replacingType = ref<string | null>(null)
+const docFileInput = ref<HTMLInputElement | null>(null)
+const pendingReplaceType = ref<string | null>(null)
+
+function pickReplacement(docType: string) {
+  if (replacingType.value) return
+  pendingReplaceType.value = docType
+  docFileInput.value?.click()
+}
+
+async function onReplacementPicked(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const docType = pendingReplaceType.value
+  pendingReplaceType.value = null
+  if (!file || !docType || !detail.value) return
+  if (file.size > 25 * 1024 * 1024) {
+    toast.error('File is too large — the limit is 25 MB')
+    return
+  }
+  replacingType.value = docType
+  try {
+    await adminApi.replaceCarDocument(detail.value.id, docType, file)
+    toast.success(`${docLabel(docType)} replaced — the owner was notified`)
+    detail.value = await adminApi.getCar(detail.value.id)
+    load() // missing-docs badges on the list may have changed
+  } catch (err: any) {
+    toast.error(err?.message || 'Failed to replace document')
+  } finally {
+    replacingType.value = null
+  }
+}
+
 // --- approval toggle ---
 // Toggling OFF on an already-approved car will hide it from Discover for ALL drivers,
 // so we confirm before turning it off. Turning ON is reversible/expected, so no confirm.
@@ -301,9 +338,26 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
            missing type. Signed URLs are rendered verbatim. -->
       <section class="drawer-block">
         <h4 class="section-title">Documents</h4>
+        <input
+          ref="docFileInput"
+          type="file"
+          accept="image/jpeg,image/png,application/pdf"
+          style="display: none"
+          @change="onReplacementPicked"
+        />
         <div class="doc-grid">
           <div v-for="g in carDocGroups(detail)" :key="g.type" class="doc-card">
-            <div class="doc-card-head">{{ g.label }}</div>
+            <div class="doc-card-head">
+              {{ g.label }}
+              <button
+                type="button"
+                class="doc-replace-btn"
+                :disabled="!!replacingType"
+                @click="pickReplacement(g.type)"
+              >
+                {{ replacingType === g.type ? 'Uploading…' : (g.docs.length ? 'Replace…' : 'Upload…') }}
+              </button>
+            </div>
             <template v-if="g.docs.length">
               <div v-for="doc in g.docs" :key="doc.id" class="doc-entry">
                 <a
@@ -441,6 +495,20 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
   gap: 8px;
   min-width: 0;
 }
+.doc-replace-btn {
+  float: right;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+.doc-replace-btn:disabled { opacity: 0.5; cursor: default; }
+
 .doc-card-head {
   font-size: 11px;
   text-transform: uppercase;

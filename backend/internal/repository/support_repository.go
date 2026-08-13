@@ -304,3 +304,30 @@ func (r *SupportRepository) MarkUserRead(ctx context.Context, chatID, userID uui
 	)
 	return err
 }
+
+// AttachmentSource is what admin car-document replacement (batch item 1)
+// needs to copy a support attachment into a car's document slot.
+type AttachmentSource struct {
+	FilePath   string
+	MimeType   string
+	FileSize   int64
+	ChatUserID uuid.UUID
+}
+
+// GetAttachmentSource resolves a support-chat attachment to its disk path,
+// mime, and the chat owner's user id (so the caller can verify the sender
+// owns the target car).
+func (r *SupportRepository) GetAttachmentSource(ctx context.Context, attachmentID uuid.UUID) (*AttachmentSource, error) {
+	var s AttachmentSource
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT a.file_path, a.mime_type, a.file_size, c.user_id
+		FROM support_message_attachments a
+		JOIN support_messages m ON m.id = a.message_id
+		JOIN support_chats c ON c.id = m.support_chat_id
+		WHERE a.id = $1
+	`, attachmentID).Scan(&s.FilePath, &s.MimeType, &s.FileSize, &s.ChatUserID)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}

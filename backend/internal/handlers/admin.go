@@ -58,7 +58,13 @@ type AdminHandler struct {
 	// supportRepo powers admin-INITIATED live chat (open-or-create the
 	// target user's support chat). Wired via SetSupportRepository.
 	supportRepo *repository.SupportRepository
-	logger      *slog.Logger
+	// carRepo + carDocRepo + uploadDir power admin car-document replacement
+	// (batch item 1). Wired via SetCarDocumentDependencies; nil in tests
+	// that don't need it.
+	carRepo    *repository.CarRepository
+	carDocRepo *repository.CarDocumentRepository
+	uploadDir  string
+	logger     *slog.Logger
 }
 
 func NewAdminHandler(adminRepo *repository.AdminRepository, userRepo *repository.UserRepository, wsHub *ws.Hub, urlSigner *PrivateURLSigner, logger *slog.Logger) *AdminHandler {

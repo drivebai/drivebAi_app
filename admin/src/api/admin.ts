@@ -3,7 +3,7 @@
 
 import { api, qs } from './client'
 import type {
-  AdminUser, AdminUserDocument, AdminCar, AdminCarDetail, AdminChat, AdminMessage,
+  AdminUser, AdminUserDocument, AdminCar, AdminCarDetail, AdminCarDocument, AdminChat, AdminMessage,
   AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
   AdminTicket, AdminTicketsPage,
   PurchaseRequest, PurchaseRequestDetail, PurchaseRejection, PurchaseBillOfSale,
@@ -83,6 +83,20 @@ export const adminApi = {
   listCars: (q: { query?: string; page?: number; limit?: number }) =>
     api.get<Page<AdminCar>>(`${BASE}/cars${qs(q)}`),
   getCar: (id: string) => api.get<AdminCarDetail>(`${BASE}/cars/${id}`),
+  // Car-document replacement on the owner's behalf (batch item 1). Both
+  // calls hit the same endpoint; it replaces every older document of the
+  // same type and notifies the owner.
+  replaceCarDocument: (carId: string, documentType: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('document_type', documentType)
+    return api.postForm<AdminCarDocument>(`${BASE}/cars/${carId}/documents`, form)
+  },
+  applyChatAttachmentToCar: (carId: string, attachmentId: string, documentType: string) =>
+    api.post<AdminCarDocument>(`${BASE}/cars/${carId}/documents`, {
+      support_attachment_id: attachmentId,
+      document_type: documentType,
+    }),
   approveCar: (id: string, isApproved: boolean) =>
     api.patch<{ ok: boolean; is_approved: boolean }>(`${BASE}/cars/${id}/approve`, { is_approved: isApproved }),
 

@@ -211,6 +211,8 @@ func main() {
 	adminHandler.SetDocumentRepository(docRepo)
 	adminHandler.SetProfileRepository(profileRepo)
 	adminHandler.SetSupportRepository(supportRepo)
+	// Car-document replacement on the owner's behalf (batch item 1).
+	adminHandler.SetCarDocumentDependencies(carRepo, carDocRepo, uploadDir)
 	// Admin-triggered password reset (D7) reuses the exact ForgotPassword
 	// internals: reset-token store + the transactional email sender.
 	adminHandler.SetPasswordResetDependencies(tokenRepo, emailSvc)
@@ -551,6 +553,10 @@ func main() {
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)
 				r.Patch("/cars/{id}/approve", adminHandler.ApproveCar)
+				// Replace a car document on the owner's behalf — from a
+				// support-chat attachment or a direct admin upload (batch
+				// item 1).
+				r.Post("/cars/{id}/documents", adminHandler.ReplaceCarDocument)
 
 				r.Get("/chats", adminHandler.ListChats)
 				r.Get("/chats/{id}/messages", adminHandler.ListChatMessages)
