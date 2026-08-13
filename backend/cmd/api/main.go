@@ -101,6 +101,7 @@ func main() {
 	deviceTokenRepo := repository.NewDeviceTokenRepository(db)
 	onboardingRepo := repository.NewOnboardingProgressRepository(db)
 	reviewRepo := repository.NewReviewRepository(db)
+	contactChangeRepo := repository.NewContactChangeRepository(db)
 
 	// Ensure uploads directory exists
 	uploadDir := cfg.UploadDir
@@ -177,6 +178,9 @@ func main() {
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
+	// OTP-confirmed email/phone changes (batch items 7+8) — reuses the
+	// login-OTP mailer, its own single-purpose table.
+	contactChangeHandler := handlers.NewContactChangeHandler(userRepo, contactChangeRepo, otpEmailSvc, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
 	carHandler.SetReviewRepository(reviewRepo)
 	// Coordinate-displacement key for anonymous listing responses. Derived
@@ -325,6 +329,10 @@ func main() {
 			r.Use(middleware.AuthMiddleware(jwtSvc, blockList))
 			r.Get("/me", userHandler.GetCurrentUser)
 			r.Patch("/profile", userHandler.UpdateProfile)
+			// OTP-confirmed email/phone change (batch items 7+8): nothing
+			// commits until the code sent to the (new) address verifies.
+			r.Post("/profile/contact-change/request", contactChangeHandler.Request)
+			r.Post("/profile/contact-change/verify", contactChangeHandler.Verify)
 
 			// Mode profiles (Owner / Driver switch)
 			r.Get("/me/profiles", userHandler.ListMyProfiles)

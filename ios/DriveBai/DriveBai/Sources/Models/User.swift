@@ -250,6 +250,33 @@ struct UpdateProfileResponse: Codable {
     let data: UserProfile
 }
 
+/// OTP-confirmed email/phone change (batch items 7+8). Nothing commits
+/// until the code sent to the (new) address verifies.
+struct ContactChangeRequest: Codable {
+    let field: String // "email" | "phone"
+    let newValue: String
+
+    enum CodingKeys: String, CodingKey {
+        case field
+        case newValue = "new_value"
+    }
+}
+
+struct ContactChangeRequestResponse: Codable {
+    let ok: Bool
+    let sentTo: String
+    let field: String
+
+    enum CodingKeys: String, CodingKey {
+        case ok, field
+        case sentTo = "sent_to"
+    }
+}
+
+struct ContactChangeVerifyRequest: Codable {
+    let code: String
+}
+
 struct LikedListingsResponse: Codable {
     let likedListingIds: [UUID]
 

@@ -21,6 +21,10 @@ type OTPSendResult struct {
 // that OTP delivery can use MailerSend independently of SendGrid.
 type OTPSender interface {
 	SendLoginOTP(toEmail, code string) (*OTPSendResult, error)
+	// SendContactChangeOTP delivers the code that confirms an email/phone
+	// change (batch items 7+8). changeDesc is a short human phrase for the
+	// email body, e.g. "change your email to x@y.com".
+	SendContactChangeOTP(toEmail, code, changeDesc string) (*OTPSendResult, error)
 }
 
 // MailerSendOTPSender sends OTP emails via the MailerSend REST API.
@@ -339,5 +343,86 @@ func (s *ConsoleOTPSender) SendLoginOTP(toEmail, code string) (*OTPSendResult, e
 		"║  Code: %-50s ║\n"+
 		"╚══════════════════════════════════════════════════════════╝\n\n",
 		toEmail, code)
+	return &OTPSendResult{}, nil
+}
+
+// SendContactChangeOTP — the confirmation code for an email/phone change
+// (batch items 7+8). Same shape as the login code; nothing is committed
+// until this code verifies.
+func (s *MailerSendOTPSender) SendContactChangeOTP(toEmail, code, changeDesc string) (*OTPSendResult, error) {
+	plainText := fmt.Sprintf(
+		"Your DrivaBai confirmation code is: %s\n\nEnter it in the app to %s.\n\nThis code expires in 10 minutes. Nothing changes until you enter it.\n\nIf you did not request this, you can safely ignore this email.\n\nThe DrivaBai Team",
+		code, changeDesc,
+	)
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#333}
+  .container{max-width:600px;margin:0 auto;padding:20px}
+  .code{font-size:36px;font-weight:bold;letter-spacing:10px;color:#4ECDC4;text-align:center;padding:24px;background:#f5f5f5;border-radius:8px;margin:24px 0}
+  .footer{margin-top:30px;font-size:12px;color:#666}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Confirm your account change</h2>
+  <p>Enter the code below in the app to %s. It expires in <strong>10 minutes</strong> — nothing changes until you enter it.</p>
+  <div class="code">%s</div>
+  <p>If you did not request this change, you can safely ignore this email.</p>
+  <div class="footer"><p>The DrivaBai Team</p></div>
+</div>
+</body>
+</html>`, changeDesc, code)
+
+	payload := mailerSendPayload{
+		From:    mailerSendAddress{Email: s.fromEmail, Name: s.fromName},
+		To:      []mailerSendAddress{{Email: toEmail}},
+		Subject: "Confirm your DrivaBai account change",
+		Text:    plainText,
+		HTML:    htmlBody,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("mailersend: marshal payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, mailerSendAPIURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("mailersend: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.logger.Error("mailersend: contact-change request failed", "error", err, "to", toEmail)
+		return nil, fmt.Errorf("mailersend: send request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		s.logger.Error("mailersend: API rejected contact-change email",
+			"status", resp.StatusCode, "to", toEmail, "response", string(respBody))
+		return nil, fmt.Errorf("mailersend: API returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	messageID := resp.Header.Get("X-Message-Id")
+	s.logger.Info("contact-change OTP email accepted by MailerSend", "to", toEmail, "message_id", messageID)
+	return &OTPSendResult{MessageID: messageID}, nil
+}
+
+// SendContactChangeOTP (console/dev variant).
+func (s *ConsoleOTPSender) SendContactChangeOTP(toEmail, code, changeDesc string) (*OTPSendResult, error) {
+	s.logger.Info("CONTACT-CHANGE OTP EMAIL (dev mode — MailerSend not configured)", "to", toEmail)
+	fmt.Printf("\n"+
+		"╔══════════════════════════════════════════════════════════╗\n"+
+		"║  📧 CONTACT-CHANGE OTP (MailerSend not configured)       ║\n"+
+		"╠══════════════════════════════════════════════════════════╣\n"+
+		"║  To:     %-48s ║\n"+
+		"║  Change: %-48s ║\n"+
+		"║  Code:   %-48s ║\n"+
+		"╚══════════════════════════════════════════════════════════╝\n\n",
+		toEmail, changeDesc, code)
 	return &OTPSendResult{}, nil
 }

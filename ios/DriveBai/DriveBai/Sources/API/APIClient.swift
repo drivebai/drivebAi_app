@@ -378,6 +378,23 @@ final class APIClient: APIClientProtocol {
         try await patch(path: "profile", body: request, authenticated: true)
     }
 
+    // OTP-confirmed email/phone change (batch items 7+8).
+    func requestContactChange(field: String, newValue: String) async throws -> ContactChangeRequestResponse {
+        try await post(
+            path: "profile/contact-change/request",
+            body: ContactChangeRequest(field: field, newValue: newValue),
+            authenticated: true
+        )
+    }
+
+    func verifyContactChange(code: String) async throws -> UpdateProfileResponse {
+        try await post(
+            path: "profile/contact-change/verify",
+            body: ContactChangeVerifyRequest(code: code),
+            authenticated: true
+        )
+    }
+
     // MARK: - Mode Profile Methods
 
     func listMyProfiles() async throws -> ListProfilesResponse {

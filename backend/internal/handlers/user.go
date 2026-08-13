@@ -139,22 +139,14 @@ func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		updated = true
 	}
 	if req.Phone != nil {
-		if *req.Phone == "" {
-			user.Phone = nil
-			updated = true
-		} else {
-			normalized, ok := models.NormalizePhone(*req.Phone)
-			if !ok {
-				WriteError(w, http.StatusBadRequest, models.NewValidationError("Phone must include the country code, e.g. +1 347 555 1234"))
-				return
-			}
-			if taken, perr := h.userRepo.PhoneExistsExcludingUser(r.Context(), normalized, userID); perr == nil && taken {
-				WriteError(w, http.StatusConflict, models.ErrPhoneTaken)
-				return
-			}
-			user.Phone = &normalized
-			updated = true
-		}
+		// Batch item 8: phone changes are OTP-confirmed now, via
+		// /profile/contact-change. Older app builds that PATCH phone
+		// directly get a clear 409 instead of a silent unverified write.
+		// (Admins editing on a user's behalf go through the separate
+		// UpdateProfileFields path, which is unchanged.)
+		WriteError(w, http.StatusConflict, models.NewAPIError("PHONE_CHANGE_REQUIRES_OTP",
+			"Phone changes are confirmed with a code now. Please update the app and use Edit Profile."))
+		return
 	}
 
 	if updated {

@@ -105,6 +105,10 @@ func (fakeOTPSender) SendLoginOTP(_, _ string) (*email.OTPSendResult, error) {
 	return &email.OTPSendResult{}, nil
 }
 
+func (fakeOTPSender) SendContactChangeOTP(_, _, _ string) (*email.OTPSendResult, error) {
+	return &email.OTPSendResult{}, nil
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 // (discardLogger comes from admin_qa_round_test.go — same package)
 
