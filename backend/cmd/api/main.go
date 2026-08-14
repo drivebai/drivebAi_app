@@ -553,6 +553,10 @@ func main() {
 				// signed URLs + approve/decline with required decline reason.
 				r.Get("/users/{id}/documents", adminHandler.ListUserDocuments)
 				r.Patch("/users/{id}/documents/{docId}/status", adminHandler.UpdateUserDocumentStatus)
+				// Replace a driver document on the user's behalf — from a
+				// support-chat attachment or a direct admin upload (client
+				// points 3+4). Resets the slot to pending review.
+				r.Post("/users/{id}/documents", adminHandler.ReplaceUserDocument)
 				// Admin mode switch: change the user's CURRENT mode
 				// (driver/owner), creating the target profile if missing.
 				r.Patch("/users/{id}/active-profile", adminHandler.SetUserActiveProfile)

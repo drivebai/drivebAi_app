@@ -34,6 +34,20 @@ export const adminApi = {
     id: string,
     body: { first_name?: string; last_name?: string; phone?: string },
   ) => api.patch<AdminUser>(`${BASE}/users/${id}/profile`, body),
+  // Driver-document replacement on the user's behalf (client points 3+4).
+  // Both calls hit the same endpoint; the replaced slot resets to pending
+  // review and the user is notified.
+  replaceUserDocument: (userId: string, documentType: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('document_type', documentType)
+    return api.postForm<AdminUserDocument>(`${BASE}/users/${userId}/documents`, form)
+  },
+  applyChatAttachmentToUser: (userId: string, attachmentId: string, documentType: string) =>
+    api.post<AdminUserDocument>(`${BASE}/users/${userId}/documents`, {
+      support_attachment_id: attachmentId,
+      document_type: documentType,
+    }),
 
   /**
    * Admin-triggered password reset. Passwords are one-way bcrypt hashes —

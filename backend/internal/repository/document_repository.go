@@ -190,3 +190,39 @@ func (r *DocumentRepository) HasRequiredDocuments(ctx context.Context, userID uu
 	}
 	return count >= 1, nil
 }
+
+// ReplaceForUserAndType atomically swaps the user's document of doc.Type
+// for doc: DELETE-then-INSERT inside ONE transaction, because the
+// UNIQUE(user_id, type) index forbids insert-first — and without the
+// transaction a failure between the two statements would permanently
+// destroy the existing row (flipping HasRequiredDocuments and ejecting the
+// driver). Returns the replaced row's file path, if any, so the caller can
+// remove the old blob from disk AFTER the commit — an orphaned file is far
+// better than a row pointing at deleted bytes.
+func (r *DocumentRepository) ReplaceForUserAndType(ctx context.Context, doc *models.Document) (oldFilePath string, err error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+		SELECT file_path FROM documents WHERE user_id = $1 AND type = $2
+	`, doc.UserID, doc.Type).Scan(&oldFilePath)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM documents WHERE user_id = $1 AND type = $2
+	`, doc.UserID, doc.Type); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO documents (id, user_id, type, file_name, file_path, file_size, mime_type, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, doc.ID, doc.UserID, doc.Type, doc.FileName, doc.FilePath, doc.FileSize,
+		doc.MimeType, doc.Status, doc.CreatedAt, doc.UpdatedAt); err != nil {
+		return "", err
+	}
+	return oldFilePath, tx.Commit(ctx)
+}

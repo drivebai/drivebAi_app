@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import DataTable from '../components/DataTable.vue'
@@ -86,6 +86,68 @@ async function approveDoc(doc: AdminUserDocument) {
     toast.error(e?.message || 'Failed to approve document')
   } finally {
     docSaving.value = null
+  }
+}
+
+// Slot list (client point 4): always render the driver's-license slot,
+// plus TLC and commercial when absent, plus anything else the user
+// actually uploaded — otherwise "Upload" is unreachable for a document
+// the driver has never provided. Registration stays deliberately
+// unsolicited (car-owner document).
+const DRIVER_DOC_SLOTS = ['drivers_license', 'tlc_license', 'commercial_license']
+
+const docSlots = computed(() => {
+  const byType = new Map(drawerDocs.value.map(d => [d.type, d]))
+  const slots: { type: string; doc: AdminUserDocument | null }[] =
+    DRIVER_DOC_SLOTS.map(t => ({ type: t, doc: byType.get(t) ?? null }))
+  for (const d of drawerDocs.value) {
+    if (!DRIVER_DOC_SLOTS.includes(d.type)) slots.push({ type: d.type, doc: d })
+  }
+  return slots
+})
+
+// Upload / replace on the user's behalf (client point 4). The endpoint
+// resets the slot to pending review — an approval attests to specific
+// bytes, and the bytes just changed.
+const uploadingType = ref<string | null>(null)
+const docFileInput = ref<HTMLInputElement | null>(null)
+const pendingUploadType = ref<string | null>(null)
+
+function pickDocFile(docType: string) {
+  if (uploadingType.value) return
+  pendingUploadType.value = docType
+  docFileInput.value?.click()
+}
+
+async function onDocFilePicked(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const docType = pendingUploadType.value
+  pendingUploadType.value = null
+  const u = drawerUser.value
+  if (!file || !docType || !u) return
+  if (file.size > 10 * 1024 * 1024) {
+    toast.error('File is too large — the limit is 10 MB')
+    return
+  }
+  uploadingType.value = docType
+  try {
+    const replaced = await adminApi.replaceUserDocument(u.id, docType, file)
+    // Swap the card from the response — but only if the drawer still shows
+    // the user this upload was for: nothing stops the admin closing the
+    // drawer and opening someone else mid-flight, and writing into the
+    // CURRENT drawerDocs would graft this card onto the wrong user's list.
+    if (drawerUser.value?.id === u.id) {
+      const idx = drawerDocs.value.findIndex(d => d.type === docType)
+      if (idx >= 0) drawerDocs.value[idx] = replaced
+      else drawerDocs.value.push(replaced)
+    }
+    toast.success(`${docLabel(docType)} uploaded for ${u.email} — pending review`)
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to upload document')
+  } finally {
+    uploadingType.value = null
   }
 }
 
@@ -479,54 +541,88 @@ function onboardingLabel(s: string) {
       <dt>Created</dt><dd>{{ fmtDate(drawerUser.created_at) }}</dd>
     </dl>
 
-    <!-- Personal documents: inline view + approve/decline. Registration is
-         deliberately NOT solicited for drivers — it's a car-owner document;
-         only docs the user actually uploaded are listed. -->
+    <!-- Personal documents: slot list, not raw uploads (client point 4) —
+         the driver's-license slot always renders, TLC/commercial render
+         even when absent, so Upload is reachable for a document the driver
+         never provided. Registration stays deliberately unsolicited — it's
+         a car-owner document. -->
     <section class="docs-section">
       <h3>Documents</h3>
+      <input
+        ref="docFileInput"
+        type="file"
+        accept="image/jpeg,image/png,application/pdf"
+        style="display: none"
+        @change="onDocFilePicked"
+      />
       <p v-if="docsLoading" class="muted">Loading documents…</p>
       <template v-else>
-        <p v-if="drawerDocs.length === 0" class="muted">
-          {{ drawerUser.role === 'driver'
-            ? 'No documents uploaded yet — the driver\'s license is still missing.'
-            : 'No documents uploaded.' }}
-        </p>
-        <div v-for="doc in drawerDocs" :key="doc.id" class="doc-card">
+        <div v-for="slot in docSlots" :key="slot.type" class="doc-card">
           <div class="doc-head">
-            <strong>{{ docLabel(doc.type) }}</strong>
-            <StatusBadge :label="docStatusLabel(doc.status)" :tone="docStatusTone(doc.status)" />
-          </div>
-          <!-- In-console preview. The raw file_url is a RELATIVE signed path;
-               opened in a new tab it resolved against the admin origin, whose
-               SPA fallback served index.html → the router bounced to /users
-               (the client's "it just shows the user list again"). imgUrl()
-               prefixes the API base and preserves the ?sig=&exp= query. -->
-          <button type="button" class="doc-link" @click="openDocPreview(doc)">
-            <img
-              v-if="docIsImage(doc)"
-              :src="imgUrl(doc.file_url)"
-              :alt="docLabel(doc.type)"
-              class="doc-image"
-              loading="lazy"
+            <strong>{{ docLabel(slot.type) }}</strong>
+            <StatusBadge
+              v-if="slot.doc"
+              :label="docStatusLabel(slot.doc.status)"
+              :tone="docStatusTone(slot.doc.status)"
             />
-            <span v-else class="doc-open-file">Open {{ doc.file_name }}</span>
-          </button>
-          <div class="doc-actions">
-            <button
-              class="primary"
-              :disabled="docSaving === doc.id || doc.status === 'verified'"
-              @click="approveDoc(doc)"
-            >
-              {{ doc.status === 'verified' ? 'Approved' : 'Approve' }}
-            </button>
-            <button
-              class="danger"
-              :disabled="docSaving === doc.id || doc.status === 'rejected'"
-              @click="startDecline(doc)"
-            >
-              {{ doc.status === 'rejected' ? 'Declined' : 'Decline' }}
-            </button>
+            <span v-else class="muted">Not uploaded</span>
           </div>
+          <template v-if="slot.doc">
+            <!-- In-console preview. The raw file_url is a RELATIVE signed path;
+                 opened in a new tab it resolved against the admin origin, whose
+                 SPA fallback served index.html → the router bounced to /users
+                 (the client's "it just shows the user list again"). imgUrl()
+                 prefixes the API base and preserves the ?sig=&exp= query. -->
+            <button type="button" class="doc-link" @click="openDocPreview(slot.doc)">
+              <img
+                v-if="docIsImage(slot.doc)"
+                :src="imgUrl(slot.doc.file_url)"
+                :alt="docLabel(slot.doc.type)"
+                class="doc-image"
+                loading="lazy"
+              />
+              <span v-else class="doc-open-file">Open {{ slot.doc.file_name }}</span>
+            </button>
+            <div class="doc-actions">
+              <button
+                class="primary"
+                :disabled="docSaving === slot.doc.id || slot.doc.status === 'verified' || uploadingType === slot.type"
+                @click="approveDoc(slot.doc)"
+              >
+                {{ slot.doc.status === 'verified' ? 'Approved' : 'Approve' }}
+              </button>
+              <button
+                class="danger"
+                :disabled="docSaving === slot.doc.id || slot.doc.status === 'rejected' || uploadingType === slot.type"
+                @click="startDecline(slot.doc)"
+              >
+                {{ slot.doc.status === 'rejected' ? 'Declined' : 'Decline' }}
+              </button>
+              <button
+                class="secondary"
+                :disabled="!!uploadingType || docSaving === slot.doc.id"
+                @click="pickDocFile(slot.type)"
+              >
+                {{ uploadingType === slot.type ? 'Uploading…' : 'Replace…' }}
+              </button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="muted doc-empty-note">
+              {{ slot.type === 'drivers_license' && drawerUser.role === 'driver'
+                ? 'Required for driving — not uploaded yet.'
+                : 'Nothing on file.' }}
+            </p>
+            <div class="doc-actions">
+              <button
+                class="secondary"
+                :disabled="!!uploadingType"
+                @click="pickDocFile(slot.type)"
+              >
+                {{ uploadingType === slot.type ? 'Uploading…' : 'Upload…' }}
+              </button>
+            </div>
+          </template>
         </div>
       </template>
     </section>
@@ -772,6 +868,7 @@ select { width: 160px; }
 .preview-frame { flex: 1; width: 100%; border: none; }
 .preview-img { flex: 1; width: 100%; object-fit: contain; background: var(--bg); min-height: 0; }
 .doc-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.doc-empty-note { margin: 4px 0 8px; font-size: 13px; }
 .modal textarea {
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
   font-size: 14px; background: var(--bg, #fff); color: var(--text, #111);

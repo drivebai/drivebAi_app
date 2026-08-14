@@ -242,6 +242,52 @@ async function confirmApply() {
   }
 }
 
+// ─── Apply a chat attachment as a DRIVER document (client point 3) ───────────
+// Simpler than the vehicle flow: the target user IS the chat owner, so
+// there's nothing to select but the slot. The server verifies the
+// attachment came from this user's own chat, resets the slot to pending
+// review, and notifies them.
+
+const USER_DOC_TYPES: { value: string; label: string }[] = [
+  { value: 'drivers_license', label: "Driver's license" },
+  { value: 'tlc_license', label: 'TLC license' },
+  { value: 'commercial_license', label: 'Commercial license' },
+  { value: 'other', label: 'Other document' },
+]
+
+// The target user is SNAPSHOTTED at modal-open alongside the attachment —
+// `selected` is mutable (the WS deep-link path can switch chats under an
+// open modal), and pairing one chat's attachment with another chat's user
+// would 403 on the server's WRONG_SENDER guard for an action that looked
+// valid when opened. Same snapshot discipline as the vehicle flow's ids.
+const applyUserTarget = ref<{ attachmentId: string; userId: string; userName: string } | null>(null)
+const applyUserDocType = ref('drivers_license')
+const applyingUser = ref(false)
+
+function openApplyUserDialog(attachmentId: string) {
+  if (!selected.value) return
+  applyUserTarget.value = {
+    attachmentId,
+    userId: selected.value.user_id,
+    userName: selected.value.user_name,
+  }
+}
+
+async function confirmApplyUser() {
+  if (!applyUserTarget.value || applyingUser.value) return
+  applyingUser.value = true
+  try {
+    await adminApi.applyChatAttachmentToUser(applyUserTarget.value.userId, applyUserTarget.value.attachmentId, applyUserDocType.value)
+    const label = USER_DOC_TYPES.find(d => d.value === applyUserDocType.value)?.label || applyUserDocType.value
+    toast.success(`${label} set — pending review; the user was notified`)
+    applyUserTarget.value = null
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to set the document')
+  } finally {
+    applyingUser.value = false
+  }
+}
+
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
 const unsubscribe = watch(() => support.lastMessage, (msg) => {
@@ -458,6 +504,14 @@ loadChats()
                   >
                     Use as vehicle document…
                   </button>
+                  <button
+                    v-if="m.sender_kind === 'user' && canApplyAsDocument(att.mime_type)"
+                    type="button"
+                    class="msg-attach-apply"
+                    @click="openApplyUserDialog(att.id)"
+                  >
+                    Use as driver document…
+                  </button>
                 </template>
               </div>
               <p v-if="m.body" class="msg-body">{{ m.body }}</p>
@@ -505,6 +559,33 @@ loadChats()
         </form>
       </template>
     </section>
+
+    <!-- Apply a chat attachment as a driver document (client point 3) -->
+    <div v-if="applyUserTarget" class="preview-overlay" @click.self="applyUserTarget = null">
+      <div class="apply-modal">
+        <h3 class="apply-title">Use as driver document</h3>
+        <p class="apply-sub">
+          Copies this file onto {{ applyUserTarget?.userName || 'the user' }}'s
+          account, replacing the current document of that type. It lands as
+          <strong>pending review</strong> — approve it from the Users page.
+        </p>
+        <label class="apply-label">Document slot</label>
+        <select v-model="applyUserDocType" class="apply-select">
+          <option v-for="d in USER_DOC_TYPES" :key="d.value" :value="d.value">{{ d.label }}</option>
+        </select>
+        <div class="apply-actions">
+          <button type="button" class="ghost" @click="applyUserTarget = null">Cancel</button>
+          <button
+            type="button"
+            class="apply-confirm"
+            :disabled="applyingUser"
+            @click="confirmApplyUser"
+          >
+            {{ applyingUser ? 'Setting…' : 'Set document' }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Apply a chat attachment as a vehicle document (batch item 1) -->
     <div v-if="applyTarget" class="preview-overlay" @click.self="applyTarget = null">
