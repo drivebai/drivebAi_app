@@ -159,16 +159,22 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 func (r *UserRepository) UpdateProfileFields(
 	ctx context.Context,
 	userID uuid.UUID,
-	firstName, lastName, phone *string,
+	firstName, lastName, phone, email *string,
 ) error {
+	// Email and its verified-flag reset live in ONE statement on purpose:
+	// an admin-typed address proves nothing, so a changed email must drop
+	// is_email_verified atomically — if the two writes could drift apart,
+	// an unverified address would inherit verified status.
 	tag, err := r.db.Pool.Exec(ctx, `
 		UPDATE users
 		SET first_name = COALESCE($2, first_name),
 		    last_name  = COALESCE($3, last_name),
 		    phone      = CASE WHEN $4::text IS NOT NULL THEN $4 ELSE phone END,
+		    email      = CASE WHEN $5::text IS NOT NULL THEN $5 ELSE email END,
+		    is_email_verified = CASE WHEN $5::text IS NOT NULL THEN FALSE ELSE is_email_verified END,
 		    updated_at = NOW()
 		WHERE id = $1
-	`, userID, firstName, lastName, phone)
+	`, userID, firstName, lastName, phone, email)
 	if err != nil {
 		return fmt.Errorf("update profile fields: %w", err)
 	}
@@ -282,6 +288,19 @@ func (r *UserRepository) PhoneExistsExcludingUser(ctx context.Context, phone str
 	query := `SELECT EXISTS(SELECT 1 FROM users WHERE phone = $1 AND id <> $2)`
 	var exists bool
 	err := r.db.Pool.QueryRow(ctx, query, phone, excludeID).Scan(&exists)
+	return exists, err
+}
+
+// EmailExistsExcludingUser mirrors PhoneExistsExcludingUser for the admin
+// email edit: saving the form with the email untouched must not 409.
+// Soft-deleted rows are deliberately NOT excluded — the delete tombstone
+// renames the email precisely so it frees up, so any row still holding the
+// address literally is a live conflict. Input is lowercased to match
+// Create/Update/GetByEmail.
+func (r *UserRepository) EmailExistsExcludingUser(ctx context.Context, email string, excludeID uuid.UUID) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 AND id <> $2)`
+	var exists bool
+	err := r.db.Pool.QueryRow(ctx, query, strings.ToLower(email), excludeID).Scan(&exists)
 	return exists, err
 }
 

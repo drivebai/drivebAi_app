@@ -496,17 +496,22 @@ type updateUserProfileBody struct {
 	FirstName *string `json:"first_name,omitempty"`
 	LastName  *string `json:"last_name,omitempty"`
 	Phone     *string `json:"phone,omitempty"`
+	Email     *string `json:"email,omitempty"`
 }
 
 // UpdateUserProfile — PATCH /admin/users/{id}/profile
 //
-// Admin can edit a target user's first_name, last_name, and phone only.
-// Email is excluded because it doubles as the login identifier and would
-// need OTP re-verification; role is excluded because the app uses a
-// dedicated profile-switch flow; is_blocked has its own /block endpoint;
-// password_hash and verification flags are never admin-editable from
-// here. Mass-assignment-safe by construction: the body struct names only
-// the safe fields, and UpdateProfileFields only writes those columns.
+// Admin can edit a target user's first_name, last_name, phone — and email
+// (support needs to rescue a typo'd signup). An admin typing an address
+// proves nothing about controlling it, so an email change atomically
+// clears is_email_verified (same UPDATE statement) and the user must
+// re-verify; both the old and new address get a notice email, because the
+// displaced address is the only channel that still reaches the original
+// owner if the change was hostile. Role is excluded because the app uses
+// a dedicated profile-switch flow; is_blocked has its own /block
+// endpoint; password_hash is never admin-editable from here.
+// Mass-assignment-safe by construction: the body struct names only the
+// safe fields, and UpdateProfileFields only writes those columns.
 func (h *AdminHandler) UpdateUserProfile(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -553,8 +558,56 @@ func (h *AdminHandler) UpdateUserProfile(w http.ResponseWriter, r *http.Request)
 		}
 		body.Phone = &trimmed
 	}
+	// oldEmail is captured before the write so the displaced address can be
+	// notified after a successful change.
+	var oldEmail, oldName string
+	if body.Email != nil {
+		// Same normalization contract as contact_change.go: trim,
+		// lowercase, minimal format check; DB column is VARCHAR(255).
+		normalized := strings.ToLower(strings.TrimSpace(*body.Email))
+		if normalized == "" || !strings.Contains(normalized, "@") {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid email format"))
+			return
+		}
+		if len(normalized) > 255 {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("email too long"))
+			return
+		}
+		if taken, terr := h.userRepo.EmailExistsExcludingUser(r.Context(), normalized, id); terr != nil {
+			h.logger.Error("admin update user profile: email uniqueness check", "error", terr)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		} else if taken {
+			httputil.WriteError(w, http.StatusConflict, models.ErrEmailTaken)
+			return
+		}
+		// The pre-change read must succeed before the write: oldEmail feeds
+		// the displaced-address security notice (the only channel that
+		// still reaches the original owner if the change is hostile) and
+		// the round-trip no-op guard. Proceeding on error would clear the
+		// verified flag on a non-change and send a blank-recipient notice.
+		current, gerr := h.adminRepo.GetUserDetail(r.Context(), id)
+		if gerr != nil {
+			if errors.Is(gerr, pgx.ErrNoRows) {
+				httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "user not found"))
+				return
+			}
+			h.logger.Error("admin update user profile: load current", "error", gerr, "user_id", id)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		oldEmail = current.Email
+		oldName = strings.TrimSpace(current.FirstName + " " + current.LastName)
+		if strings.ToLower(oldEmail) == normalized {
+			// Round-tripping the same address is a no-op, not a change:
+			// don't clear the verified flag or send notices.
+			body.Email = nil
+		} else {
+			body.Email = &normalized
+		}
+	}
 
-	if err := h.userRepo.UpdateProfileFields(r.Context(), id, body.FirstName, body.LastName, body.Phone); err != nil {
+	if err := h.userRepo.UpdateProfileFields(r.Context(), id, body.FirstName, body.LastName, body.Phone, body.Email); err != nil {
 		if errors.Is(err, models.ErrUserNotFound) {
 			httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "user not found"))
 			return
@@ -576,12 +629,36 @@ func (h *AdminHandler) UpdateUserProfile(w http.ResponseWriter, r *http.Request)
 
 	// Notify the user that their profile changed. This catches the case
 	// where admin edits the user's name/phone — the user otherwise has no
-	// signal until they next open the app.
+	// signal until they next open the app. An email change gets its own
+	// wording (and email notices below) because it moves the login
+	// identifier, not just display data.
 	if h.notifHandler != nil {
-		go h.notifHandler.Notify(id, models.NotificationTypeSystem,
-			"Profile updated",
-			"An admin updated your profile information. Open the app to review the changes.",
-			nil, nil)
+		title, msg := "Profile updated",
+			"An admin updated your profile information. Open the app to review the changes."
+		if body.Email != nil {
+			title = "Your login email was changed"
+			msg = "DriveBai support changed your account email to " + *body.Email +
+				". You'll need to verify the new address. If you didn't ask for this, contact support immediately."
+		}
+		go h.notifHandler.Notify(id, models.NotificationTypeSystem, title, msg, nil, nil)
+	}
+
+	// Email-change notices to BOTH addresses, best-effort: an email change
+	// is precisely what an attacker with console access would do, and the
+	// displaced address is the only channel that still reaches the original
+	// owner. The notice carries no token and grants nothing, so a delivery
+	// failure logs rather than failing the admin's request. (No audit-log
+	// table exists in this schema; these notices are the attribution.)
+	if body.Email != nil && h.emailSvc != nil {
+		newEmail := *body.Email
+		go func() {
+			if err := h.emailSvc.SendEmailChangedNotice(oldEmail, oldName, oldEmail, newEmail); err != nil {
+				h.logger.Error("email-change notice to old address failed", "error", err, "to", oldEmail)
+			}
+			if err := h.emailSvc.SendEmailChangedNotice(newEmail, oldName, oldEmail, newEmail); err != nil {
+				h.logger.Error("email-change notice to new address failed", "error", err, "to", newEmail)
+			}
+		}()
 	}
 }
 

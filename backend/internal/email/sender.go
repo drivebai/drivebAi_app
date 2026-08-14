@@ -12,6 +12,12 @@ import (
 type Sender interface {
 	SendVerificationEmail(toEmail, toName, code string) error
 	SendPasswordResetEmail(toEmail, toName, token string) error
+	// SendEmailChangedNotice tells an address that the account's login
+	// email moved from oldEmail to newEmail (admin email edit). Sent to
+	// BOTH addresses — the displaced one is the only channel that still
+	// reaches the original owner if the change was hostile. Carries no
+	// token and grants nothing, so callers treat delivery as best-effort.
+	SendEmailChangedNotice(toEmail, toName, oldEmail, newEmail string) error
 }
 
 type SendGridSender struct {
@@ -320,5 +326,80 @@ func (c *ConsoleSender) SendPasswordResetEmail(toEmail, toName, token string) er
 		"║  Web Link: %-67s ║\n"+
 		"╚══════════════════════════════════════════════════════════════════════════════╝\n\n",
 		toEmail, toName, token, resetLink, webLink)
+	return nil
+}
+
+func (s *SendGridSender) SendEmailChangedNotice(toEmail, toName, oldEmail, newEmail string) error {
+	from := mail.NewEmail(s.fromName, s.fromEmail)
+	to := mail.NewEmail(toName, toEmail)
+	subject := "Your DriveBai login email was changed"
+
+	plainTextContent := fmt.Sprintf(`Hello %s,
+
+The login email on your DriveBai account was changed by our support team:
+
+  From: %s
+  To:   %s
+
+The new address must be verified before it is trusted. If you asked for this change, no action is needed beyond verifying.
+
+If you did NOT ask for this, reply to this email or contact DriveBai support immediately.
+
+Best,
+The DriveBai Team`, toName, oldEmail, newEmail)
+
+	htmlContent := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .change { padding: 16px 20px; background: #f5f5f5; border-radius: 8px; margin: 20px 0; }
+        .footer { margin-top: 30px; font-size: 12px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Your login email was changed</h2>
+        <p>Hello %s,</p>
+        <p>The login email on your DriveBai account was changed by our support team:</p>
+        <div class="change"><strong>From:</strong> %s<br><strong>To:</strong> %s</div>
+        <p>The new address must be verified before it is trusted. If you asked for this change, no action is needed beyond verifying.</p>
+        <p><strong>If you did NOT ask for this, contact DriveBai support immediately.</strong></p>
+        <div class="footer"><p>The DriveBai Team</p></div>
+    </div>
+</body>
+</html>`, toName, oldEmail, newEmail)
+
+	message := mail.NewSingleEmail(from, subject, to, plainTextContent, htmlContent)
+	response, err := s.client.Send(message)
+	if err != nil {
+		return fmt.Errorf("sendgrid: send email-changed notice: %w", err)
+	}
+	if response.StatusCode >= 400 {
+		return fmt.Errorf("sendgrid: email-changed notice rejected with status %d", response.StatusCode)
+	}
+	return nil
+}
+
+func (c *ConsoleSender) SendEmailChangedNotice(toEmail, toName, oldEmail, newEmail string) error {
+	c.logger.Info("EMAIL-CHANGED NOTICE (dev mode)",
+		"to", toEmail,
+		"name", toName,
+		"old_email", oldEmail,
+		"new_email", newEmail,
+	)
+	fmt.Printf("\n"+
+		"╔════════════════════════════════════════════════════════════╗\n"+
+		"║  📧 EMAIL-CHANGED NOTICE (SendGrid not configured)         ║\n"+
+		"╠════════════════════════════════════════════════════════════╣\n"+
+		"║  To: %-52s ║\n"+
+		"║  Name: %-50s ║\n"+
+		"║  Old: %-51s ║\n"+
+		"║  New: %-51s ║\n"+
+		"╚════════════════════════════════════════════════════════════╝\n\n",
+		toEmail, toName, oldEmail, newEmail)
 	return nil
 }

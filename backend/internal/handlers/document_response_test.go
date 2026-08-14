@@ -196,3 +196,38 @@ func TestReplaceUserDocument_MimeAllowList(t *testing.T) {
 		}
 	}
 }
+
+// ── Admin email edit validation branches (point 2) ───────────────────────
+
+func adminEmailReq(t *testing.T, emailJSON string) *http.Request {
+	t.Helper()
+	id := uuid.New().String()
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", id)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/users/"+id+"/profile", strings.NewReader(emailJSON))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := context.WithValue(req.Context(), httputil.UserIDKey, uuid.New())
+	ctx = context.WithValue(ctx, chi.RouteCtxKey, rctx)
+	return req.WithContext(ctx)
+}
+
+func TestAdminUpdateUserProfile_EmailFormat(t *testing.T) {
+	h := &AdminHandler{}
+	for _, bad := range []string{`{"email":"no-at-sign"}`, `{"email":"   "}`, `{"email":""}`} {
+		rr := httptest.NewRecorder()
+		h.UpdateUserProfile(rr, adminEmailReq(t, bad))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("body %s: expected 400, got %d", bad, rr.Code)
+		}
+	}
+}
+
+func TestAdminUpdateUserProfile_EmailTooLong(t *testing.T) {
+	h := &AdminHandler{}
+	long := strings.Repeat("a", 250) + "@example.com" // > 255 total
+	rr := httptest.NewRecorder()
+	h.UpdateUserProfile(rr, adminEmailReq(t, `{"email":"`+long+`"}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("over-length email must 400, got %d", rr.Code)
+	}
+}

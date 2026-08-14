@@ -23,16 +23,18 @@ export const adminApi = {
   deleteUser: (id: string) => api.del<{ ok: boolean }>(`${BASE}/users/${id}`),
 
   /**
-   * Admin edit of safe profile fields (first_name, last_name, phone).
-   * Email, role, verification flags, and password are deliberately NOT
-   * editable here — see backend AdminHandler.UpdateUserProfile for the
-   * rationale. Omitted fields mean "leave unchanged" on the server.
-   * Returns the refreshed AdminUser so the table row can be swapped
-   * without a separate fetch.
+   * Admin edit of safe profile fields (first_name, last_name, phone,
+   * email). Changing the email clears is_email_verified server-side (an
+   * admin-typed address proves nothing — the user must re-verify) and
+   * notifies both the old and new address; a taken email returns 409.
+   * Role, verification flags, and password stay non-editable — see
+   * backend AdminHandler.UpdateUserProfile for the rationale. Omitted
+   * fields mean "leave unchanged" on the server. Returns the refreshed
+   * AdminUser so the table row can be swapped without a separate fetch.
    */
   updateUserProfile: (
     id: string,
-    body: { first_name?: string; last_name?: string; phone?: string },
+    body: { first_name?: string; last_name?: string; phone?: string; email?: string },
   ) => api.patch<AdminUser>(`${BASE}/users/${id}/profile`, body),
   // Driver-document replacement on the user's behalf (client points 3+4).
   // Both calls hit the same endpoint; the replaced slot resets to pending

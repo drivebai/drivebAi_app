@@ -426,3 +426,54 @@ func (s *ConsoleOTPSender) SendContactChangeOTP(toEmail, code, changeDesc string
 		toEmail, changeDesc, code)
 	return &OTPSendResult{}, nil
 }
+
+// SendEmailChangedNotice — MailerSend variant of the account email-change
+// notice (admin email edit). Same copy as the SendGrid path.
+func (s *MailerSendSender) SendEmailChangedNotice(toEmail, toName, oldEmail, newEmail string) error {
+	plainText := fmt.Sprintf(`Hello %s,
+
+The login email on your DriveBai account was changed by our support team:
+
+  From: %s
+  To:   %s
+
+The new address must be verified before it is trusted. If you asked for this change, no action is needed beyond verifying.
+
+If you did NOT ask for this, contact DriveBai support immediately.
+
+Best,
+The DriveBai Team`, toName, oldEmail, newEmail)
+
+	htmlBody := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.6;color:#333}
+  .container{max-width:600px;margin:0 auto;padding:20px}
+  .change{padding:16px 20px;background:#f5f5f5;border-radius:8px;margin:20px 0}
+  .footer{margin-top:30px;font-size:12px;color:#666}
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Your login email was changed</h2>
+  <p>Hello %s,</p>
+  <p>The login email on your DriveBai account was changed by our support team:</p>
+  <div class="change"><strong>From:</strong> %s<br><strong>To:</strong> %s</div>
+  <p>The new address must be verified before it is trusted. If you asked for this change, no action is needed beyond verifying.</p>
+  <p><strong>If you did NOT ask for this, contact DriveBai support immediately.</strong></p>
+  <div class="footer"><p>The DriveBai Team</p></div>
+</div>
+</body>
+</html>`, toName, oldEmail, newEmail)
+
+	payload := mailerSendPayload{
+		From:    mailerSendAddress{Email: s.fromEmail, Name: s.fromName},
+		To:      []mailerSendAddress{{Email: toEmail, Name: toName}},
+		Subject: "Your DriveBai login email was changed",
+		Text:    plainText,
+		HTML:    htmlBody,
+	}
+	_, err := sendMailerSend(s.client, s.apiKey, payload, s.logger, toEmail, "email-changed notice")
+	return err
+}

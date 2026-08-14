@@ -339,10 +339,10 @@ async function confirmReset() {
 }
 
 // --- edit profile ---
-// Modal-style form bound to a snapshot of the drawer user. Backend only
-// accepts first_name / last_name / phone — see adminApi.updateUserProfile.
+// Modal-style form bound to a snapshot of the drawer user. Backend
+// accepts first_name / last_name / phone / email — see adminApi.updateUserProfile.
 const editing = ref<AdminUser | null>(null)
-const editForm = ref({ first_name: '', last_name: '', phone: '' })
+const editForm = ref({ first_name: '', last_name: '', phone: '', email: '' })
 const savingEdit = ref(false)
 const editError = ref<string | null>(null)
 function startEdit(u: AdminUser) {
@@ -351,6 +351,7 @@ function startEdit(u: AdminUser) {
     first_name: u.first_name ?? '',
     last_name: u.last_name ?? '',
     phone: u.phone ?? '',
+    email: u.email ?? '',
   }
   editError.value = null
 }
@@ -364,15 +365,22 @@ async function saveEdit() {
   const fn = editForm.value.first_name.trim()
   const ln = editForm.value.last_name.trim()
   const ph = editForm.value.phone.trim()
+  const em = editForm.value.email.trim().toLowerCase()
   if (!fn || !ln) {
     editError.value = 'First and last name are required.'
     return
   }
-  // Only send what actually changed.
-  const body: { first_name?: string; last_name?: string; phone?: string } = {}
+  if (!em || !em.includes('@')) {
+    editError.value = 'Enter a valid email address.'
+    return
+  }
+  // Only send what actually changed. (Server 409s a taken email and
+  // clears the verified flag when it changes — see the modal warning.)
+  const body: { first_name?: string; last_name?: string; phone?: string; email?: string } = {}
   if (fn !== (u.first_name ?? '')) body.first_name = fn
   if (ln !== (u.last_name ?? '')) body.last_name = ln
   if (ph !== (u.phone ?? '')) body.phone = ph
+  if (em !== (u.email ?? '').toLowerCase()) body.email = em
   if (Object.keys(body).length === 0) { cancelEdit(); return }
 
   savingEdit.value = true
@@ -653,12 +661,12 @@ function onboardingLabel(s: string) {
     </div>
   </Drawer>
 
-  <!-- Edit profile modal. Backend allow-lists first_name / last_name / phone;
-       email + role intentionally not editable here. -->
+  <!-- Edit profile modal. Backend allow-lists first_name / last_name /
+       phone / email; role stays non-editable here. Changing the email
+       clears the verified flag server-side (client point 2). -->
   <div v-if="editing" class="modal-overlay" @click.self="cancelEdit">
     <div class="modal" role="dialog" aria-labelledby="editProfileTitle">
       <h2 id="editProfileTitle">Edit profile</h2>
-      <p class="modal-sub">{{ editing.email }}</p>
 
       <label>
         First name
@@ -672,6 +680,17 @@ function onboardingLabel(s: string) {
         Phone
         <input v-model="editForm.phone" maxlength="20" :disabled="savingEdit" autocomplete="off" />
       </label>
+      <label>
+        Email
+        <input v-model="editForm.email" type="email" maxlength="255" :disabled="savingEdit" autocomplete="off" />
+      </label>
+      <p
+        v-if="editForm.email.trim().toLowerCase() !== (editing.email ?? '').toLowerCase()"
+        class="modal-sub"
+      >
+        Changing the email un-verifies the account — the user must verify
+        the new address. Both the old and new address are notified.
+      </p>
 
       <p v-if="editError" class="error">{{ editError }}</p>
 
