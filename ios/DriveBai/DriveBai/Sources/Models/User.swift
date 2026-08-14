@@ -344,12 +344,16 @@ struct Document: Codable, Identifiable, Equatable {
     let fileSize: Int64
     let status: DocumentStatus
     let createdAt: Date
+    /// Signed private URL for in-app preview (client point 1a). Optional so
+    /// a response from an older server build still decodes.
+    let fileUrl: String?
 
     enum CodingKeys: String, CodingKey {
         case id, type, status
         case fileName = "file_name"
         case fileSize = "file_size"
         case createdAt = "created_at"
+        case fileUrl = "file_url"
     }
 }
 

@@ -918,7 +918,8 @@ struct EmbeddedDocumentUploadContent: View {
                     onFileSelected: { data, filename, mimeType in
                         Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: .driversLicense) }
                     },
-                    onDelete: { delete(type: .driversLicense) }
+                    onDelete: { delete(type: .driversLicense) },
+                    remoteFileURL: document(of: .driversLicense)?.fileUrl
                 )
             }
 
@@ -944,7 +945,8 @@ struct EmbeddedDocumentUploadContent: View {
                         onFileSelected: { data, filename, mimeType in
                             Task { await uploadDocument(data: data, filename: filename, mimeType: mimeType, type: type) }
                         },
-                        onDelete: { delete(type: type) }
+                        onDelete: { delete(type: type) },
+                        remoteFileURL: document(of: type)?.fileUrl
                     )
                 }
 

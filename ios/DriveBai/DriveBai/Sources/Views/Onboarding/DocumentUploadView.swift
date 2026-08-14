@@ -12,9 +12,9 @@ import UniformTypeIdentifiers
 ///
 /// Preview (QA pt 11): tapping the uploaded-file row opens a
 /// `DocumentPreviewSheet`. The sheet shows, in order of preference:
-///   1. `remoteFileURL` — a signed URL for the stored document, when the
-///      caller has one (the user-documents list API doesn't return URLs
-///      yet, so existing call sites simply don't pass it), else
+///   1. `remoteFileURL` — the signed URL from `Document.fileUrl` (the
+///      user-documents API returns one as of client point 1a; call sites
+///      pass it through), else
 ///   2. the locally staged bytes from the most recent pick this session.
 struct DocumentUploadCard: View {
     let type: DocumentType

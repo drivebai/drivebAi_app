@@ -178,6 +178,8 @@ func main() {
 	authHandler := handlers.NewAuthHandler(userRepo, tokenRepo, profileRepo, jwtSvc, emailSvc, cfg, logger)
 	otpAuthHandler := handlers.NewOTPAuthHandler(userRepo, tokenRepo, loginOTPRepo, profileRepo, jwtSvc, otpEmailSvc, logger)
 	userHandler := handlers.NewUserHandler(userRepo, docRepo, profileRepo, tokenRepo, jwtSvc, uploadDir, logger)
+	// Driver-document responses carry signed private URLs (client point 1a).
+	userHandler.SetURLSigner(privateURLSigner)
 	// OTP-confirmed email/phone changes (batch items 7+8) — reuses the
 	// login-OTP mailer, its own single-purpose table.
 	contactChangeHandler := handlers.NewContactChangeHandler(userRepo, contactChangeRepo, otpEmailSvc, logger)

@@ -26,7 +26,16 @@ type UserHandler struct {
 	jwtSvc      *auth.JWTService
 	logger      *slog.Logger
 	uploadDir   string
+	// urlSigner signs the private document URLs on the driver's own
+	// document responses. Wired via SetURLSigner (the established setter
+	// pattern); nil degrades to unsigned relative paths — the dev config.
+	urlSigner *PrivateURLSigner
 }
+
+// SetURLSigner wires private-URL signing for document responses. Setter,
+// not a constructor argument, so existing call sites and tests keep
+// compiling (same pattern as SetPasswordResetDependencies et al).
+func (h *UserHandler) SetURLSigner(s *PrivateURLSigner) { h.urlSigner = s }
 
 func NewUserHandler(
 	userRepo *repository.UserRepository,
@@ -178,12 +187,39 @@ func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 // Document upload handlers
 
 type DocumentResponse struct {
-	ID        uuid.UUID             `json:"id"`
-	Type      models.DocumentType   `json:"type"`
-	FileName  string                `json:"file_name"`
-	FileSize  int64                 `json:"file_size"`
+	ID       uuid.UUID           `json:"id"`
+	Type     models.DocumentType `json:"type"`
+	FileName string              `json:"file_name"`
+	FileSize int64               `json:"file_size"`
+	// FileURL is the signed private URL for in-app preview — this was the
+	// one document surface in the codebase that didn't emit one, which is
+	// why "tap to view" was dead on the driver's own documents. Minted per
+	// response, never persisted.
+	FileURL   string                `json:"file_url"`
+	MimeType  string                `json:"mime_type,omitempty"`
 	Status    models.DocumentStatus `json:"status"`
 	CreatedAt string                `json:"created_at"`
+}
+
+// documentResponse is the single place a Document becomes wire shape —
+// UploadDocument and GetDocuments previously built the struct inline in two
+// places, which is how file_url got missed on one surface.
+func (h *UserHandler) documentResponse(doc *models.Document) DocumentResponse {
+	// Driver documents are PRIVATE uploads (/uploads/{userID}/{file} is
+	// private unless the name starts with profile_): unsigned URLs 404 at
+	// the file server when signatures are required. Sign is nil-safe, so a
+	// nil signer degrades to the unsigned relative path (dev config).
+	url := h.urlSigner.Sign(publicURLForDocument(doc.UserID, doc.FilePath))
+	return DocumentResponse{
+		ID:        doc.ID,
+		Type:      doc.Type,
+		FileName:  doc.FileName,
+		FileSize:  doc.FileSize,
+		FileURL:   url,
+		MimeType:  doc.MimeType,
+		Status:    doc.Status,
+		CreatedAt: doc.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	}
 }
 
 func (h *UserHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
@@ -279,14 +315,7 @@ func (h *UserHandler) UploadDocument(w http.ResponseWriter, r *http.Request) {
 		h.userRepo.UpdateOnboardingStatus(r.Context(), userID, models.OnboardingDocumentsUploaded)
 	}
 
-	WriteJSON(w, http.StatusCreated, DocumentResponse{
-		ID:        doc.ID,
-		Type:      doc.Type,
-		FileName:  doc.FileName,
-		FileSize:  doc.FileSize,
-		Status:    doc.Status,
-		CreatedAt: doc.CreatedAt.Format("2006-01-02T15:04:05Z"),
-	})
+	WriteJSON(w, http.StatusCreated, h.documentResponse(doc))
 }
 
 func (h *UserHandler) GetDocuments(w http.ResponseWriter, r *http.Request) {
@@ -305,14 +334,7 @@ func (h *UserHandler) GetDocuments(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]DocumentResponse, 0, len(docs))
 	for _, doc := range docs {
-		response = append(response, DocumentResponse{
-			ID:        doc.ID,
-			Type:      doc.Type,
-			FileName:  doc.FileName,
-			FileSize:  doc.FileSize,
-			Status:    doc.Status,
-			CreatedAt: doc.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		})
+		response = append(response, h.documentResponse(doc))
 	}
 
 	WriteJSON(w, http.StatusOK, response)
