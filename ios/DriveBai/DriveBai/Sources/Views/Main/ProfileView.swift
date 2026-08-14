@@ -557,16 +557,34 @@ private struct DriverDocsRequiredSheet: View {
     let onCompleted: () -> Void
     let onCancel: () -> Void
 
-    @State private var isUploadingLicense = false
-    @State private var isUploadingCommercial = false
+    // Dynamic card set (client point 1b): the old sheet hard-coded exactly
+    // two cards, so a TLC uploaded at signup was permanently invisible here
+    // while admin showed it Approved. Mirrors EmbeddedDocumentUploadContent
+    // in SignupFlowView — same derivations, same add-another dialog.
+    @State private var uploadingTypes: Set<DocumentType> = []
+    @State private var addedOptionalTypes: Set<DocumentType> = []
+    @State private var showAddOptionalSheet = false
     @State private var errorMessage: String?
 
-    private var licenseDocument: Document? {
-        authStore.documents.first { $0.type == .driversLicense }
+    private func document(of type: DocumentType) -> Document? {
+        authStore.documents.first { $0.type == type }
     }
 
-    private var commercialLicenseDocument: Document? {
-        authStore.documents.first { $0.type == .commercialLicense }
+    private var licenseDocument: Document? { document(of: .driversLicense) }
+
+    /// Optional types with an upload on record or explicitly added this
+    /// session — these render as cards.
+    private var visibleOptionalTypes: [DocumentType] {
+        DocumentType.optionalDriverDocs.filter { type in
+            document(of: type) != nil || addedOptionalTypes.contains(type)
+        }
+    }
+
+    /// The rest, offered through the "+ Add another document" dialog.
+    private var addableOptionalTypes: [DocumentType] {
+        DocumentType.optionalDriverDocs.filter { type in
+            document(of: type) == nil && !addedOptionalTypes.contains(type)
+        }
     }
 
     private var canContinue: Bool {
@@ -595,25 +613,51 @@ private struct DriverDocsRequiredSheet: View {
                     .padding(.top, 8)
 
                     VStack(spacing: 16) {
+                        // Required: the driver's licence, always visible.
                         DocumentUploadCard(
                             type: .driversLicense,
                             document: licenseDocument,
-                            isUploading: isUploadingLicense,
+                            isUploading: uploadingTypes.contains(.driversLicense),
                             onFileSelected: { data, filename, mimeType in
                                 Task { await upload(type: .driversLicense, data: data, filename: filename, mimeType: mimeType) }
                             },
-                            onDelete: { delete(licenseDocument) }
+                            onDelete: { delete(licenseDocument) },
+                            remoteFileURL: licenseDocument?.fileUrl
                         )
 
-                        DocumentUploadCard(
-                            type: .commercialLicense,
-                            document: commercialLicenseDocument,
-                            isUploading: isUploadingCommercial,
-                            onFileSelected: { data, filename, mimeType in
-                                Task { await upload(type: .commercialLicense, data: data, filename: filename, mimeType: mimeType) }
-                            },
-                            onDelete: { delete(commercialLicenseDocument) }
-                        )
+                        // Optional slots: every type with an upload shows a
+                        // card — including the TLC the client couldn't see.
+                        ForEach(visibleOptionalTypes, id: \.self) { type in
+                            DocumentUploadCard(
+                                type: type,
+                                document: document(of: type),
+                                isUploading: uploadingTypes.contains(type),
+                                onFileSelected: { data, filename, mimeType in
+                                    Task { await upload(type: type, data: data, filename: filename, mimeType: mimeType) }
+                                },
+                                onDelete: { delete(document(of: type)) },
+                                remoteFileURL: document(of: type)?.fileUrl
+                            )
+                        }
+
+                        if !addableOptionalTypes.isEmpty {
+                            Button {
+                                showAddOptionalSheet = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "plus.circle.fill")
+                                    Text("Add another document")
+                                }
+                                .font(.subheadline.weight(.medium))
+                                .foregroundColor(.driveBaiPrimary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.driveBaiPrimary.opacity(0.35), style: StrokeStyle(lineWidth: 1.5, dash: [5]))
+                                )
+                            }
+                        }
                     }
                     .padding(.horizontal)
 
@@ -654,6 +698,13 @@ private struct DriverDocsRequiredSheet: View {
                     Button("Cancel") { onCancel() }
                 }
             }
+            .confirmationDialog("Add a supporting document", isPresented: $showAddOptionalSheet, titleVisibility: .visible) {
+                ForEach(addableOptionalTypes, id: \.self) { type in
+                    Button(type.displayName) {
+                        addedOptionalTypes.insert(type)
+                    }
+                }
+            }
             .task {
                 await authStore.fetchDocuments()
             }
@@ -661,18 +712,8 @@ private struct DriverDocsRequiredSheet: View {
     }
 
     private func upload(type: DocumentType, data: Data, filename: String, mimeType: String) async {
-        if type == .driversLicense {
-            isUploadingLicense = true
-        } else {
-            isUploadingCommercial = true
-        }
-        defer {
-            if type == .driversLicense {
-                isUploadingLicense = false
-            } else {
-                isUploadingCommercial = false
-            }
-        }
+        uploadingTypes.insert(type)
+        defer { uploadingTypes.remove(type) }
 
         errorMessage = nil
         do {
@@ -693,6 +734,13 @@ private struct DriverDocsRequiredSheet: View {
         guard let document else { return }
         Task {
             try? await authStore.deleteDocument(id: document.id)
+            // If the user deletes an optional doc they just added, also clear
+            // it from the visible-set so the "+ Add" picker offers it again
+            // (mirrors EmbeddedDocumentUploadContent — without this, an empty
+            // phantom card lingers for the rest of the sheet session).
+            if document.type != .driversLicense {
+                addedOptionalTypes.remove(document.type)
+            }
         }
     }
 }
