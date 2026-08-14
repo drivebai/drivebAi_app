@@ -44,7 +44,7 @@ struct DocumentUploadCard: View {
         VStack(alignment: .leading, spacing: 12) {
             // Header
             HStack {
-                Image(systemName: type == .driversLicense ? "person.text.rectangle" : "car.fill")
+                Image(systemName: type.systemImageName)
                     .font(.title2)
                     .foregroundColor(.driveBaiPrimary)
 
@@ -70,10 +70,24 @@ struct DocumentUploadCard: View {
 
                 Spacer()
 
-                if document != nil {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                        .font(.title2)
+                // Status-appropriate trailing icon — the old unconditional
+                // green tick showed alongside a red "Declined" dot, telling
+                // the user two opposite things at once (client screenshot).
+                if let doc = document {
+                    switch doc.status {
+                    case .verified:
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.title2)
+                    case .rejected:
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundColor(.red)
+                            .font(.title2)
+                    case .uploaded:
+                        Image(systemName: "clock.fill")
+                            .foregroundColor(.orange)
+                            .font(.title2)
+                    }
                 }
             }
 

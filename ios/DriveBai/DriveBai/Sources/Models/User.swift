@@ -304,6 +304,18 @@ enum DocumentType: String, Codable, CaseIterable {
         }
     }
 
+    /// Header icon for the upload cards. Every case named — the old
+    /// two-way ternary rendered a TLC licence with a car icon.
+    var systemImageName: String {
+        switch self {
+        case .driversLicense:    return "person.text.rectangle"
+        case .registration:      return "car.fill"
+        case .commercialLicense: return "truck.box.fill"
+        case .tlcLicense:        return "person.crop.rectangle.badge.plus"
+        case .other:             return "doc.fill"
+        }
+    }
+
     /// Optional supporting documents a driver can attach during onboarding.
     /// The required document — drivers_license — is handled separately by
     /// AuthStore.hasRequiredDocuments() so this list only enumerates the
@@ -332,7 +344,9 @@ enum DocumentStatus: String, Codable {
         case .verified:
             return "Verified"
         case .rejected:
-            return "Rejected"
+            // "Declined" matches the admin action button and the decline
+            // notification copy — one word for one state, everywhere.
+            return "Declined"
         }
     }
 }
