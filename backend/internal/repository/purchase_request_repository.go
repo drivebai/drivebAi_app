@@ -176,6 +176,18 @@ func (r *PurchaseRequestRepository) GetActiveByCarAndBuyer(ctx context.Context, 
 // is a terminal status, so the car self-releases the moment a purchase falls
 // through — there is no stored flag to go stale. excludeID lets Accept skip
 // the row it is itself accepting (pass uuid.Nil from Create).
+// BlockingPurchaseStatusesSQL is the single definition of "a purchase in
+// flight that owns the car's future" — shared with the lease-side occupancy
+// checks (CarRepository.IsOccupied / HasBlockingPurchase and the lease
+// Accept guard) so the two flows can never disagree about what blocks what.
+// A purchase in these states holds no reservation column yet (that lands at
+// KeysHandedOver), which is exactly why status must be consulted.
+const BlockingPurchaseStatusesSQL = `(
+	'accepted','bos_pending_seller','bos_pending_buyer','bos_signed',
+	'payment_authorized','handover_scheduled','awaiting_inspection',
+	'inspection_accepted','inspection_rejected'
+)`
+
 func (r *PurchaseRequestRepository) HasBlockingPurchase(ctx context.Context, carID, excludeID uuid.UUID) (bool, error) {
 	var blocked bool
 	err := r.db.Pool.QueryRow(ctx, `
@@ -183,11 +195,7 @@ func (r *PurchaseRequestRepository) HasBlockingPurchase(ctx context.Context, car
 			SELECT 1 FROM purchase_requests
 			WHERE car_id = $1
 			  AND id <> $2
-			  AND status IN (
-			    'accepted','bos_pending_seller','bos_pending_buyer','bos_signed',
-			    'payment_authorized','handover_scheduled','awaiting_inspection',
-			    'inspection_accepted','inspection_rejected'
-			  )
+			  AND status IN `+BlockingPurchaseStatusesSQL+`
 		)`, carID, excludeID).Scan(&blocked)
 	if err != nil {
 		return false, fmt.Errorf("has blocking purchase: %w", err)
@@ -1164,14 +1172,18 @@ func (r *PurchaseRequestRepository) MarkCaptured(ctx context.Context, id uuid.UU
 	// too in case the reservation guard is bypassed or a race squeaks
 	// through.
 	var carStatus string
-	var reservedBy *uuid.UUID
+	var reservedBy, reservedByLease *uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT status, reserved_by_purchase_request_id
+		SELECT status, reserved_by_purchase_request_id, reserved_by_lease_request_id
 		  FROM cars WHERE id = $1 FOR UPDATE
-	`, p.CarID).Scan(&carStatus, &reservedBy); err != nil {
+	`, p.CarID).Scan(&carStatus, &reservedBy, &reservedByLease); err != nil {
 		return nil, fmt.Errorf("lock car row: %w", err)
 	}
-	if carStatus == "sold" || (reservedBy != nil && *reservedBy != p.ID) {
+	// 'rented' / a held lease reservation refuse capture the same way sold
+	// does: flipping a car another driver has paid for (and may physically
+	// hold) to sold+archived would strand their rental on a dead listing.
+	if carStatus == "sold" || carStatus == "rented" || reservedByLease != nil ||
+		(reservedBy != nil && *reservedBy != p.ID) {
 		return nil, models.ErrCarSold
 	}
 
@@ -1328,10 +1340,16 @@ func (r *PurchaseRequestRepository) KeysHandedOver(ctx context.Context, id, sell
 	// ErrCarSold so the caller flips the purchase back to a safe state
 	// instead of proceeding into inspection under the illusion of
 	// exclusive control.
+	// Also refuses a car a LEASE currently owns (reservation held or
+	// status already rented) — the lifecycle batch made occupancy
+	// symmetric: without this, a rental that slipped in before the
+	// purchase reached handover could end with the same car sold AND
+	// rented, both payments captured.
 	tag, err := tx.Exec(ctx, `
 		UPDATE cars SET reserved_by_purchase_request_id = $2, updated_at = NOW()
 		WHERE id = $1
-		  AND status <> 'sold'
+		  AND status NOT IN ('sold', 'rented')
+		  AND reserved_by_lease_request_id IS NULL
 		  AND (reserved_by_purchase_request_id IS NULL
 		       OR reserved_by_purchase_request_id = $2)
 	`, p.CarID, p.ID)

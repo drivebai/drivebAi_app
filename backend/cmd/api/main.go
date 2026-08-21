@@ -240,6 +240,11 @@ func main() {
 	keyHandoverHandler := handlers.NewKeyHandoverHandler(keyHandoverRepo, leaseRepo, carRepo, userRepo, wsHub, notifHandler, logger)
 	vehicleReturnRepo := repository.NewVehicleReturnRepository(db)
 	vehicleReturnHandler := handlers.NewVehicleReturnHandler(vehicleReturnRepo, leaseRepo, carRepo, userRepo, chatRepo, stripeSvc, wsHub, notifHandler, logger)
+	// Lifecycle batch: a dispute opens a real support ticket, and the term
+	// scanner escalates sustained-overdue rentals to one — both handlers
+	// need the ticket repo (constructed above for the ticket endpoints).
+	vehicleReturnHandler.SetTicketRepository(ticketRepo)
+	leaseHandler.SetTicketRepository(ticketRepo)
 
 	// Purchase (buy the car) — mirrors the lease flow but with manual capture
 	// held until buyer inspection accept. See DESIGN SPEC for the state
@@ -699,6 +704,10 @@ func main() {
 	// Purchase expiry: sweeps both offer-TTL and Stripe manual-capture
 	// auth-TTL rows. Same cadence keeps ops budgets aligned.
 	go purchaseHandler.StartExpiryScanner(workerCtx, scanInterval)
+	// Rental term: ending-soon notices, overdue flags, and sustained-overdue
+	// escalation tickets (lifecycle batch, defect 2). Same cadence — each
+	// phase's claimed-once flag makes frequent ticks cheap no-ops.
+	go leaseHandler.StartRentalTermScanner(workerCtx, scanInterval)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)

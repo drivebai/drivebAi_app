@@ -78,10 +78,30 @@ type VehicleReturn struct {
 
 	DisputeReason     *string
 	DisputeResolvedBy *string
+	// ResolutionNote (migration 000047): the admin's required note on
+	// accept/reject — surfaced to both parties in the resolution
+	// notifications so the outcome always arrives with its reasoning.
+	ResolutionNote *string
+	// OwnerReminderSentAt (migration 000047): claimed-once flag for the
+	// stale driver_initiated reminder; the attention sweep sets it under an
+	// IS NULL guard so the owner is nudged exactly once per return.
+	OwnerReminderSentAt *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// ReturnOwnerReminderAfter is how long a driver_initiated return may sit
+// unanswered before the owner gets a reminder — the owner has no deadline to
+// confirm or dispute, and an ignored return leaves the driver's refund in
+// limbo (attention sweep, lifecycle batch).
+const ReturnOwnerReminderAfter = 48 * time.Hour
+
+// ReturnEscalateAfter is how long an IGNORED driver_initiated return waits
+// before a support ticket is opened — the reminder above didn't move the
+// owner, and the driver's refund must not depend on their goodwill forever.
+// Admins can resolve it via the same accept/reject lever as disputes.
+const ReturnEscalateAfter = 120 * time.Hour
 
 // IsActive reports whether the return is still in an actionable (Today) state.
 // Completed/cancelled rows are terminal and surface only as history.
@@ -245,6 +265,7 @@ type VehicleReturnResponse struct {
 	RefundID          *string                    `json:"refund_id,omitempty"`
 	RefundedAt        *RFC3339Time               `json:"refunded_at,omitempty"`
 	DisputeReason     *string                    `json:"dispute_reason,omitempty"`
+	ResolutionNote    *string                    `json:"resolution_note,omitempty"`
 	// CancelWindowExpiresAt is the deadline by which the driver can call
 	// /cancel to undo. Omitted (nil) once the row has moved past
 	// driver_initiated. Computed server-side so the iOS card can render a

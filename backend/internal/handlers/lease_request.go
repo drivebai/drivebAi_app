@@ -43,6 +43,16 @@ type LeaseRequestHandler struct {
 	// which the driver must confirm pickup. Past this point a background
 	// scanner will refund the payment and unreserve the car.
 	pickupDeadline time.Duration
+	// ticketRepo is optional; wired via SetTicketRepository so the term
+	// scanner's sustained-overdue phase can escalate to a real support
+	// ticket instead of shouting into logs.
+	ticketRepo *repository.TicketRepository
+}
+
+// SetTicketRepository wires the support-ticket repo for the rental-term
+// scanner's escalation phase. Setter, per the house pattern.
+func (h *LeaseRequestHandler) SetTicketRepository(t *repository.TicketRepository) {
+	h.ticketRepo = t
 }
 
 // SetPurchaseHandler wires the purchase-side handler so the shared Stripe
@@ -146,6 +156,35 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	// Validate: car must be for rent
 	if !car.IsForRent || !car.WeeklyRentPrice.Valid {
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrCarNotForRent)
+		return
+	}
+
+	// Availability guard (lifecycle batch, defect 1) — mirrors Discovery's
+	// WHERE clause, so a car a driver can't browse can't be requested from
+	// a stale list either. Split by what the driver should hear:
+	//   - rented / sold / reserved → CAR_NOT_AVAILABLE 409: "someone else
+	//     has it right now" (the reservation check is load-bearing — a
+	//     paid-but-not-picked-up car still reads status='available').
+	//   - paused / unapproved → CAR_NOT_FOR_RENT 400: the owner or admin
+	//     has it out of the marketplace. Gating on IsApproved rather than
+	//     status=='pending' also keeps AUTO_APPROVE_CARS environments
+	//     working, where approved cars retain the 'pending' status.
+	if car.Status == models.CarStatusRented || car.Status == models.CarStatusSold {
+		httputil.WriteError(w, http.StatusConflict, models.ErrCarNotAvailable)
+		return
+	}
+	if car.IsPaused || !car.IsApproved {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrCarNotForRent)
+		return
+	}
+	occupied, oerr := h.carRepo.IsOccupied(r.Context(), car.ID)
+	if oerr != nil {
+		h.logger.Error("lease create: occupancy check", "error", oerr, "car_id", car.ID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if occupied {
+		httputil.WriteError(w, http.StatusConflict, models.ErrCarNotAvailable)
 		return
 	}
 
@@ -362,8 +401,14 @@ func (h *LeaseRequestHandler) handleLeaseAction(w http.ResponseWriter, r *http.R
 	if err != nil {
 		if apiErr := models.GetAPIError(err); apiErr != nil {
 			status := http.StatusBadRequest
-			if apiErr.Code == models.ErrCodeLeaseRequestNotFound {
+			switch apiErr.Code {
+			case models.ErrCodeLeaseRequestNotFound:
 				status = http.StatusNotFound
+			case models.ErrCodeCarNotAvailable:
+				// Accept lost to a concurrent transaction (another lease's
+				// reservation, an in-flight purchase, rented/sold) — a
+				// state conflict, not a bad request.
+				status = http.StatusConflict
 			}
 			httputil.WriteError(w, status, apiErr)
 		} else {
@@ -474,6 +519,31 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 	// Must be in accepted status (or payment_pending if retrying)
 	if lr.Status != models.LeaseStatusAccepted && lr.Status != models.LeaseStatusPaymentPending {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewAPIError(models.ErrCodeInvalidLeaseAction, "Lease request must be accepted before payment"))
+		return
+	}
+
+	// The lease can be payable while the CAR has left the marketplace
+	// underneath it — sold through the purchase flow or archived by the
+	// owner (lifecycle batch, defect 1 audit). Paying for a car that can
+	// never be picked up is exactly the "flow that cannot finish" this
+	// batch closes; refuse before any money moves.
+	if payCar, cerr := h.carRepo.GetByID(r.Context(), lr.ListingID); cerr != nil || payCar == nil {
+		h.logger.Error("payment: load car", "error", cerr, "listing_id", lr.ListingID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	} else if payCar.IsArchived() || payCar.Status == models.CarStatusSold {
+		httputil.WriteError(w, http.StatusConflict, models.ErrCarNotAvailable)
+		return
+	}
+	// A purchase that started before this lease was accepted can be racing
+	// toward handover; only the purchase side of occupancy is checked here
+	// — the lease rightfully holds its own reservation at pay time.
+	if blocked, berr := h.carRepo.HasBlockingPurchase(r.Context(), lr.ListingID); berr != nil {
+		h.logger.Error("payment: blocking-purchase check", "error", berr, "listing_id", lr.ListingID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	} else if blocked {
+		httputil.WriteError(w, http.StatusConflict, models.ErrCarNotAvailable)
 		return
 	}
 
@@ -703,6 +773,9 @@ func (h *LeaseRequestHandler) SyncPaymentStatus(w http.ResponseWriter, r *http.R
 			// Arm the pickup deadline (idempotent — guarded by status='paid'
 			// AND pickup_deadline_at IS NULL inside the repo).
 			h.armPickupDeadline(r.Context(), lr)
+
+			// Close out competing requests (idempotent with the webhook path).
+			h.declineSiblingsOfPaidLease(r.Context(), lr)
 		}
 	}
 
@@ -865,6 +938,11 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 	// Arm the pickup deadline. Webhook retries are safe — the repo guard
 	// (status='paid' AND pickup_deadline_at IS NULL) makes this idempotent.
 	h.armPickupDeadline(r.Context(), lr)
+
+	// The car is committed now — competing requests can no longer succeed
+	// and must not sit in other drivers' Today lists until their TTL
+	// lazily expires. Idempotent (a webhook retry matches zero rows).
+	h.declineSiblingsOfPaidLease(r.Context(), lr)
 }
 
 // ensureKeyHandover creates the key-handover task for a freshly paid lease

@@ -255,6 +255,13 @@ type ActiveRentalSummary struct {
 	PickupConfirmedAt  RFC3339Time `json:"pickup_confirmed_at"`
 	PlannedEndAt       RFC3339Time `json:"planned_end_at"`
 	CurrentEarnedCents int64       `json:"current_earned_cents"`
+	// Term state (migration 000046): PlannedEndAt is now backed by the
+	// stored lease_requests.rental_ends_at rather than re-derived, and
+	// Overdue tells the owner's My Cars card the paid term has passed with
+	// the car still out. Additive fields — older clients ignore them.
+	Overdue       bool            `json:"overdue"`
+	TermState     RentalTermState `json:"term_state"`
+	DaysRemaining int             `json:"days_remaining"`
 	// ChatID is the driver↔owner chat for this rental, when one exists
 	// (deterministic via uq_chats_car_driver_owner). Lets the owner's My
 	// Cars row deep-link straight into the conversation. Omitted when no

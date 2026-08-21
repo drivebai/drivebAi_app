@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,8 +31,19 @@ const vehicleReturnColumns = `
 	driver_initiated_at, owner_confirmed_at, disputed_at, completed_at, cancelled_at,
 	pickup_confirmed_at, returned_at, rental_weeks, paid_amount_cents,
 	used_days, refund_amount_cents, refund_id, refund_status, refunded_at, refund_failure_reason,
-	dispute_reason, dispute_resolved_by,
+	dispute_reason, dispute_resolved_by, resolution_note, owner_reminder_sent_at,
 	created_at, updated_at`
+
+// prefixedVehicleReturnColumns qualifies every column in
+// vehicleReturnColumns with a table alias, for UPDATE ... FROM ... RETURNING
+// clauses where bare column names would be ambiguous.
+func prefixedVehicleReturnColumns(alias string) string {
+	cols := strings.Split(vehicleReturnColumns, ",")
+	for i, c := range cols {
+		cols[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(cols, ", ")
+}
 
 func scanVehicleReturn(row scanRow) (*models.VehicleReturn, error) {
 	var v models.VehicleReturn
@@ -40,7 +52,7 @@ func scanVehicleReturn(row scanRow) (*models.VehicleReturn, error) {
 		&v.DriverInitiatedAt, &v.OwnerConfirmedAt, &v.DisputedAt, &v.CompletedAt, &v.CancelledAt,
 		&v.PickupConfirmedAt, &v.ReturnedAt, &v.RentalWeeks, &v.PaidAmountCents,
 		&v.UsedDays, &v.RefundAmountCents, &v.RefundID, &v.RefundStatus, &v.RefundedAt, &v.RefundFailureReason,
-		&v.DisputeReason, &v.DisputeResolvedBy,
+		&v.DisputeReason, &v.DisputeResolvedBy, &v.ResolutionNote, &v.OwnerReminderSentAt,
 		&v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
@@ -216,6 +228,13 @@ func (r *VehicleReturnRepository) Cancel(ctx context.Context, id, driverID uuid.
 // scanner if the Stripe call subsequently fails). The handler immediately
 // follows up with a Stripe call and FinalizeRefund / FinalizeNoRefund.
 //
+// Also accepted from 'disputed' — that is the owner WITHDRAWING their
+// dispute (lifecycle batch): the common dispute is a misunderstanding
+// resolved in chat, and confirming receipt is the natural self-service
+// exit; without it the only way out of disputed is the admin queue. The
+// dispute trail (disputed_at, dispute_reason) is kept for the record;
+// dispute_resolved_by records 'owner'.
+//
 // When the computed refund is not applicable (zero-paid lease, sub-cent),
 // the handler should call MarkRefundNotApplicable in the same flow.
 func (r *VehicleReturnRepository) OwnerConfirm(ctx context.Context, id, ownerID uuid.UUID) (*models.VehicleReturn, error) {
@@ -223,12 +242,13 @@ func (r *VehicleReturnRepository) OwnerConfirm(ctx context.Context, id, ownerID 
 		UPDATE vehicle_returns
 		SET status = 'owner_confirmed',
 		    owner_confirmed_at = NOW(),
+		    dispute_resolved_by = CASE WHEN status = 'disputed' THEN 'owner' ELSE dispute_resolved_by END,
 		    refund_status = CASE
 		        WHEN refund_amount_cents > 0 THEN 'pending'::varchar
 		        ELSE 'not_applicable'::varchar
 		    END,
 		    updated_at = NOW()
-		WHERE id = $1 AND owner_id = $2 AND status = 'driver_initiated'
+		WHERE id = $1 AND owner_id = $2 AND status IN ('driver_initiated', 'disputed')
 		RETURNING `+vehicleReturnColumns,
 		id, ownerID)
 	v, err := scanVehicleReturn(row)
@@ -306,7 +326,7 @@ func (r *VehicleReturnRepository) finalize(ctx context.Context, id uuid.UUID, re
 		    refund_failure_reason = NULL,
 		    updated_at = $2
 		WHERE id = $1
-		  AND status IN ('driver_initiated','owner_confirmed','completed')
+		  AND status IN ('driver_initiated','owner_confirmed')
 		RETURNING `+vehicleReturnColumns,
 		id, now, refundID, string(status), refundedAt)
 	v, err := scanVehicleReturn(row)
@@ -360,10 +380,12 @@ func (r *VehicleReturnRepository) finalize(ctx context.Context, id uuid.UUID, re
 // 'owner_confirmed' so the stuck-refund scanner picks it up on its next
 // tick. Persists the error message for operator visibility.
 func (r *VehicleReturnRepository) MarkRefundFailed(ctx context.Context, id uuid.UUID, reason string) error {
+	// Never downgrade a completed row: a slow failed attempt racing a
+	// concurrent sweep's success must not stamp 'failed' over 'succeeded'.
 	_, err := r.db.Pool.Exec(ctx, `
 		UPDATE vehicle_returns
 		SET refund_status = 'failed', refund_failure_reason = $2, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status <> 'completed'
 	`, id, reason)
 	if err != nil {
 		return fmt.Errorf("mark refund failed: %w", err)
@@ -417,7 +439,13 @@ func (r *VehicleReturnRepository) ListStuckRefunds(ctx context.Context, staleAft
 //	resolution = "reject" → flip to 'cancelled'. No refund, no car
 //	    release (the rental remains live; in practice the lease will
 //	    almost always already be at its natural end).
-func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UUID, resolution string) (*models.VehicleReturn, error) {
+//
+// ResolveDispute also accepts 'driver_initiated' rows (lifecycle batch): an
+// owner who never confirms, never disputes, and never answers the reminder
+// otherwise leaves the driver's refund frozen with no admin lever at all —
+// support must be able to resolve an ignored return, not only a contested
+// one.
+func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UUID, resolution, note string) (*models.VehicleReturn, error) {
 	var query string
 	switch resolution {
 	case "accept":
@@ -426,12 +454,13 @@ func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UU
 			SET status = 'owner_confirmed',
 			    owner_confirmed_at = COALESCE(owner_confirmed_at, NOW()),
 			    dispute_resolved_by = 'admin',
+			    resolution_note = NULLIF($2, ''),
 			    refund_status = CASE
 			        WHEN refund_amount_cents > 0 THEN 'pending'::varchar
 			        ELSE 'not_applicable'::varchar
 			    END,
 			    updated_at = NOW()
-			WHERE id = $1 AND status = 'disputed'
+			WHERE id = $1 AND status IN ('disputed', 'driver_initiated')
 			RETURNING ` + vehicleReturnColumns
 	case "reject":
 		query = `
@@ -439,14 +468,15 @@ func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UU
 			SET status = 'cancelled',
 			    cancelled_at = NOW(),
 			    dispute_resolved_by = 'admin',
+			    resolution_note = NULLIF($2, ''),
 			    updated_at = NOW()
-			WHERE id = $1 AND status = 'disputed'
+			WHERE id = $1 AND status IN ('disputed', 'driver_initiated')
 			RETURNING ` + vehicleReturnColumns
 	default:
 		return nil, models.NewValidationError("resolution must be 'accept' or 'reject'")
 	}
 
-	row := r.db.Pool.QueryRow(ctx, query, id)
+	row := r.db.Pool.QueryRow(ctx, query, id, note)
 	v, err := scanVehicleReturn(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, models.ErrInvalidReturnState
@@ -455,6 +485,147 @@ func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UU
 		return nil, fmt.Errorf("resolve vehicle return dispute: %w", err)
 	}
 	return v, nil
+}
+
+// ReviveCancelled re-opens a cancelled return as a fresh driver_initiated
+// submission. Without this, cancelled is LEASE-FATAL: UNIQUE(lease_request_id)
+// plus Initiate's return-existing-row idempotency means a driver who undid a
+// mistap (or lost a dispute) could never return the car again — the listing
+// stays 'rented' forever with no API path out. The caller recomputes the
+// refund at the new returnedAt; dispute and refund state from the previous
+// attempt are cleared so the row reads as a first submission.
+func (r *VehicleReturnRepository) ReviveCancelled(ctx context.Context, id, driverID uuid.UUID, returnedAt time.Time, usedDays int, refundAmountCents, paidAmountCents int64) (*models.VehicleReturn, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE vehicle_returns
+		SET status = 'driver_initiated',
+		    driver_initiated_at = NOW(),
+		    returned_at = $3,
+		    used_days = $4,
+		    refund_amount_cents = $5,
+		    paid_amount_cents = $6,
+		    cancelled_at = NULL,
+		    disputed_at = NULL,
+		    dispute_reason = NULL,
+		    dispute_resolved_by = NULL,
+		    resolution_note = NULL,
+		    owner_reminder_sent_at = NULL,
+		    refund_status = NULL,
+		    refund_failure_reason = NULL,
+		    updated_at = NOW()
+		WHERE id = $1 AND driver_id = $2 AND status = 'cancelled'
+		RETURNING `+vehicleReturnColumns, id, driverID, returnedAt, usedDays, refundAmountCents, paidAmountCents)
+	v, err := scanVehicleReturn(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, models.ErrInvalidReturnState
+	}
+	if err != nil {
+		return nil, fmt.Errorf("revive cancelled vehicle return: %w", err)
+	}
+	return v, nil
+}
+
+// ListStuckZeroRefunds surfaces owner_confirmed rows with NOTHING to refund
+// that still never finalized — a transient FinalizeNoRefund failure parks
+// them where ListStuckRefunds (predicate: refund_amount_cents > 0) can never
+// see them. The sweep completes them with the same FinalizeNoRefund call.
+func (r *VehicleReturnRepository) ListStuckZeroRefunds(ctx context.Context, staleBefore time.Time, limit int) ([]models.VehicleReturn, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+vehicleReturnColumns+`
+		FROM vehicle_returns
+		WHERE status = 'owner_confirmed'
+		  AND refund_amount_cents <= 0
+		  AND updated_at <= $1
+		ORDER BY updated_at ASC
+		LIMIT $2`, staleBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stuck zero refunds: %w", err)
+	}
+	defer rows.Close()
+	var out []models.VehicleReturn
+	for rows.Next() {
+		v, err := scanVehicleReturn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, nil
+}
+
+// ListStaleInitiatedReturns SELECTs (without claiming) driver_initiated
+// returns the owner has ignored past the escalation threshold — the 48h
+// reminder already fired (owner_reminder_sent_at set) and still nothing
+// moved. Claimless on purpose: the caller creates the ticket first (the
+// live-ticket unique index dedupes) and the ticket's existence is the
+// idempotency, so no flag column is needed and a failed insert retries on
+// the next sweep.
+func (r *VehicleReturnRepository) ListStaleInitiatedReturns(ctx context.Context, olderThan time.Time, limit int) ([]models.VehicleReturn, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+vehicleReturnColumns+`
+		FROM vehicle_returns
+		WHERE status = 'driver_initiated'
+		  AND driver_initiated_at <= $1
+		  AND owner_reminder_sent_at IS NOT NULL
+		ORDER BY driver_initiated_at ASC
+		LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stale initiated returns: %w", err)
+	}
+	defer rows.Close()
+	var out []models.VehicleReturn
+	for rows.Next() {
+		v, err := scanVehicleReturn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, nil
+}
+
+// ClaimOwnerReminders atomically claims driver_initiated returns the owner
+// has ignored past the reminder threshold — the claim IS the idempotency
+// guard (owner_reminder_sent_at set under IS NULL), so two scanner instances
+// can never double-remind. FOR UPDATE SKIP LOCKED keeps concurrent sweeps
+// from serializing on each other, mirroring the job-queue shape of
+// ClaimForExpiry.
+func (r *VehicleReturnRepository) ClaimOwnerReminders(ctx context.Context, olderThan time.Time, limit int) ([]models.VehicleReturn, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		UPDATE vehicle_returns v
+		SET owner_reminder_sent_at = NOW(), updated_at = NOW()
+		FROM (
+			SELECT id FROM vehicle_returns
+			WHERE status = 'driver_initiated'
+			  AND driver_initiated_at <= $1
+			  AND owner_reminder_sent_at IS NULL
+			ORDER BY driver_initiated_at ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		) picked
+		WHERE v.id = picked.id
+		RETURNING `+prefixedVehicleReturnColumns("v"), olderThan, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim owner reminders: %w", err)
+	}
+	defer rows.Close()
+	var out []models.VehicleReturn
+	for rows.Next() {
+		v, err := scanVehicleReturn(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, nil
 }
 
 // ListByStatus is the admin-list helper. Empty status returns all rows.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -162,6 +163,10 @@ type OwnerCarActiveRental struct {
 	Weeks                     int
 	EffectiveWeeklyPriceCents int64
 	PickupConfirmedAt         time.Time
+	// RentalEndsAt is the stored term end (migration 000046), with the
+	// derived pickup+weeks*7d as the COALESCE fallback for any row that
+	// predates the backfill.
+	RentalEndsAt time.Time
 	// ChatID is the driver↔owner chat for this car, when one exists.
 	// Deterministic single row via uq_chats_car_driver_owner.
 	ChatID *uuid.UUID
@@ -221,6 +226,7 @@ const ownerCarWithActiveRentalSelect = `
 		lr.id, lr.driver_id, lr.weeks,
 		COALESCE(lr.offered_weekly_price, lr.weekly_price),
 		lr.pickup_confirmed_at,
+		COALESCE(lr.rental_ends_at, lr.pickup_confirmed_at + (GREATEST(lr.weeks, 1) * INTERVAL '7 days')),
 		u.first_name, u.last_name,
 		ch.id
 	FROM cars c
@@ -247,6 +253,7 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		weeks              *int
 		weeklyPriceDollars *float64
 		pickupConfirmedAt  *time.Time
+		rentalEndsAt       *time.Time
 		firstName          *string
 		lastName           *string
 		chatID             *uuid.UUID
@@ -262,6 +269,7 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		&leaseID, &driverID, &weeks,
 		&weeklyPriceDollars,
 		&pickupConfirmedAt,
+		&rentalEndsAt,
 		&firstName, &lastName,
 		&chatID,
 	); err != nil {
@@ -285,15 +293,24 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		name += *lastName
 	}
 
-	return &car, &OwnerCarActiveRental{
-		LeaseRequestID:            *leaseID,
-		DriverID:                  *driverID,
-		DriverName:                name,
-		Weeks:                     *weeks,
-		EffectiveWeeklyPriceCents: int64(*weeklyPriceDollars * 100),
+	rental := &OwnerCarActiveRental{
+		LeaseRequestID: *leaseID,
+		DriverID:       *driverID,
+		DriverName:     name,
+		Weeks:          *weeks,
+		// Round, don't truncate: DECIMAL 349.90 scans as 349.8999… in float64.
+		EffectiveWeeklyPriceCents: int64(math.Round(*weeklyPriceDollars * 100)),
 		PickupConfirmedAt:         *pickupConfirmedAt,
 		ChatID:                    chatID,
-	}, nil
+	}
+	if rentalEndsAt != nil {
+		rental.RentalEndsAt = *rentalEndsAt
+	} else {
+		// COALESCE in the select makes this unreachable, but a zero end
+		// date must never leak into overdue math — derive defensively.
+		rental.RentalEndsAt = models.RentalEndsAt(*pickupConfirmedAt, *weeks)
+	}
+	return &car, rental, nil
 }
 
 // GetByIDWithActiveRental is the single-car companion to
@@ -501,6 +518,48 @@ func (r *CarRepository) GetActiveObligations(ctx context.Context, carID uuid.UUI
 		obligations = append(obligations, ObligationLivePurchase)
 	}
 	return obligations, nil
+}
+
+// IsOccupied reports whether the car is held by any in-flight transaction —
+// a lease reservation (accepted or paid), a purchase reservation, or a
+// blocking purchase that has not reached its reservation point yet (a
+// purchase reserves only at KeysHandedOver, so its early states are visible
+// ONLY through status — see BlockingPurchaseStatusesSQL). Status alone
+// misses the paid-but-not-picked-up window, where the listing still reads
+// 'available' while the car is committed; and the reservation columns alone
+// miss pre-handover purchases. Both signals together are the truth.
+func (r *CarRepository) IsOccupied(ctx context.Context, carID uuid.UUID) (bool, error) {
+	var occupied bool
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT reserved_by_lease_request_id IS NOT NULL
+		    OR reserved_by_purchase_request_id IS NOT NULL
+		    OR EXISTS (
+		         SELECT 1 FROM purchase_requests pr
+		         WHERE pr.car_id = cars.id AND pr.status IN `+BlockingPurchaseStatusesSQL+`
+		       )
+		FROM cars WHERE id = $1`, carID).Scan(&occupied)
+	if err != nil {
+		return false, fmt.Errorf("car occupancy check: %w", err)
+	}
+	return occupied, nil
+}
+
+// HasBlockingPurchase is the payment-time slice of IsOccupied: at pay time
+// the lease legitimately holds its OWN reservation, so only the purchase
+// side of occupancy may be consulted.
+func (r *CarRepository) HasBlockingPurchase(ctx context.Context, carID uuid.UUID) (bool, error) {
+	var blocked bool
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT reserved_by_purchase_request_id IS NOT NULL
+		    OR EXISTS (
+		         SELECT 1 FROM purchase_requests pr
+		         WHERE pr.car_id = cars.id AND pr.status IN `+BlockingPurchaseStatusesSQL+`
+		       )
+		FROM cars WHERE id = $1`, carID).Scan(&blocked)
+	if err != nil {
+		return false, fmt.Errorf("car blocking-purchase check: %w", err)
+	}
+	return blocked, nil
 }
 
 // UpdateStatus updates only the status and is_paused fields

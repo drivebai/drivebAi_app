@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"log/slog"
+	"math"
 	"net/http"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/drivebai/backend/internal/httputil"
 	"github.com/drivebai/backend/internal/models"
@@ -105,7 +109,68 @@ func (h *TodayHandler) GetActions(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, models.TodayActionsResponse{
 		Actions:          actions,
 		HasUnreadActions: hasUnreadOwner || hasUnreadDriver,
+		ActiveRentals:    h.buildActiveRentals(r, userID),
 	})
+}
+
+// buildActiveRentals assembles the driver's rentals-in-progress cards
+// (lifecycle batch, defect 3) — the standing "you have this car until X"
+// view that existed for the owner but never for the driver. Errors degrade
+// to no card rather than failing the whole feed: the actions above are the
+// actionable half of Today.
+func (h *TodayHandler) buildActiveRentals(r *http.Request, userID uuid.UUID) []models.DriverActiveRental {
+	rows, err := h.leaseRepo.ListActiveRentalsForDriver(r.Context(), userID)
+	if err != nil {
+		h.logger.Error("today: list active rentals", "error", err, "user_id", userID)
+		return nil
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	out := make([]models.DriverActiveRental, 0, len(rows))
+	for _, row := range rows {
+		// Round, don't truncate: DECIMAL 349.90 arrives as 349.8999…;
+		// int64() truncation would show the driver a cent less than paid.
+		weeklyCents := int64(math.Round(row.WeeklyPriceDollar * 100))
+		paidCents := weeklyCents * int64(row.Weeks)
+		if row.PaidAmountCents != nil {
+			paidCents = *row.PaidAmountCents
+		}
+
+		// Return location: the key-handover pickup snapshot when present
+		// (that is where the parties actually met), else the car's listed
+		// location. The source string drives the honest label — nothing in
+		// the system stores a negotiated return point.
+		area, lat, lng := row.PickupArea, row.PickupLat, row.PickupLng
+		source := "pickup"
+		if area == nil && lat == nil {
+			area, lat, lng = row.ListingArea, row.ListingLat, row.ListingLng
+			source = "listing"
+		}
+
+		out = append(out, models.DriverActiveRental{
+			LeaseRequestID:       row.LeaseRequestID,
+			CarID:                row.ListingID,
+			CarTitle:             row.CarTitle,
+			CarPhotoURL:          row.CoverPhotoPath,
+			OwnerID:              row.OwnerID,
+			OwnerName:            row.OwnerName,
+			ChatID:               row.ChatID,
+			PickupConfirmedAt:    models.RFC3339Time(row.PickupConfirmedAt),
+			RentalEndsAt:         models.RFC3339Time(row.RentalEndsAt),
+			DaysRemaining:        models.RentalDaysRemaining(row.RentalEndsAt, now),
+			TermState:            models.ComputeRentalTermState(row.RentalEndsAt, now),
+			Weeks:                row.Weeks,
+			WeeklyCents:          weeklyCents,
+			PaidCents:            paidCents,
+			ReturnLocationArea:   area,
+			ReturnLocationLat:    lat,
+			ReturnLocationLng:    lng,
+			ReturnLocationSource: source,
+		})
+	}
+	return out
 }
 
 // MarkActionsSeen sets the user's last_seen_actions_at to now.

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -104,8 +105,80 @@ type LeaseRequest struct {
 	PriceChangePending         bool       `json:"price_change_pending"`
 	PreviousOfferedWeeklyPrice *float64   `json:"previous_offered_weekly_price,omitempty"`
 	PriceChangeActedAt         *time.Time `json:"price_change_acted_at,omitempty"`
-	CreatedAt                  time.Time  `json:"created_at"`
-	UpdatedAt                  time.Time  `json:"updated_at"`
+	// Rental term (migration 000046). rental_ends_at is stamped by
+	// ConfirmPickup as pickup_confirmed_at + weeks*7d; the three flags are
+	// the term scanner's claimed-once ledger. Like vehicle_returned_at,
+	// these columns are NOT in the shared scan lists — they are populated
+	// only by the term-scanner queries and the active-rental reads, so do
+	// not rely on them being set on a lease loaded via GetByID.
+	RentalEndsAt          *time.Time `json:"rental_ends_at,omitempty"`
+	TermEndingNotifiedAt  *time.Time `json:"-"`
+	OverdueNotifiedAt     *time.Time `json:"-"`
+	OverdueEscalatedAt    *time.Time `json:"-"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+}
+
+// ─── Rental term ────────────────────────────────────────────────────────────
+
+// RentalEndsAt computes the end of the paid term. Single definition shared by
+// ConfirmPickup's SQL mirror, the migration backfill, and the derived
+// PlannedEndAt in the owner summary — all three must agree.
+// Defensive floor mirrors ComputeReturnRefund: weeks <= 0 is treated as 1.
+func RentalEndsAt(pickupConfirmedAt time.Time, weeks int) time.Time {
+	if weeks <= 0 {
+		weeks = 1
+	}
+	return pickupConfirmedAt.AddDate(0, 0, weeks*7)
+}
+
+// RentalTermState is the coarse where-are-we bucket both apps render from.
+type RentalTermState string
+
+const (
+	RentalTermActive     RentalTermState = "active"      // more than EndingSoonWindow left
+	RentalTermEndingSoon RentalTermState = "ending_soon" // inside the T-24h window
+	RentalTermOverdue    RentalTermState = "overdue"     // past rental_ends_at
+)
+
+// RentalTermEndingSoonWindow is how long before the end both parties get the
+// "return is coming up" nudge (scanner phase 1 + card state flip).
+const RentalTermEndingSoonWindow = 24 * time.Hour
+
+// RentalOverdueEscalateAfter is how long past the end an unreturned rental
+// waits before a support ticket is opened (scanner phase 3). Long enough for
+// the same-day "running late" case to resolve itself via the return flow.
+const RentalOverdueEscalateAfter = 72 * time.Hour
+
+// ComputeRentalTermState buckets `now` against the term end, clamping the
+// degenerate orderings the same way ComputeReturnRefund does: a zero end
+// time (term never stamped) reports active — the scanner keys on the column
+// being present, never on this bucket alone.
+func ComputeRentalTermState(endsAt time.Time, now time.Time) RentalTermState {
+	if endsAt.IsZero() {
+		return RentalTermActive
+	}
+	if !now.Before(endsAt) { // inclusive: an end exactly on the scan tick is overdue
+		return RentalTermOverdue
+	}
+	if now.After(endsAt.Add(-RentalTermEndingSoonWindow)) {
+		return RentalTermEndingSoon
+	}
+	return RentalTermActive
+}
+
+// RentalDaysRemaining is the whole days left before endsAt, negative once
+// overdue (−1 = up to 24h past due). Ceil semantics on the remaining side so
+// "26 hours left" reads as 2 days, matching how people count nights.
+func RentalDaysRemaining(endsAt time.Time, now time.Time) int {
+	if endsAt.IsZero() {
+		return 0
+	}
+	secs := endsAt.Sub(now).Seconds()
+	if secs >= 0 {
+		return int(math.Ceil(secs / 86400.0))
+	}
+	return -int(math.Ceil(-secs / 86400.0))
 }
 
 // IsPayable reports whether the driver is allowed to initiate a payment
@@ -175,6 +248,12 @@ const (
 	// /decline-price on a lease that has no pending price change. Could be
 	// a stale client view or a double-tap after the other side acted.
 	ErrCodeNoPriceChangePending = "NO_PRICE_CHANGE_PENDING"
+	// ErrCodeCarNotAvailable: the car is occupied by someone else's
+	// transaction RIGHT NOW (rented, sold, or reserved by a paid/accepted
+	// lease or an in-flight purchase). Deliberately distinct from
+	// CAR_NOT_FOR_RENT — the driver needs "someone else has it, check back
+	// later", not "this car isn't rentable".
+	ErrCodeCarNotAvailable = "CAR_NOT_AVAILABLE"
 )
 
 var (
@@ -188,6 +267,7 @@ var (
 	ErrPriceLocked          = &APIError{Code: ErrCodePriceLocked, Message: "Price can no longer be adjusted — payment has already succeeded."}
 	ErrPriceReviewPending   = &APIError{Code: ErrCodePriceReviewPending, Message: "The owner updated the price. Accept or decline the new offer before continuing."}
 	ErrNoPriceChangePending = &APIError{Code: ErrCodeNoPriceChangePending, Message: "There is no pending price change on this request."}
+	ErrCarNotAvailable      = &APIError{Code: ErrCodeCarNotAvailable, Message: "This car is currently with another driver — check back later."}
 	ErrPickupDeadlinePassed = &APIError{Code: "PICKUP_DEADLINE_PASSED", Message: "The pickup deadline has already passed; the rental was refunded."}
 	ErrPickupExtensionCap   = &APIError{Code: "PICKUP_EXTENSION_CAP_REACHED", Message: "Pickup deadline can't be extended further; the cap has been reached."}
 	ErrInvalidExtensionMin  = &APIError{Code: "INVALID_EXTENSION_MINUTES", Message: "Pickup extension must be 15, 30, or 60 minutes."}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -30,10 +31,19 @@ type VehicleReturnHandler struct {
 	carRepo      *repository.CarRepository
 	userRepo     *repository.UserRepository
 	chatRepo     *repository.ChatRepository
+	ticketRepo   *repository.TicketRepository
 	stripe       *stripeService.Service
 	wsHub        *ws.Hub
 	notifHandler *NotificationHandler
 	logger       *slog.Logger
+}
+
+// SetTicketRepository wires the support-ticket repo so a dispute opens a
+// real ticket (lifecycle batch, defect 4 — the "our team will reach out"
+// copy used to promise contact that nothing delivered). Setter, not a ctor
+// arg, per the house pattern so existing construction sites don't churn.
+func (h *VehicleReturnHandler) SetTicketRepository(t *repository.TicketRepository) {
+	h.ticketRepo = t
 }
 
 func NewVehicleReturnHandler(
@@ -103,10 +113,18 @@ func (h *VehicleReturnHandler) Initiate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// If a return already exists (driver double-tap, retry), return it
-	// idempotently so the iOS client just receives the current state.
+	// If a return already exists, what happens depends on its state:
+	//   - active or completed → return it idempotently (driver double-tap).
+	//   - CANCELLED → revive it as a fresh submission. Without this branch,
+	//     cancelled is lease-fatal: UNIQUE(lease_request_id) means a driver
+	//     who undid a mistap — or lost a dispute — could never return the
+	//     car again, and the listing stayed 'rented' forever.
 	if existing, err := h.repo.GetByLeaseRequestID(r.Context(), leaseID); err == nil && existing != nil {
-		httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), existing, userID))
+		if existing.Status != models.VehicleReturnCancelled {
+			httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), existing, userID))
+			return
+		}
+		h.reviveCancelledReturn(w, r, lr, existing, userID)
 		return
 	}
 
@@ -154,6 +172,44 @@ func (h *VehicleReturnHandler) Initiate(w http.ResponseWriter, r *http.Request) 
 	go h.notifHandler.Notify(created.OwnerID, models.NotificationTypeLeaseRequest,
 		"Driver returned the car",
 		fmt.Sprintf("%s marked %s as returned. Confirm receipt to release the refund.", driverName, carTitle),
+		chatID, &leaseRef)
+}
+
+// reviveCancelledReturn re-opens a cancelled return as a fresh
+// driver_initiated submission with the refund recomputed at the new return
+// time. Same side effects as a first Initiate — the owner is notified and
+// must confirm again.
+func (h *VehicleReturnHandler) reviveCancelledReturn(w http.ResponseWriter, r *http.Request, lr *models.LeaseRequest, existing *models.VehicleReturn, userID uuid.UUID) {
+	var paidCents int64
+	if payment, err := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), existing.LeaseRequestID); err == nil && payment != nil {
+		paidCents = payment.Amount
+	}
+	now := time.Now().UTC()
+	calc := models.ComputeReturnRefund(paidCents, lr.Weeks, *lr.PickupConfirmedAt, now)
+
+	revived, err := h.repo.ReviveCancelled(r.Context(), existing.ID, userID, now, calc.UsedDays, calc.RefundAmountCents, paidCents)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			httputil.WriteError(w, http.StatusConflict, apiErr)
+			return
+		}
+		h.logger.Error("vehicle return: revive cancelled", "error", err, "return_id", existing.ID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	resp := h.buildResponse(r.Context(), revived, userID)
+	httputil.WriteJSON(w, http.StatusCreated, resp)
+
+	h.broadcast("vehicle_return_initiated", revived)
+	h.postSystemMessage(r.Context(), revived, "driver_initiated", resp)
+
+	chatID := resp.ChatID
+	leaseRef := revived.LeaseRequestID
+	go h.notifHandler.Notify(revived.OwnerID, models.NotificationTypeLeaseRequest,
+		"Driver returned the car",
+		fmt.Sprintf("%s marked %s as returned. Confirm receipt to release the refund.",
+			nameOr(resp.DriverName, "The driver"), carTitleOr(resp.CarTitle)),
 		chatID, &leaseRef)
 }
 
@@ -249,7 +305,12 @@ func (h *VehicleReturnHandler) OwnerConfirm(w http.ResponseWriter, r *http.Reque
 		httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), existing, userID))
 		return
 	}
-	if existing.Status != models.VehicleReturnDriverInitiated {
+	// driver_initiated is the normal confirm; disputed is the owner
+	// WITHDRAWING their dispute by confirming receipt after all — the
+	// self-service exit from a state that otherwise only the admin queue
+	// could unfreeze.
+	wasDisputed := existing.Status == models.VehicleReturnDisputed
+	if existing.Status != models.VehicleReturnDriverInitiated && !wasDisputed {
 		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidReturnState)
 		return
 	}
@@ -268,6 +329,23 @@ func (h *VehicleReturnHandler) OwnerConfirm(w http.ResponseWriter, r *http.Reque
 	h.broadcast("vehicle_return_owner_confirmed", confirmed)
 	respConfirmed := h.buildResponse(r.Context(), confirmed, userID)
 	h.postSystemMessage(r.Context(), confirmed, "owner_confirmed", respConfirmed)
+
+	// A withdrawn dispute closes its support case and tells the driver the
+	// freeze is over — the confirm itself already fires the standard
+	// notifications further down the refund pipeline.
+	if wasDisputed {
+		if h.ticketRepo != nil {
+			if terr := h.ticketRepo.ResolveForVehicleReturn(r.Context(), confirmed.ID); terr != nil {
+				h.logger.Error("vehicle return: resolve dispute ticket on withdraw", "error", terr, "return_id", confirmed.ID)
+			}
+		}
+		chatID := respConfirmed.ChatID
+		leaseRef := confirmed.LeaseRequestID
+		go h.notifHandler.Notify(confirmed.DriverID, models.NotificationTypeLeaseRequest,
+			"Dispute withdrawn",
+			fmt.Sprintf("The owner confirmed the return of %s after all — the dispute is closed and your refund is on its way.", carTitleOr(respConfirmed.CarTitle)),
+			chatID, &leaseRef)
+	}
 
 	// Run the refund pipeline. On success we re-broadcast the now-completed
 	// row; on failure the row stays at owner_confirmed and the scanner
@@ -302,8 +380,11 @@ func (h *VehicleReturnHandler) Dispute(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
 		return
 	}
+	// Rune count, not len(): the bounds are advertised as characters and
+	// the composer counts characters — a 300-char Cyrillic reason is 600
+	// bytes and must not bounce.
 	reason := strings.TrimSpace(body.Reason)
-	if len(reason) < 5 || len(reason) > 500 {
+	if n := utf8.RuneCountInString(reason); n < 5 || n > 500 {
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrDisputeReasonRequired)
 		return
 	}
@@ -333,6 +414,33 @@ func (h *VehicleReturnHandler) Dispute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Open a REAL support ticket before promising anyone contact — this is
+	// what makes "our team will reach out" true (defect 4). Idempotent via
+	// the partial unique index on vehicle_return_id; reporter is the
+	// disputing owner. Best-effort: a ticket failure must not unwind the
+	// dispute itself, but it is logged loudly because the promise below
+	// depends on it.
+	if h.ticketRepo != nil {
+		returnRef := updated.ID
+		subject := fmt.Sprintf("Return dispute — %s", carTitleOr(h.buildResponse(r.Context(), updated, userID).CarTitle))
+		description := fmt.Sprintf(
+			"Owner disputed the driver's vehicle return.\n\nReason: %s\n\nRefund on file: %s (%d of %d days used).\nLease request: %s\nVehicle return: %s",
+			reason, formatMoney(updated.RefundAmountCents), updated.UsedDays, updated.RentalWeeks*7,
+			updated.LeaseRequestID, updated.ID)
+		if created, terr := h.ticketRepo.CreateSystemTicket(r.Context(), updated.OwnerID,
+			models.TicketCategoryRenting, subject, description, nil, &returnRef); terr != nil {
+			h.logger.Error("vehicle return: dispute ticket create FAILED — the 'team will reach out' copy is now unbacked",
+				"error", terr, "return_id", updated.ID)
+		} else if created == nil {
+			// The live-ticket unique index says one is already open for this
+			// return — the promise below is still backed, just not by a new
+			// row. Logged so a queue investigation can see it.
+			h.logger.Info("vehicle return: dispute ticket already open", "return_id", updated.ID)
+		}
+	} else {
+		h.logger.Error("vehicle return: ticket repo not wired — dispute created no ticket", "return_id", updated.ID)
+	}
+
 	resp := h.buildResponse(r.Context(), updated, userID)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 
@@ -343,7 +451,13 @@ func (h *VehicleReturnHandler) Dispute(w http.ResponseWriter, r *http.Request) {
 	leaseRef := updated.LeaseRequestID
 	go h.notifHandler.Notify(updated.DriverID, models.NotificationTypeLeaseRequest,
 		"Return disputed",
-		"The owner disputed your return. Our team will reach out within 24 hours.",
+		"The owner disputed your return. A support case has been opened — our team will review it and follow up within 24 hours.",
+		chatID, &leaseRef)
+	// The owner acted, but a dispute freezing their refund/car deserves a
+	// written trace of what happens next on their side too.
+	go h.notifHandler.Notify(updated.OwnerID, models.NotificationTypeLeaseRequest,
+		"Dispute received",
+		"Your dispute was filed and a support case opened. Our team will review it and follow up within 24 hours. You can withdraw the dispute by confirming the return from the chat.",
 		chatID, &leaseRef)
 }
 
@@ -472,8 +586,16 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("resolution must be 'accept' or 'reject'"))
 		return
 	}
+	// The note is REQUIRED — a resolution both parties only ever see the
+	// outcome of must arrive with its reasoning. Same bounds as the
+	// dispute reason it answers.
+	note := strings.TrimSpace(body.Note)
+	if n := utf8.RuneCountInString(note); n < 5 || n > 500 {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("a resolution note is required (5–500 characters) — both parties see the outcome"))
+		return
+	}
 
-	resolved, err := h.repo.ResolveDispute(r.Context(), id, resolution)
+	resolved, err := h.repo.ResolveDispute(r.Context(), id, resolution, note)
 	if err != nil {
 		if apiErr := models.GetAPIError(err); apiErr != nil {
 			httputil.WriteError(w, http.StatusConflict, apiErr)
@@ -482,6 +604,14 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 		h.logger.Error("vehicle return: admin resolve", "error", err, "id", id)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
+	}
+
+	// The dispute's support ticket is finished work now, whichever way it
+	// went. Best-effort.
+	if h.ticketRepo != nil {
+		if terr := h.ticketRepo.ResolveForVehicleReturn(r.Context(), resolved.ID); terr != nil {
+			h.logger.Error("vehicle return: resolve dispute ticket", "error", terr, "return_id", resolved.ID)
+		}
 	}
 
 	// On accept, run the same refund pipeline so the row moves on to
@@ -503,6 +633,43 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 		kind = "admin_reject_dispute"
 	}
 	h.postSystemMessage(r.Context(), out, kind, resp)
+
+	// Both parties are told the outcome WITH the note — a dispute is the
+	// one transition where silence reads as the house taking sides.
+	chatID := resp.ChatID
+	leaseRef := out.LeaseRequestID
+	carTitle := carTitleOr(resp.CarTitle)
+	// The subject line adapts: a resolution of an owner-ignored (never
+	// disputed) return isn't a "dispute resolved". And money is only
+	// promised when money will actually move — the zero-refund path runs
+	// FinalizeNoRefund and no cents ever reach Stripe.
+	title := "Dispute resolved"
+	if out.DisputedAt == nil {
+		title = "Return resolved by support"
+	}
+	if resolution == "accept" {
+		refundLine := "No refund applies — the full rental period was used."
+		if out.RefundAmountCents > 0 {
+			refundLine = "Your refund is being processed."
+		}
+		go h.notifHandler.Notify(out.DriverID, models.NotificationTypeLeaseRequest,
+			title+" — return confirmed",
+			fmt.Sprintf("Support reviewed %s and confirmed your return. %s %s", carTitle, note, refundLine),
+			chatID, &leaseRef)
+		go h.notifHandler.Notify(out.OwnerID, models.NotificationTypeLeaseRequest,
+			title+" — return confirmed",
+			fmt.Sprintf("Support confirmed the return of %s on your behalf. %s", carTitle, note),
+			chatID, &leaseRef)
+	} else {
+		go h.notifHandler.Notify(out.DriverID, models.NotificationTypeLeaseRequest,
+			title+" — return not accepted",
+			fmt.Sprintf("Support reviewed %s and did not accept this return. %s The rental continues — submit the return again when you hand the car back.", carTitle, note),
+			chatID, &leaseRef)
+		go h.notifHandler.Notify(out.OwnerID, models.NotificationTypeLeaseRequest,
+			title+" — return not accepted",
+			fmt.Sprintf("The return of %s was not accepted and the rental continues. %s", carTitle, note),
+			chatID, &leaseRef)
+	}
 }
 
 // ─── Refund pipeline ────────────────────────────────────────────────────────
@@ -528,6 +695,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		h.broadcast("vehicle_return_completed", completed)
 		resp := h.buildResponseCtx(ctx, completed, completed.OwnerID)
 		h.postSystemMessage(ctx, completed, "completed_no_refund", resp)
+		h.resolveLinkedTickets(ctx, completed)
 		return completed
 	}
 
@@ -572,6 +740,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 	h.broadcast("vehicle_return_completed", completed)
 	resp := h.buildResponseCtx(ctx, completed, completed.OwnerID)
 	h.postSystemMessage(ctx, completed, "completed_with_refund", resp)
+	h.resolveLinkedTickets(ctx, completed)
 
 	chatID := resp.ChatID
 	leaseRef := completed.LeaseRequestID
@@ -653,14 +822,108 @@ func (h *VehicleReturnHandler) runStuckRefundSweep(ctx context.Context) {
 	stuck, err := h.repo.ListStuckRefunds(ctx, cutoff, 50)
 	if err != nil {
 		h.logger.Error("vehicle return: list stuck refunds", "error", err)
+	} else if len(stuck) > 0 {
+		h.logger.Info("vehicle return: stuck refund candidates", "count", len(stuck))
+		for i := range stuck {
+			h.issueRefund(ctx, &stuck[i])
+		}
+	}
+
+	// Zero-refund rows parked at owner_confirmed were invisible to the
+	// sweep above (its predicate requires refund_amount_cents > 0) — a
+	// transient FinalizeNoRefund failure made them a hard dead end. Same
+	// pipeline completes them; nothing to send to Stripe.
+	zeroStuck, err := h.repo.ListStuckZeroRefunds(ctx, cutoff, 50)
+	if err != nil {
+		h.logger.Error("vehicle return: list stuck zero refunds", "error", err)
+	} else if len(zeroStuck) > 0 {
+		h.logger.Info("vehicle return: stuck zero-refund candidates", "count", len(zeroStuck))
+		for i := range zeroStuck {
+			h.issueRefund(ctx, &zeroStuck[i])
+		}
+	}
+
+	// Attention sweep: a driver_initiated return the owner has ignored past
+	// the reminder threshold. The owner has no deadline to confirm or
+	// dispute, and their silence leaves the driver's refund in limbo — the
+	// claim (owner_reminder_sent_at under IS NULL) guarantees exactly one
+	// nudge per return.
+	reminders, err := h.repo.ClaimOwnerReminders(ctx, time.Now().UTC().Add(-models.ReturnOwnerReminderAfter), 50)
+	if err != nil {
+		h.logger.Error("vehicle return: claim owner reminders", "error", err)
 		return
 	}
-	if len(stuck) == 0 {
+	for i := range reminders {
+		v := &reminders[i]
+		resp := h.buildResponseCtx(ctx, v, v.OwnerID)
+		chatID := resp.ChatID
+		leaseRef := v.LeaseRequestID
+		go h.notifHandler.Notify(v.OwnerID, models.NotificationTypeLeaseRequest,
+			"Return waiting on you",
+			fmt.Sprintf("%s marked %s as returned two days ago and is still waiting. Confirm receipt to release their refund, or dispute it if something is wrong.",
+				nameOr(resp.DriverName, "The driver"), carTitleOr(resp.CarTitle)),
+			chatID, &leaseRef)
+		h.logger.Info("vehicle return: owner reminder sent", "return_id", v.ID, "owner_id", v.OwnerID)
+	}
+
+	// Escalation: the reminder didn't move the owner. Ticket-first with the
+	// live-ticket unique index as the dedupe — the creator instance owns
+	// the notifications; later sweeps get (nil, nil) and stay silent. The
+	// admin resolves it with the same accept/reject lever as a dispute
+	// (ResolveDispute accepts driver_initiated).
+	if h.ticketRepo == nil {
 		return
 	}
-	h.logger.Info("vehicle return: stuck refund candidates", "count", len(stuck))
-	for i := range stuck {
-		h.issueRefund(ctx, &stuck[i])
+	stale, err := h.repo.ListStaleInitiatedReturns(ctx, time.Now().UTC().Add(-models.ReturnEscalateAfter), 50)
+	if err != nil {
+		h.logger.Error("vehicle return: list stale initiated returns", "error", err)
+		return
+	}
+	for i := range stale {
+		v := &stale[i]
+		resp := h.buildResponseCtx(ctx, v, v.OwnerID)
+		returnRef := v.ID
+		subject := fmt.Sprintf("Unconfirmed return — %s", carTitleOr(resp.CarTitle))
+		description := fmt.Sprintf(
+			"Driver marked the car returned %d+ days ago; the owner has not confirmed or disputed despite a reminder. The driver's refund of %s is frozen.\n\nDriver: %s\nOwner: %s\nLease request: %s\nVehicle return: %s\n\nResolve via the Rents page (accept = confirm return + refund, reject = cancel the return).",
+			int(models.ReturnEscalateAfter.Hours()/24), formatMoney(v.RefundAmountCents),
+			nameOr(resp.DriverName, "unknown"), nameOr(resp.OwnerName, "unknown"),
+			v.LeaseRequestID, v.ID)
+		created, terr := h.ticketRepo.CreateSystemTicket(ctx, v.OwnerID,
+			models.TicketCategoryRenting, subject, description, nil, &returnRef)
+		if terr != nil {
+			h.logger.Error("vehicle return: stale-return escalation ticket failed", "error", terr, "return_id", v.ID)
+			continue
+		}
+		if created != nil {
+			chatID := resp.ChatID
+			leaseRef := v.LeaseRequestID
+			go h.notifHandler.Notify(v.DriverID, models.NotificationTypeLeaseRequest,
+				"Your return is with support",
+				fmt.Sprintf("The owner hasn't confirmed your return of %s, so a support case has been opened. Our team will resolve it and release your refund.", carTitleOr(resp.CarTitle)),
+				chatID, &leaseRef)
+			go h.notifHandler.Notify(v.OwnerID, models.NotificationTypeLeaseRequest,
+				"Unconfirmed return escalated",
+				fmt.Sprintf("The return of %s has waited %d days without your confirmation — a support case is now open and our team will step in.", carTitleOr(resp.CarTitle), int(models.ReturnEscalateAfter.Hours()/24)),
+				chatID, &leaseRef)
+			h.logger.Info("vehicle return: stale return escalated", "return_id", v.ID)
+		}
+	}
+}
+
+// resolveLinkedTickets closes every open support ticket about a return that
+// just COMPLETED — the dispute ticket (vehicle_return_id) and the term
+// scanner's overdue-rental escalation (lease_request_id). This is what makes
+// "returning the car closes it out" true. Best-effort, both idempotent.
+func (h *VehicleReturnHandler) resolveLinkedTickets(ctx context.Context, v *models.VehicleReturn) {
+	if h.ticketRepo == nil {
+		return
+	}
+	if err := h.ticketRepo.ResolveForVehicleReturn(ctx, v.ID); err != nil {
+		h.logger.Error("vehicle return: resolve return-linked ticket", "error", err, "return_id", v.ID)
+	}
+	if err := h.ticketRepo.ResolveForLeaseRequest(ctx, v.LeaseRequestID); err != nil {
+		h.logger.Error("vehicle return: resolve lease-linked ticket", "error", err, "lease_request_id", v.LeaseRequestID)
 	}
 }
 
@@ -688,9 +951,13 @@ func (h *VehicleReturnHandler) broadcast(eventType string, v *models.VehicleRetu
 		TargetUserIDs: []uuid.UUID{v.OwnerID, v.DriverID},
 	})
 
-	// On terminal transitions the lease + car state changed; piggy-back
-	// the existing event types so iOS publishers refetch without needing
-	// a separate listener.
+	// Piggy-back the existing event types so iOS publishers refetch
+	// without a separate listener. lease_request_updated fires on both
+	// terminal statuses (either way the lease card must re-render), but
+	// car_updated {is_reserved:false} fires ONLY on completed — a
+	// cancelled return (driver undo, admin reject) leaves the car rented
+	// and reserved, and broadcasting otherwise told every open client the
+	// car was free when the DB said it was not.
 	if v.Status == models.VehicleReturnCompleted || v.Status == models.VehicleReturnCancelled {
 		h.wsHub.Broadcast(&ws.Event{
 			Type: "lease_request_updated",
@@ -700,6 +967,8 @@ func (h *VehicleReturnHandler) broadcast(eventType string, v *models.VehicleRetu
 			},
 			TargetUserIDs: []uuid.UUID{v.OwnerID, v.DriverID},
 		})
+	}
+	if v.Status == models.VehicleReturnCompleted {
 		h.wsHub.Broadcast(&ws.Event{
 			Type: "car_updated",
 			Payload: map[string]any{

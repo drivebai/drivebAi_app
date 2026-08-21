@@ -184,9 +184,14 @@ func (h *CarHandler) ownerCarResponse(ctx context.Context, carID, ownerID uuid.U
 // current_earned_cents pro-rates based on how many full weeks of the rental
 // have elapsed at request time (capped at the total contracted weeks).
 func buildActiveRentalSummary(row *repository.OwnerCarActiveRental) *models.ActiveRentalSummary {
-	plannedEnd := row.PickupConfirmedAt.AddDate(0, 0, row.Weeks*7)
+	// The term end comes from the STORED lease_requests.rental_ends_at
+	// (migration 000046) — a derived value could never be indexed or
+	// scanned, which is exactly how rentals used to outlive their term
+	// invisibly. The repo COALESCEs a derived fallback for pre-backfill
+	// rows, so RentalEndsAt is always populated here.
+	now := time.Now().UTC()
 
-	elapsedWeeks := int(time.Since(row.PickupConfirmedAt).Hours() / (24 * 7))
+	elapsedWeeks := int(now.Sub(row.PickupConfirmedAt).Hours() / (24 * 7))
 	if elapsedWeeks < 0 {
 		elapsedWeeks = 0
 	}
@@ -195,6 +200,7 @@ func buildActiveRentalSummary(row *repository.OwnerCarActiveRental) *models.Acti
 		billableWeeks = row.Weeks
 	}
 
+	termState := models.ComputeRentalTermState(row.RentalEndsAt, now)
 	return &models.ActiveRentalSummary{
 		LeaseRequestID:     row.LeaseRequestID,
 		DriverID:           row.DriverID,
@@ -202,8 +208,11 @@ func buildActiveRentalSummary(row *repository.OwnerCarActiveRental) *models.Acti
 		Weeks:              row.Weeks,
 		WeeklyPriceCents:   row.EffectiveWeeklyPriceCents,
 		PickupConfirmedAt:  models.RFC3339Time(row.PickupConfirmedAt),
-		PlannedEndAt:       models.RFC3339Time(plannedEnd),
+		PlannedEndAt:       models.RFC3339Time(row.RentalEndsAt),
 		CurrentEarnedCents: row.EffectiveWeeklyPriceCents * int64(billableWeeks),
+		Overdue:            termState == models.RentalTermOverdue,
+		TermState:          termState,
+		DaysRemaining:      models.RentalDaysRemaining(row.RentalEndsAt, now),
 		ChatID:             row.ChatID,
 	}
 }

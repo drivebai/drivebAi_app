@@ -737,6 +737,14 @@ type AdminRentRow struct {
 	ReturnRefundedAt          *time.Time `json:"return_refunded_at,omitempty"`
 	ReturnRefundFailureReason *string    `json:"return_refund_failure_reason,omitempty"`
 	ReturnDisputeReason       *string    `json:"return_dispute_reason,omitempty"`
+	// ReturnResolutionNote is the admin's note from resolving a dispute
+	// (migration 000047) — shown in the drawer so a second admin sees why.
+	ReturnResolutionNote *string `json:"return_resolution_note,omitempty"`
+	// RentalEndsAt is the scheduled end of the paid term (migration 000046;
+	// derived fallback for pre-backfill rows). NULL until pickup is
+	// confirmed — distinct from EndDate, which is the terminal-status
+	// updated_at the existing "Rent End Date" column shows for history.
+	RentalEndsAt *time.Time `json:"rental_ends_at,omitempty"`
 }
 
 type AdminRentsPage struct {
@@ -830,7 +838,7 @@ const adminRentSelectCols = `
 	c.id, c.title, c.year,
 	p.payment_intent_id, p.status::text,
 	lr.created_at,
-	CASE WHEN lr.status IN ('declined','cancelled','expired','paid') THEN lr.updated_at ELSE NULL END,
+	CASE WHEN lr.status IN ('declined','cancelled','expired') THEN lr.updated_at ELSE NULL END,
 	lr.created_at,
 	vr.id,
 	vr.status,
@@ -849,7 +857,12 @@ const adminRentSelectCols = `
 	vr.refund_id,
 	vr.refunded_at,
 	vr.refund_failure_reason,
-	vr.dispute_reason
+	vr.dispute_reason,
+	vr.resolution_note,
+	COALESCE(lr.rental_ends_at,
+	         CASE WHEN lr.pickup_confirmed_at IS NOT NULL
+	              THEN lr.pickup_confirmed_at + (GREATEST(lr.weeks, 1) * INTERVAL '7 days')
+	         END)
 `
 
 // rowScanner is satisfied by pgx.Row and pgx.Rows; lets scanAdminRent
@@ -873,6 +886,8 @@ func scanAdminRent(s rowScanner, rent *AdminRentRow) error {
 		&rent.ReturnRefundAmountCents, &rent.ReturnRefundStatus,
 		&rent.ReturnRefundID, &rent.ReturnRefundedAt, &rent.ReturnRefundFailureReason,
 		&rent.ReturnDisputeReason,
+		&rent.ReturnResolutionNote,
+		&rent.RentalEndsAt,
 	)
 }
 

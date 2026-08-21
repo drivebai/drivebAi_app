@@ -2,12 +2,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/drivebai/backend/internal/database"
 	"github.com/drivebai/backend/internal/models"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // TicketRepository handles support-ticket CRUD for BOTH the user and admin
@@ -46,6 +48,60 @@ func (r *TicketRepository) Create(ctx context.Context, userID uuid.UUID) (*model
 		VALUES (gen_random_uuid(), $1, 'draft', NOW(), NOW())
 		RETURNING `+ticketCols, userID)
 	return scanTicket(row)
+}
+
+// CreateSystemTicket inserts a fully-formed OPEN ticket in one statement —
+// deliberately NOT the user draft chain (Create → Update → Submit): a system
+// ticket must never collide with the user's own draft-resume flow, and a
+// crash between chain steps would leave an invisible draft (AdminList hides
+// drafts). Exactly one of leaseRequestID / vehicleReturnID should be set
+// (migration 000047's discipline); the partial unique indexes are scoped to
+// LIVE tickets, so the insert is idempotent against an OPEN ticket — a
+// second call while one is open inserts nothing and returns (nil, nil) —
+// while a resolved/closed ticket does not block a fresh one (a return can
+// be disputed again after a revive).
+func (r *TicketRepository) CreateSystemTicket(ctx context.Context, userID uuid.UUID, category models.TicketCategory, subject, description string, leaseRequestID, vehicleReturnID *uuid.UUID) (*models.SupportTicket, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO support_tickets
+			(id, user_id, category, subject, description, status, last_step,
+			 submitted_at, lease_request_id, vehicle_return_id, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, 'open', 0, NOW(), $5, $6, NOW(), NOW())
+		ON CONFLICT DO NOTHING
+		RETURNING `+ticketCols, userID, category, subject, description, leaseRequestID, vehicleReturnID)
+	t, err := scanTicket(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // a ticket for this entity already exists — idempotent no-op
+		}
+		return nil, err
+	}
+	t.LeaseRequestID = leaseRequestID
+	t.VehicleReturnID = vehicleReturnID
+	return t, nil
+}
+
+// ResolveForVehicleReturn closes the loop when an admin resolves a dispute:
+// the ticket that dispute opened flips to resolved so the queue stops
+// pointing a human at finished work. No-op when no open ticket links to the
+// return.
+func (r *TicketRepository) ResolveForVehicleReturn(ctx context.Context, vehicleReturnID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE support_tickets
+		SET status = 'resolved', resolved_at = NOW(), updated_at = NOW()
+		WHERE vehicle_return_id = $1 AND status = 'open'`, vehicleReturnID)
+	return err
+}
+
+// ResolveForLeaseRequest is the lease-linked twin — it closes the term
+// scanner's overdue-rental escalation ticket once the return actually
+// completes, so the copy that promises returning the car closes the case
+// stays true. No-op when no open ticket links to the lease.
+func (r *TicketRepository) ResolveForLeaseRequest(ctx context.Context, leaseRequestID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE support_tickets
+		SET status = 'resolved', resolved_at = NOW(), updated_at = NOW()
+		WHERE lease_request_id = $1 AND status = 'open'`, leaseRequestID)
+	return err
 }
 
 // GetDraftForUser returns the user's most recent draft ticket, or an error when none.

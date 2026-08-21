@@ -67,8 +67,14 @@ type SupportTicket struct {
 	// hydrated from reviews (subject_ticket_id); nil = not rated yet.
 	Rating      *int               `json:"rating,omitempty"`
 	Attachments []TicketAttachment `json:"attachments"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	// Entity links (migration 000047) for SYSTEM-created tickets only.
+	// Discipline: a return-dispute ticket sets VehicleReturnID, an
+	// overdue-rental escalation sets LeaseRequestID — never both; each has
+	// a partial unique index making programmatic creation idempotent.
+	LeaseRequestID  *uuid.UUID `json:"lease_request_id,omitempty"`
+	VehicleReturnID *uuid.UUID `json:"vehicle_return_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // TicketAttachment is a single piece of evidence on a ticket.

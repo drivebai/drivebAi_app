@@ -359,17 +359,29 @@ func (r *LeaseRequestRepository) AcceptLeaseRequest(ctx context.Context, id, own
 	}
 
 	// 2. Reserve the car listing — guarded so a concurrent accept of a
-	//    different lease for the same car cannot double-reserve.
+	//    different lease for the same car cannot double-reserve. The guard
+	//    also refuses cars occupied through OTHER doors (lifecycle batch,
+	//    defect 1 audit): an in-flight purchase reservation, an already
+	//    rented/sold status, or an archived listing. Without these, an
+	//    accept could reserve a car another transaction already owns and
+	//    the driver would pay for a car they can never pick up.
 	tag, err := tx.Exec(ctx, `
 		UPDATE cars SET reserved_by_lease_request_id = $1
-		WHERE id = $2 AND reserved_by_lease_request_id IS NULL
+		WHERE id = $2
+		  AND reserved_by_lease_request_id IS NULL
+		  AND reserved_by_purchase_request_id IS NULL
+		  AND status NOT IN ('rented', 'sold')
+		  AND archived_at IS NULL
+		  AND NOT EXISTS (
+		        SELECT 1 FROM purchase_requests pr
+		        WHERE pr.car_id = cars.id AND pr.status IN `+BlockingPurchaseStatusesSQL+`
+		      )
 	`, lr.ID, lr.ListingID)
 	if err != nil {
 		return nil, fmt.Errorf("reserve car: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil, models.NewAPIError(models.ErrCodeInvalidLeaseAction,
-			"This car was already reserved by another driver while you were accepting.")
+		return nil, models.ErrCarNotAvailable
 	}
 
 	// 3. System message + chat timestamp (same shape updateStatus uses).
@@ -1294,9 +1306,17 @@ func (r *LeaseRequestRepository) ConfirmPickup(ctx context.Context, id, driverID
 		return nil, models.ErrPickupDeadlinePassed
 	}
 
+	// rental_ends_at (migration 000046) is stamped here — the single
+	// transaction both pickup paths (direct confirm + key-handover cascade)
+	// funnel through. GREATEST mirrors models.RentalEndsAt's weeks floor.
+	// The explicit ::timestamptz cast is load-bearing: $2 also appears in
+	// interval arithmetic, and without the cast Postgres refuses to deduce
+	// one parameter type ("inconsistent types deduced for parameter $2").
 	if _, err := tx.Exec(ctx, `
 		UPDATE lease_requests
-		SET pickup_confirmed_at = $2, updated_at = $2
+		SET pickup_confirmed_at = $2::timestamptz,
+		    rental_ends_at = $2::timestamptz + (GREATEST(weeks, 1) * INTERVAL '7 days'),
+		    updated_at = $2::timestamptz
 		WHERE id = $1
 	`, id, now); err != nil {
 		return nil, fmt.Errorf("confirm pickup: %w", err)
