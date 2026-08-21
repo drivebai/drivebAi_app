@@ -204,6 +204,13 @@ export interface AdminRent {
   return_refunded_at?: string | null
   return_refund_failure_reason?: string | null
   return_dispute_reason?: string | null
+  /** Admin's note from resolving a dispute — shown so a second admin sees why. */
+  return_resolution_note?: string | null
+  /**
+   * Scheduled end of the paid term (set at pickup confirmation). Distinct
+   * from end_date, which is the terminal-status timestamp for history rows.
+   */
+  rental_ends_at?: string | null
 }
 
 export interface AdminSupportChat {

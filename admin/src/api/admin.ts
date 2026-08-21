@@ -131,6 +131,18 @@ export const adminApi = {
   listRents: (q: { query?: string; status?: string; page?: number; limit?: number }) =>
     api.get<Page<AdminRent>>(`${BASE}/rents${qs(q)}`),
   getRent: (id: string) => api.get<AdminRent>(`${BASE}/rents/${id}`),
+  /**
+   * Resolve a DISPUTED vehicle return. Keys on the RETURN id
+   * (AdminRent.return_id), not the rent id. accept = side with the driver:
+   * refund issued, car released. reject = side with the owner: return
+   * cancelled, rental continues. The note is required server-side (5–500
+   * chars) and is sent to both parties with the outcome. 409 when the
+   * return isn't disputed anymore (someone raced you) — refetch on error.
+   * Response is the per-viewer return shape, NOT an AdminRent; refetch the
+   * list rather than merging it.
+   */
+  resolveVehicleReturn: (returnId: string, resolution: 'accept' | 'reject', note: string) =>
+    api.post<unknown>(`${BASE}/vehicle-returns/${returnId}/resolve`, { resolution, note }),
 
   // ---- Support ----
   listSupportChats: () => api.get<{ chats: AdminSupportChat[] }>(`${BASE}/support/chats`),

@@ -139,6 +139,77 @@ const drawerReturnRows = computed(() => {
     { k: 'Refund status',  v: r.return_refund_status || '—' },
   ]
 })
+
+// ---- Scheduled term end (lifecycle batch, defect 2) ----
+// rental_ends_at is the LIVE end of the paid term (set at pickup); end_date
+// stays what it always was — the terminal-status timestamp for history rows.
+function termCell(r: AdminRent): string {
+  if (r.end_date) return fmtDate(r.end_date)
+  if (r.rental_ends_at) return fmtDate(r.rental_ends_at)
+  return '—'
+}
+function termChip(r: AdminRent): { label: string; tone: 'danger' | 'warning' | 'neutral' } | null {
+  if (r.end_date || !r.rental_ends_at || r.status !== 'paid') return null
+  const days = Math.ceil((new Date(r.rental_ends_at).getTime() - Date.now()) / 86_400_000)
+  if (days < 0) return { label: `Overdue ${-days}d`, tone: 'danger' }
+  if (days === 0) return { label: 'Due today', tone: 'danger' }
+  if (days === 1) return { label: 'Ends tomorrow', tone: 'warning' }
+  return { label: `${days}d left`, tone: 'neutral' }
+}
+
+// ---- Dispute resolution (lifecycle batch, defect 4) ----
+// The backend resolve endpoint existed all along; the console just never
+// called it. Accept = side with the driver (refund + release the car);
+// Reject = side with the owner (return cancelled, rental continues). The
+// note is REQUIRED — both parties receive the outcome with it.
+const resolving = ref<{ rent: AdminRent; resolution: 'accept' | 'reject' } | null>(null)
+const resolutionNote = ref('')
+const savingResolution = ref(false)
+const resolutionError = ref<string | null>(null)
+
+function isDisputed(r: AdminRent): boolean {
+  return r.return_status === 'disputed'
+}
+
+function startResolve(r: AdminRent, resolution: 'accept' | 'reject') {
+  resolving.value = { rent: r, resolution }
+  resolutionNote.value = ''
+  resolutionError.value = null
+}
+
+async function confirmResolve() {
+  const target = resolving.value
+  if (!target || savingResolution.value) return
+  if (!target.rent.return_id) {
+    resolutionError.value = 'This rental has no return record.'
+    return
+  }
+  const note = resolutionNote.value.trim()
+  if (note.length < 5) {
+    resolutionError.value = 'A note is required — both parties will see the outcome.'
+    return
+  }
+  savingResolution.value = true
+  resolutionError.value = null
+  try {
+    await adminApi.resolveVehicleReturn(target.rent.return_id, target.resolution, note)
+    toast.success(target.resolution === 'accept'
+      ? 'Return confirmed — refund on its way; both parties notified'
+      : 'Dispute upheld — the rental continues; both parties notified')
+    resolving.value = null
+    returnFocus.value = null
+    detail.value = null
+    // The resolve response is a per-viewer return shape, not an AdminRent
+    // row — refetch instead of merging.
+    load()
+  } catch (e: any) {
+    // Includes the 409 when someone else resolved it first — surface and
+    // let the admin refresh.
+    resolutionError.value = e?.message || 'Failed to resolve the dispute'
+  } finally {
+    savingResolution.value = false
+  }
+}
 </script>
 
 <template>
@@ -175,7 +246,14 @@ const drawerReturnRows = computed(() => {
       <td>{{ row.owner_name || row.owner_email }}</td>
       <td>{{ row.car_title }} {{ row.car_year }}</td>
       <td>{{ fmtDate(row.start_date) }}</td>
-      <td>{{ row.end_date ? fmtDate(row.end_date) : '—' }}</td>
+      <td>
+        {{ termCell(row) }}
+        <StatusBadge
+          v-if="termChip(row)"
+          :label="termChip(row)!.label"
+          :tone="termChip(row)!.tone"
+        />
+      </td>
       <td><StatusBadge :label="statusLabel(row.status)" :tone="statusTone(row.status)" /></td>
       <td>
         <button
@@ -205,7 +283,7 @@ const drawerReturnRows = computed(() => {
           <StatusBadge :label="statusLabel(row.status)" :tone="statusTone(row.status)" />
         </div>
         <div class="lc-name">{{ row.driver_name || row.driver_email }} → {{ row.owner_name || row.owner_email }}</div>
-        <div class="lc-sub">{{ fmtDate(row.start_date) }} – {{ row.end_date ? fmtDate(row.end_date) : '—' }}</div>
+        <div class="lc-sub">{{ fmtDate(row.start_date) }} – {{ termCell(row) }}</div>
         <div v-if="hasReturn(row)" class="lc-return">
           <StatusBadge :label="returnLabel(row)" :tone="returnTone(row)" />
         </div>
@@ -231,7 +309,15 @@ const drawerReturnRows = computed(() => {
       <dt>Total</dt><dd>{{ fmtMoney(detail.weekly_price * detail.weeks, detail.currency) }}</dd>
       <dt>Created</dt><dd>{{ fmtDate(detail.created_at) }}</dd>
       <dt>Start</dt><dd>{{ fmtDate(detail.start_date) }}</dd>
-      <dt>End</dt><dd>{{ detail.end_date ? fmtDate(detail.end_date) : '—' }}</dd>
+      <dt>End</dt>
+      <dd>
+        {{ termCell(detail) }}
+        <StatusBadge
+          v-if="termChip(detail)"
+          :label="termChip(detail)!.label"
+          :tone="termChip(detail)!.tone"
+        />
+      </dd>
       <dt>Stripe intent</dt><dd>{{ detail.payment_intent_id || '—' }}</dd>
       <dt>Payment status</dt><dd>{{ detail.payment_status || '—' }}</dd>
     </dl>
@@ -255,7 +341,14 @@ const drawerReturnRows = computed(() => {
         <template v-if="detail.return_dispute_reason">
           <dt>Dispute reason</dt><dd>{{ detail.return_dispute_reason }}</dd>
         </template>
+        <template v-if="detail.return_resolution_note">
+          <dt>Resolution note</dt><dd>{{ detail.return_resolution_note }}</dd>
+        </template>
       </dl>
+      <div v-if="isDisputed(detail)" class="resolve-actions">
+        <button class="primary" @click="startResolve(detail, 'accept')">Accept return…</button>
+        <button class="danger" @click="startResolve(detail, 'reject')">Reject dispute…</button>
+      </div>
     </template>
     <template v-else>
       <h4 class="section">Vehicle Return</h4>
@@ -294,10 +387,74 @@ const drawerReturnRows = computed(() => {
           <template v-if="returnFocus.return_dispute_reason">
             <dt>Dispute reason</dt><dd>{{ returnFocus.return_dispute_reason }}</dd>
           </template>
+          <template v-if="returnFocus.return_resolution_note">
+            <dt>Resolution note</dt><dd>{{ returnFocus.return_resolution_note }}</dd>
+          </template>
           <template v-if="returnFocus.return_refund_failure_reason">
             <dt>Refund error</dt><dd class="danger-text">{{ returnFocus.return_refund_failure_reason }}</dd>
           </template>
         </dl>
+        <!-- The parties for the decision, without leaving the page. -->
+        <div v-if="isDisputed(returnFocus)" class="resolve-block">
+          <p class="muted resolve-context">
+            Driver: {{ returnFocus.driver_name }} ({{ returnFocus.driver_email }})<br />
+            Owner: {{ returnFocus.owner_name }} ({{ returnFocus.owner_email }})<br />
+            Accepting confirms the return{{ (returnFocus.return_refund_amount_cents ?? 0) > 0
+              ? `, issues the ${fmtCents(returnFocus.return_refund_amount_cents, returnFocus.currency)} refund`
+              : ' (no refund is due — the full period was used)' }} and releases
+            the car. Rejecting cancels the return — the rental continues and the driver can submit a new
+            return later.
+          </p>
+          <div class="resolve-actions">
+            <button class="primary" @click="startResolve(returnFocus, 'accept')">Accept return…</button>
+            <button class="danger" @click="startResolve(returnFocus, 'reject')">Reject dispute…</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resolution note modal — required note, shown to both parties. Follows
+       Users.vue's decline-with-reason pattern: validation and API errors stay
+       in the modal; only success closes it. -->
+  <div v-if="resolving" class="modal-overlay" @click.self="resolving = null">
+    <div class="modal" role="dialog" aria-labelledby="resolveTitle">
+      <header>
+        <h2 id="resolveTitle">
+          {{ resolving.resolution === 'accept' ? 'Accept the return?' : 'Reject the dispute?' }}
+        </h2>
+        <button class="ghost close" :disabled="savingResolution" @click="resolving = null" aria-label="Close">×</button>
+      </header>
+      <div class="modal-body">
+        <p class="muted">
+          {{ resolving.resolution === 'accept'
+            ? `Confirms the driver's return of ${resolving.rent.car_title}${(resolving.rent.return_refund_amount_cents ?? 0) > 0
+                ? `, issues the ${fmtCents(resolving.rent.return_refund_amount_cents, resolving.rent.currency)} refund,`
+                : ' (no refund is due),'} and puts the car back on the market.`
+            : `Sides with the owner: the return is cancelled, ${resolving.rent.car_title} stays rented, and the driver must submit a new return when the car is actually back.` }}
+          Both parties are notified with your note.
+        </p>
+        <label class="resolve-label">
+          Note (visible to both parties)
+          <textarea
+            v-model="resolutionNote"
+            rows="3"
+            maxlength="500"
+            :disabled="savingResolution"
+            placeholder="e.g. Photos from the owner show the car was not at the agreed location — please arrange the handover in chat."
+          ></textarea>
+        </label>
+        <p v-if="resolutionError" class="danger-text">{{ resolutionError }}</p>
+        <div class="resolve-actions">
+          <button class="secondary" :disabled="savingResolution" @click="resolving = null">Cancel</button>
+          <button
+            :class="resolving.resolution === 'accept' ? 'primary' : 'danger'"
+            :disabled="savingResolution"
+            @click="confirmResolve"
+          >
+            {{ savingResolution ? 'Resolving…' : (resolving.resolution === 'accept' ? 'Accept return' : 'Reject dispute') }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -354,6 +511,18 @@ const drawerReturnRows = computed(() => {
 .modal-body {
   padding: 16px 18px;
   overflow-y: auto;
+}
+
+/* Dispute resolution */
+.resolve-block { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.resolve-context { font-size: 13px; line-height: 1.5; margin: 0 0 10px; }
+.resolve-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.resolve-label { display: block; margin-top: 10px; font-size: 13px; color: var(--text-muted); }
+.resolve-label textarea {
+  display: block; width: 100%; margin-top: 6px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 14px; background: var(--bg, #fff); color: var(--text, #111);
+  resize: vertical;
 }
 
 .mobile-only { display: none; }
