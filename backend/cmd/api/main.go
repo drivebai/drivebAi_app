@@ -709,7 +709,12 @@ func main() {
 	// Rental term: ending-soon notices, overdue flags, and sustained-overdue
 	// escalation tickets (lifecycle batch, defect 2). Same cadence — each
 	// phase's claimed-once flag makes frequent ticks cheap no-ops.
-	go leaseHandler.StartRentalTermScanner(workerCtx, scanInterval)
+	//
+	// HELD DARK for the 2026-08-21 deploy (client call in progress): the
+	// first tick would notify real users about genuinely old rentals.
+	// Their term flags have been pre-stamped in the DB, so RE-ENABLING is
+	// safe and burst-free: uncomment the line below and redeploy.
+	// go leaseHandler.StartRentalTermScanner(workerCtx, scanInterval)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
