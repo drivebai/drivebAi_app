@@ -305,10 +305,15 @@ struct LeaseRequestCardView: View {
             .padding(.vertical, 4)
             .foregroundColor(.green)
 
-            if let vReturn = vehicleReturn {
+            if let vReturn = vehicleReturn, vReturn.status != .cancelled {
                 returnStatusSummary(vReturn)
                 driverReturnActions(for: vReturn)
             } else if leaseRequest.pickupConfirmedAt != nil {
+                // No return row yet — OR the previous one was cancelled
+                // (driver undo, admin reject). The server revives a
+                // cancelled row on re-initiate, so "I returned the car"
+                // must come back; without this branch the admin-reject
+                // notification's "submit the return again" was a dead end.
                 // No return row yet — surface the primary action.
                 Button(action: onStartReturn) {
                     HStack(spacing: 6) {
@@ -418,7 +423,28 @@ struct LeaseRequestCardView: View {
     /// (status row already says what's happening).
     @ViewBuilder
     private func ownerReturnActions(for vReturn: VehicleReturn) -> some View {
-        if vReturn.status == .driverInitiated {
+        if vReturn.status == .disputed {
+            // Withdraw-by-confirm: the server accepts owner-confirm from
+            // `disputed` (lifecycle batch) — confirming receipt IS the
+            // withdrawal, closing the support case without the queue.
+            Button(action: onConfirmReturn) {
+                HStack(spacing: 6) {
+                    if isReturnSubmitting {
+                        ProgressView().tint(.white).scaleEffect(0.85)
+                    }
+                    Text(isReturnSubmitting ? "Working…" : "Confirm return · withdraw dispute")
+                }
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(isReturnSubmitting
+                    ? Color.driveBaiPrimary.opacity(0.6)
+                    : Color.driveBaiPrimary)
+                .foregroundColor(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .disabled(isReturnSubmitting)
+        } else if vReturn.status == .driverInitiated {
             HStack(spacing: 10) {
                 Button(action: onDisputeReturn) {
                     Text("Dispute")

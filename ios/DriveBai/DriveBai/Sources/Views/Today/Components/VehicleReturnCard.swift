@@ -281,6 +281,15 @@ struct VehicleReturnCard: View {
                     style: .primary
                 )
             }
+        case .disputed where vehicleReturn.viewerRole == .owner:
+            // Withdraw-by-confirm (lifecycle batch): the server accepts
+            // owner-confirm from `disputed`, so the owner can self-service
+            // out of a misunderstanding instead of waiting on support.
+            // onAct dispatches by role → confirm for the owner.
+            actionButton(
+                title: vehicleReturn.primaryActionTitle ?? "Confirm return",
+                style: .primary
+            )
         case .completed, .cancelled:
             if onDismiss != nil {
                 dismissButton

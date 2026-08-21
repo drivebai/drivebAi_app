@@ -1252,23 +1252,44 @@ struct ListingDetailView: View {
             // only render exactly one button.
             VStack(spacing: 10) {
                 if car.isForRent {
-                    Button(action: requestLease) {
-                        HStack(spacing: 6) {
-                            if isRequestingLease {
-                                ProgressView()
-                                    .tint(.white)
+                    // Gate on the canonical business state (lifecycle batch,
+                    // defect 1): a rented/sold/paused car must explain itself
+                    // here instead of offering a button that can only fail
+                    // after submission. Discovery pre-filters these, so this
+                    // fires on the stale-open-detail race — the exact case
+                    // the client hit. The server 409 (CAR_NOT_AVAILABLE)
+                    // remains the backstop.
+                    switch CarBusinessState.forCar(car) {
+                    case .rented:
+                        rentUnavailableNotice("Currently rented — check back later")
+                    case .sold:
+                        rentUnavailableNotice("This car has been sold")
+                    case .paused, .awaitingApproval, .pendingReview:
+                        rentUnavailableNotice("Not taking requests right now")
+                    case .available where car.hasActivePurchase:
+                        // A purchase past acceptance blocks new leases
+                        // server-side (CAR_NOT_AVAILABLE) — mirror it here
+                        // like the Buy CTA already does.
+                        rentUnavailableNotice("Sale in progress — check back later")
+                    case .available:
+                        Button(action: requestLease) {
+                            HStack(spacing: 6) {
+                                if isRequestingLease {
+                                    ProgressView()
+                                        .tint(.white)
+                                }
+                                Text("Request lease")
+                                    .font(.headline)
                             }
-                            Text("Request lease")
-                                .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.driveBaiPrimary)
+                            .cornerRadius(12)
                         }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color.driveBaiPrimary)
-                        .cornerRadius(12)
+                        .disabled(isRequestingLease)
+                        .onboardingTarget(.requestLeaseCTA)
                     }
-                    .disabled(isRequestingLease)
-                    .onboardingTarget(.requestLeaseCTA)
                 }
 
                 if car.isForSale {
@@ -1331,6 +1352,22 @@ struct ListingDetailView: View {
     /// Replacement CTA shown when the buyer already has a non-terminal
     /// purchase for this car: a status pill + a "View purchase" action that
     /// routes to the existing purchase card in Chat → Requests.
+    /// Replaces the rent CTA when the car can't take a request (rented, sold,
+    /// paused). Same visual grammar as `saleInProgressNotice`: a gray
+    /// non-button, because the only honest affordance is "not now".
+    private func rentUnavailableNotice(_ message: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.badge.exclamationmark")
+            Text(message)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundColor(.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(Color(.systemGray5))
+        .cornerRadius(12)
+    }
+
     /// Shown to OTHER viewers while some buyer's purchase of this car is past
     /// acceptance and in flight. Not a button — there is nothing to do but
     /// wait; the listing frees automatically if that purchase falls through.

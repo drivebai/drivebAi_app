@@ -51,6 +51,11 @@ final class DriverTodayViewModel: ObservableObject {
     /// to feel deliberate.
     @Published var vehicleReturns: [VehicleReturn] = []
 
+    /// Rentals in progress — the persistent "you have this car until X"
+    /// card (lifecycle batch, defect 3). Rides on the today/actions
+    /// response; empty on older servers.
+    @Published var activeRentals: [ActiveRental] = []
+
     /// ID of the return currently being acted on (drives the card's busy state).
     @Published var submittingReturnId: UUID?
 
@@ -153,6 +158,7 @@ final class DriverTodayViewModel: ObservableObject {
             let response = try await apiClient.fetchTodayActions()
             tasks = response.actions.map { $0.toOnboardingTask() }
             hasUnreadActions = response.hasUnreadActions
+            activeRentals = (response.activeRentals ?? []).map { $0.toDomain() }
         } catch {
             #if DEBUG
             print("[DriverTodayVM] fetchActions error: \(error)")

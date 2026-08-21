@@ -174,11 +174,15 @@ extension VehicleReturn {
             return hasRefund
                 ? "Owner confirmed the return. Issuing your \(formattedRefundAmount) refund now."
                 : "Owner confirmed the return. No refund is due."
-        case (.disputed, _):
+        case (.disputed, .driver):
+            // Backed by a real support ticket since the lifecycle batch —
+            // Dispute opens one server-side before this copy is shown.
             if let reason = disputeReason, !reason.isEmpty {
-                return "\"\(reason)\" — our team will follow up within 24 hours."
+                return "\"\(reason)\" — a support case is open; our team will follow up within 24 hours."
             }
-            return "Our team has been notified and will follow up within 24 hours."
+            return "A support case is open — our team will follow up within 24 hours."
+        case (.disputed, .owner):
+            return "A support case is open; our team will follow up within 24 hours. If this was a misunderstanding, you can withdraw the dispute by confirming the return."
         case (.completed, _):
             return hasRefund
                 ? "Refund posted to your original payment method."
@@ -194,6 +198,12 @@ extension VehicleReturn {
         case (.driverInitiated, .driver):
             return isWithinDriverCancelWindow() ? "Undo return" : nil
         case (.driverInitiated, .owner):
+            return "Confirm return"
+        case (.disputed, .owner):
+            // Withdrawing a dispute IS confirming the return — the server
+            // accepts owner-confirm from `disputed` (lifecycle batch), so
+            // a misunderstanding resolved in chat doesn't need the support
+            // queue.
             return "Confirm return"
         default:
             return nil

@@ -32,6 +32,10 @@ struct DriverTodayView: View {
     /// two never race.
     @State private var deepLinkPickupChat: DeepLinkPickupTarget?
 
+    /// Chat push from the active-rental card. Separate from the deep-link
+    /// state above so a card tap can never race an in-flight deep link.
+    @State private var rentalChatTarget: DeepLinkPickupTarget?
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -42,6 +46,13 @@ struct DriverTodayView: View {
                         unreadCount: viewModel.unreadNotificationCount,
                         onBellTap: { showNotifications = true }
                     )
+
+                    // Section: the rental you're in (lifecycle batch,
+                    // defect 3) — the standing card for the whole rental
+                    // period, not just when an action is due. First, because
+                    // "you have this car until Friday" is today's context
+                    // for everything below it.
+                    activeRentalSection
 
                     // Section 1: Active Listings (rentals for driver)
                     activeListingsSection
@@ -123,6 +134,17 @@ struct DriverTodayView: View {
                     )
                 }
             }
+            .navigationDestination(item: $rentalChatTarget) { target in
+                if let userId = authStore.state.user?.id {
+                    ChatView(
+                        chatId: target.chatId,
+                        currentUserId: userId,
+                        counterpartyId: target.counterpartyId,
+                        counterpartyName: target.counterpartyName,
+                        initialTab: .requests
+                    )
+                }
+            }
             .onChange(of: deepLinkRouter.pendingLeasePickupId) { _, newId in
                 handleLeasePickupDeepLink(newId)
             }
@@ -193,6 +215,43 @@ struct DriverTodayView: View {
     }
 
     // MARK: - Your Rental Section
+
+    /// The rental-in-progress card(s). Hidden entirely when the driver has
+    /// no active rental — no empty-state noise.
+    @ViewBuilder
+    private var activeRentalSection: some View {
+        if !viewModel.activeRentals.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Your rental")
+                    .font(TodayLayout.sectionTitleFont)
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+
+                ForEach(viewModel.activeRentals) { rental in
+                    ActiveRentalCard(
+                        rental: rental,
+                        // The return CTA yields to an in-flight return —
+                        // once one exists, the VehicleReturnCard below owns
+                        // that conversation.
+                        hasOpenReturn: viewModel.vehicleReturns.contains {
+                            $0.leaseRequestId == rental.id && !$0.status.isTerminal
+                        },
+                        onReturn: {
+                            viewModel.submitVehicleReturn(leaseRequestId: rental.id)
+                        },
+                        onChat: {
+                            guard let chatId = rental.chatId else { return }
+                            rentalChatTarget = DeepLinkPickupTarget(
+                                chatId: chatId,
+                                counterpartyId: rental.ownerId,
+                                counterpartyName: rental.ownerName
+                            )
+                        }
+                    )
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+                }
+            }
+        }
+    }
 
     private var activeListingsSection: some View {
         VStack(alignment: .leading, spacing: TodayLayout.headerSpacing) {
@@ -446,6 +505,126 @@ struct DeepLinkPickupTarget: Hashable, Identifiable {
     let counterpartyId: UUID
     let counterpartyName: String
     var id: UUID { chatId }
+}
+
+// MARK: - Active rental card (lifecycle batch, defect 3)
+
+/// The standing "you have this car until X" card. Lives in this file rather
+/// than Components/ because new Swift files need manual pbxproj
+/// registration; visually it follows the KeyHandover/VehicleReturn card skin
+/// (TodayLayout corner radius + border), its closest kin.
+struct ActiveRentalCard: View {
+    let rental: ActiveRental
+    /// When a return is already in flight the VehicleReturnCard owns that
+    /// conversation — this card drops its Return CTA instead of duplicating.
+    let hasOpenReturn: Bool
+    let onReturn: () -> Void
+    let onChat: () -> Void
+
+    /// Escalating-but-not-alarming treatment: neutral while active, orange
+    /// inside the last 24h, red once overdue — mirroring the term states
+    /// the backend scanner stamps, so the card and the notifications can
+    /// never tell different stories.
+    private var stateColor: Color {
+        switch rental.termState {
+        case .active: return .secondary
+        case .endingSoon: return .orange
+        case .overdue: return .red
+        }
+    }
+
+    private var stateIcon: String {
+        switch rental.termState {
+        case .active: return "car.fill"
+        case .endingSoon: return "clock.fill"
+        case .overdue: return "exclamationmark.circle.fill"
+        }
+    }
+
+    private var returnLocationLine: String? {
+        guard let area = rental.returnLocationArea, !area.isEmpty else { return nil }
+        // Honest labels: "pickup" means the key-handover meeting point;
+        // anything else is only the owner's listed location.
+        if rental.returnLocationSource == "pickup" {
+            return "Return where you picked up: \(area)"
+        }
+        return "Owner's listed location: \(area)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: stateIcon)
+                    .foregroundColor(rental.termState == .active ? TodayLayout.tealAccent : stateColor)
+                Text(rental.carTitle)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                Spacer()
+            }
+
+            Text(rental.returnsLine)
+                .font(.subheadline.weight(rental.termState == .active ? .regular : .semibold))
+                .foregroundColor(stateColor)
+                .monospacedDigit()
+
+            if rental.termState == .overdue {
+                // No refund promise: past the end, used days equal paid days
+                // and the computed refund is $0 — the true incentive is
+                // closing out the rental, and saying anything else would lie.
+                Text("The rental period has ended. Hand the car back and tap “I returned the car” to close out the rental.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let location = returnLocationLine {
+                HStack(spacing: 6) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.caption)
+                    Text(location)
+                        .font(.caption)
+                }
+                .foregroundColor(.secondary)
+            }
+
+            Text("Rented from \(rental.ownerName) · \(rental.weeks) week\(rental.weeks == 1 ? "" : "s")")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 8) {
+                if !hasOpenReturn {
+                    Button(action: onReturn) {
+                        Text("I returned the car")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: TodayLayout.optionButtonHeight)
+                            .background(rental.termState == .overdue ? Color.red : TodayLayout.tealAccent)
+                            .cornerRadius(8)
+                    }
+                }
+                if rental.chatId != nil {
+                    Button(action: onChat) {
+                        Text("Chat with \(rental.ownerName.components(separatedBy: " ").first ?? "owner")")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: TodayLayout.optionButtonHeight)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(TodayLayout.cardBackgroundColor)
+        .cornerRadius(TodayLayout.cardCornerRadius)
+        .overlay(
+            RoundedRectangle(cornerRadius: TodayLayout.cardCornerRadius)
+                .stroke(rental.termState == .overdue ? Color.red.opacity(0.4) : TodayLayout.cardBorderColor,
+                        lineWidth: TodayLayout.cardBorderWidth)
+        )
+    }
 }
 
 extension DriverTodayView {
