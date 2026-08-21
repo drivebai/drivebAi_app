@@ -68,6 +68,10 @@ export interface AdminCar {
   sale_price?: number | null
   currency: string
   address?: string | null
+  /** Admin-only: never exposed on driver-facing responses. */
+  vin?: string | null
+  /** Admin-only license plate (client request: plate/VIN search). */
+  plate?: string | null
   cover_photo_url?: string | null
   // Real vehicle review aggregate; rating absent/null with rating_count 0
   // = no ratings yet.

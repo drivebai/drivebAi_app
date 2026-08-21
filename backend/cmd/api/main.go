@@ -575,6 +575,8 @@ func main() {
 				r.Get("/cars", adminHandler.ListCars)
 				r.Get("/cars/{id}", adminHandler.GetCar)
 				r.Patch("/cars/{id}/approve", adminHandler.ApproveCar)
+				// Plate capture for the plate/VIN vehicle search.
+				r.Patch("/cars/{id}/plate", adminHandler.SetCarPlate)
 				// Replace a car document on the owner's behalf — from a
 				// support-chat attachment or a direct admin upload (batch
 				// item 1).

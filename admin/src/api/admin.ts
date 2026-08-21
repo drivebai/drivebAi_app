@@ -116,6 +116,9 @@ export const adminApi = {
       support_attachment_id: attachmentId,
       document_type: documentType,
     }),
+  /** Record the license plate so the car is findable by plate search. Empty clears. */
+  setCarPlate: (id: string, plate: string) =>
+    api.patch<{ plate: string }>(`${BASE}/cars/${id}/plate`, { plate }),
   approveCar: (id: string, isApproved: boolean) =>
     api.patch<{ ok: boolean; is_approved: boolean }>(`${BASE}/cars/${id}/approve`, { is_approved: isApproved }),
 
