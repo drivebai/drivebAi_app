@@ -10,6 +10,7 @@ import (
 	"github.com/drivebai/backend/internal/database"
 	"github.com/drivebai/backend/internal/models"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // AdminRepository centralizes all read/write queries used by the admin panel.
@@ -257,6 +258,12 @@ type AdminCarRow struct {
 	SalePrice       *float64   `json:"sale_price,omitempty"`
 	Currency        string     `json:"currency"`
 	Address         *string    `json:"address,omitempty"`
+	// VIN + Plate are ADMIN-ONLY surfaces (the VIN exposure rules in
+	// car_vin_exposure_test.go govern driver-facing responses; admin
+	// endpoints sit behind RequireRole(admin)). Plate exists only here —
+	// no driver-facing response carries it.
+	VIN             *string    `json:"vin,omitempty"`
+	Plate           *string    `json:"plate,omitempty"`
 	CoverPhotoURL   *string    `json:"cover_photo_url,omitempty"`
 	// MissingRequiredDocuments is server-computed (QA pt-10): the required
 	// doc types (registration/inspection/insurance) this car does NOT yet
@@ -278,6 +285,35 @@ type AdminCarsPage struct {
 	Limit int           `json:"limit"`
 }
 
+// normalizeVehicleKey folds a plate/VIN search term to bare lowercase
+// alphanumerics — the exact mirror of the SQL-side regexp_replace, so the
+// two can never disagree about what "ABC-123" means.
+func normalizeVehicleKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// SetCarPlate stores the admin-entered license plate, trimmed + uppercased
+// for display; empty clears it. The plate powers admin search only — it is
+// not exposed on any driver-facing surface.
+func (r *AdminRepository) SetCarPlate(ctx context.Context, id uuid.UUID, plate string) error {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE cars SET plate = NULLIF(UPPER(TRIM($2)), ''), updated_at = NOW()
+		WHERE id = $1`, id, plate)
+	if err != nil {
+		return fmt.Errorf("set car plate: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limit int) (*AdminCarsPage, error) {
 	if page < 1 {
 		page = 1
@@ -295,9 +331,26 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 	where := []string{"c.archived_at IS NULL"}
 	if q := strings.TrimSpace(query); q != "" {
 		args = append(args, "%"+strings.ToLower(q)+"%")
-		where = append(where, fmt.Sprintf(
-			"(LOWER(c.title) LIKE $%d OR LOWER(c.make) LIKE $%d OR LOWER(c.model) LIKE $%d OR LOWER(u.email) LIKE $%d)",
-			len(args), len(args), len(args), len(args)))
+		textIdx := len(args)
+		group := fmt.Sprintf(
+			"LOWER(c.title) LIKE $%d OR LOWER(c.make) LIKE $%d OR LOWER(c.model) LIKE $%d OR LOWER(u.email) LIKE $%d",
+			textIdx, textIdx, textIdx, textIdx)
+		// VIN + plate matching (client request): both sides normalized to
+		// bare lowercase alphanumerics, so "ABC-123", "abc 123" and
+		// "ABC123" hit the same row, and a partial VIN (admins usually
+		// hold the last 6–8 characters) substring-matches. Guarded on a
+		// non-empty normalized key — an all-punctuation query must not
+		// LIKE-'%%' its way past the text filters. NULLIF keeps rows with
+		// empty vin/plate from matching anything.
+		if key := normalizeVehicleKey(q); key != "" {
+			args = append(args, "%"+key+"%")
+			keyIdx := len(args)
+			group += fmt.Sprintf(
+				" OR NULLIF(regexp_replace(LOWER(COALESCE(c.vin, '')), '[^a-z0-9]', '', 'g'), '') LIKE $%d"+
+					" OR NULLIF(regexp_replace(LOWER(COALESCE(c.plate, '')), '[^a-z0-9]', '', 'g'), '') LIKE $%d",
+				keyIdx, keyIdx)
+		}
+		where = append(where, "("+group+")")
 	}
 	whereSQL := "WHERE " + strings.Join(where, " AND ")
 
@@ -312,7 +365,7 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 		       c.owner_id, u.email, COALESCE(u.first_name || ' ' || u.last_name, ''),
 		       c.status::text, c.is_paused, c.is_approved,
 		       c.is_for_rent, c.is_for_sale, c.weekly_rent_price, c.sale_price, c.currency,
-		       c.address,
+		       c.address, c.vin, c.plate,
 		       (SELECT p.file_url FROM car_photos p WHERE p.car_id = c.id AND p.slot_type = 'cover_front' LIMIT 1),
 		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id),
 		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_car_id = c.id),
@@ -339,7 +392,7 @@ func (r *AdminRepository) ListCars(ctx context.Context, query string, page, limi
 			&c.OwnerID, &c.OwnerEmail, &c.OwnerName,
 			&c.Status, &c.IsPaused, &c.IsApproved,
 			&c.IsForRent, &c.IsForSale, &c.WeeklyRentPrice, &c.SalePrice, &c.Currency,
-			&c.Address,
+			&c.Address, &c.VIN, &c.Plate,
 			&c.CoverPhotoURL,
 			&docTypes,
 			&c.Rating, &c.RatingCount,
@@ -384,7 +437,7 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		       c.owner_id, u.email, COALESCE(u.first_name || ' ' || u.last_name, ''),
 		       c.status::text, c.is_paused, c.is_approved,
 		       c.is_for_rent, c.is_for_sale, c.weekly_rent_price, c.sale_price, c.currency,
-		       c.address,
+		       c.address, c.vin, c.plate,
 		       (SELECT p.file_url FROM car_photos p WHERE p.car_id = c.id AND p.slot_type = 'cover_front' LIMIT 1),
 		       ARRAY(SELECT DISTINCT d.document_type::text FROM car_documents d WHERE d.car_id = c.id),
 		       (SELECT AVG(rv.rating)::float8 FROM reviews rv WHERE rv.subject_car_id = c.id),
@@ -398,7 +451,7 @@ func (r *AdminRepository) GetCarDetail(ctx context.Context, id uuid.UUID) (*Admi
 		&c.OwnerID, &c.OwnerEmail, &c.OwnerName,
 		&c.Status, &c.IsPaused, &c.IsApproved,
 		&c.IsForRent, &c.IsForSale, &c.WeeklyRentPrice, &c.SalePrice, &c.Currency,
-		&c.Address,
+		&c.Address, &c.VIN, &c.Plate,
 		&c.CoverPhotoURL,
 		&docTypes,
 		&c.Rating, &c.RatingCount,

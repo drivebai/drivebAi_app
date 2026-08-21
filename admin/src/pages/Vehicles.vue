@@ -44,6 +44,27 @@ load()
 
 // --- detail drawer ---
 const detail = ref<AdminCarDetail | null>(null)
+
+// Plate capture (client request: plate/VIN search). Draft mirrors the
+// loaded value; Save appears only when it differs.
+const plateDraft = ref('')
+const savingPlate = ref(false)
+watch(detail, d => { plateDraft.value = d?.plate || '' })
+async function savePlate() {
+  const d = detail.value
+  if (!d || savingPlate.value) return
+  savingPlate.value = true
+  try {
+    const res = await adminApi.setCarPlate(d.id, plateDraft.value.trim())
+    d.plate = res.plate || null
+    plateDraft.value = d.plate || ''
+    toast.success(d.plate ? `Plate saved — searchable as ${d.plate}` : 'Plate cleared')
+  } catch (e: any) {
+    toast.error(e?.message || 'Failed to save plate')
+  } finally {
+    savingPlate.value = false
+  }
+}
 const detailLoading = ref(false)
 async function openDetails(c: AdminCar) {
   detailLoading.value = true
@@ -205,7 +226,7 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
   <PageHeader title="Vehicles" />
 
   <div class="filters">
-    <input v-model="query" placeholder="Search by title, make, model, or owner email…" class="search" />
+    <input v-model="query" placeholder="Search by title, make, model, owner email, VIN, or plate…" class="search" />
   </div>
 
   <!-- Desktop / tablet: full data table. Hidden on phones in favour of cards. -->
@@ -390,6 +411,23 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
         <dt>Make / Model</dt><dd>{{ detail.make }} {{ detail.model }}</dd>
         <dt>Year</dt><dd>{{ detail.year }}</dd>
         <dt>Owner</dt><dd>{{ detail.owner_email || '—' }}</dd>
+        <dt>VIN</dt><dd class="mono">{{ detail.vin || '—' }}</dd>
+        <dt>Plate</dt>
+        <dd class="plate-row">
+          <input
+            v-model="plateDraft"
+            class="plate-input mono"
+            maxlength="16"
+            placeholder="—"
+            :disabled="savingPlate"
+          />
+          <button
+            v-if="plateDraft.trim().toUpperCase() !== (detail.plate || '')"
+            class="secondary plate-save"
+            :disabled="savingPlate"
+            @click="savePlate"
+          >{{ savingPlate ? 'Saving…' : 'Save' }}</button>
+        </dd>
         <dt>Rating</dt><dd><StarRating :rating="detail.rating" :count="detail.rating_count" /></dd>
         <dt>Status</dt><dd><StatusBadge :label="detail.status" :tone="statusTone(detail.status)" /></dd>
         <dt>Required docs</dt>
@@ -443,6 +481,11 @@ function isImageDoc(doc: { file_name?: string | null; file_url: string }): boole
 </template>
 
 <style scoped>
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.plate-row { display: flex; gap: 8px; align-items: center; }
+.plate-input { width: 140px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; text-transform: uppercase; }
+.plate-save { padding: 6px 10px; }
+
 .filters { margin-bottom: 16px; }
 .search { width: 100%; max-width: 480px; }
 

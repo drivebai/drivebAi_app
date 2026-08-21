@@ -772,6 +772,40 @@ type approveCarBody struct {
 	IsApproved bool `json:"is_approved"`
 }
 
+// SetCarPlate — PATCH /api/v1/admin/cars/{id}/plate, body {"plate": "..."}.
+// Records the license plate so admins can find a car by it (client request:
+// plate + VIN search). Empty plate clears it. Plate is an admin-only field —
+// it is never exposed on driver-facing responses.
+func (h *AdminHandler) SetCarPlate(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid id"))
+		return
+	}
+	var body struct {
+		Plate string `json:"plate"`
+	}
+	if err := httputil.DecodeJSON(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+	plate := strings.TrimSpace(body.Plate)
+	if len(plate) > 16 {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("plate must be 16 characters or fewer"))
+		return
+	}
+	if err := h.adminRepo.SetCarPlate(r.Context(), id, plate); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.WriteError(w, http.StatusNotFound, models.NewAPIError("NOT_FOUND", "car not found"))
+			return
+		}
+		h.logger.Error("admin set car plate", "error", err, "car_id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"plate": strings.ToUpper(plate)})
+}
+
 func (h *AdminHandler) ApproveCar(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
