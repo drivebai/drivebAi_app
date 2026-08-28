@@ -1,4 +1,5 @@
 import SwiftUI
+import StripeConnect
 
 struct ProfileView: View {
     @EnvironmentObject private var authStore: AuthStore
@@ -1130,6 +1131,97 @@ struct PrivacySecurityView: View {
 
 // MARK: - Earnings & payouts (Stripe Connect)
 
+/// Presents Stripe's embedded account-onboarding component (StripeConnect,
+/// iOS 15+; app targets 17.6). Owns the EmbeddedComponentManager for the
+/// component's lifetime and forwards the two delegate callbacks back onto
+/// the main actor. The AccountOnboardingController retains itself while
+/// presented, so only the manager needs holding here.
+@MainActor
+final class PayoutOnboardingLauncher: NSObject, ObservableObject {
+    @Published var isLaunching = false
+    @Published var launchError: String?
+
+    /// Called when the component closes for ANY reason — completed, exited
+    /// early, or abandoned. The caller must re-fetch status from OUR
+    /// backend; the client is never trusted to know the outcome.
+    private var onExit: (() -> Void)?
+    private var componentManager: EmbeddedComponentManager?
+
+    func launch(onExit: @escaping () -> Void) {
+        guard !isLaunching else { return }
+        self.onExit = onExit
+        isLaunching = true
+        launchError = nil
+        Task {
+            defer { isLaunching = false }
+            do {
+                // First session fetch pins the publishable key before any
+                // component web view loads (validateKey runs at load); the
+                // manager's closure re-fetches fresh secrets on refresh.
+                let session = try await APIClient.shared.createPayoutSession()
+                STPAPIClient.shared.publishableKey = session.publishableKey
+                let manager = EmbeddedComponentManager(
+                    appearance: Self.driveBaiAppearance,
+                    fetchClientSecret: {
+                        (try? await APIClient.shared.createPayoutSession())?.clientSecret
+                    }
+                )
+                componentManager = manager
+                let controller = manager.createAccountOnboardingController()
+                controller.delegate = self
+                controller.title = "Payout setup"
+                guard let presenter = Self.topViewController() else {
+                    launchError = "Couldn't open payout setup. Please try again."
+                    return
+                }
+                controller.present(from: presenter)
+            } catch {
+                launchError = "Couldn't start payout setup. Check your connection and try again."
+            }
+        }
+    }
+
+    /// The component styled to the house look: primary green on actions and
+    /// accents, 12pt corners to match the app's cards. System font is the
+    /// app's type, which is Appearance's default — no CustomFontSource
+    /// needed.
+    private static var driveBaiAppearance: EmbeddedComponentManager.Appearance {
+        var a = EmbeddedComponentManager.Appearance()
+        let primary = UIColor(Color.driveBaiPrimary)
+        a.colors.primary = primary
+        a.colors.formAccent = primary
+        a.colors.actionPrimaryText = primary
+        a.buttonPrimary.colorBackground = primary
+        a.buttonPrimary.colorText = .white
+        a.cornerRadius.base = 12
+        a.cornerRadius.button = 12
+        return a
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let root = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController
+        guard var top = root else { return nil }
+        while let presented = top.presentedViewController { top = presented }
+        return top
+    }
+}
+
+extension PayoutOnboardingLauncher: AccountOnboardingControllerDelegate {
+    nonisolated func accountOnboardingDidExit(_ accountOnboarding: AccountOnboardingController) {
+        Task { @MainActor in self.onExit?() }
+    }
+
+    nonisolated func accountOnboarding(_ accountOnboarding: AccountOnboardingController, didFailLoadWithError error: Error) {
+        Task { @MainActor in
+            self.launchError = "Payout setup couldn't load. Check your connection and try again."
+        }
+    }
+}
+
 /// Owner-facing payout home: what "getting paid" means, where their account
 /// stands, and every payout with its state. The backend (accounts, account
 /// sessions, transfers) is fully live; the embedded onboarding LAUNCH is
@@ -1143,6 +1235,10 @@ struct EarningsPayoutsSheet: View {
     @State private var payouts: [OwnerPayoutItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @StateObject private var onboarding = PayoutOnboardingLauncher()
+    /// True while re-fetching status right after the component closed —
+    /// the moment the user most wants an accurate answer.
+    @State private var isRefreshingAfterOnboarding = false
 
     var body: some View {
         NavigationStack {
@@ -1271,25 +1367,40 @@ struct EarningsPayoutsSheet: View {
         }
     }
 
-    /// The launch button — feature-flagged until the StripeConnect SDK
-    /// ships. Disabled state explains itself rather than dead-ending.
+    /// The launch button. Presents the embedded onboarding component; when
+    /// it closes — completed, exited early, or abandoned — status is
+    /// re-fetched from OUR endpoint (which live-refreshes from Stripe), so
+    /// the card always tells the truth: ready, still reviewing, more
+    /// needed, or pick-up-where-you-left-off.
     @ViewBuilder
     private var setupButton: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                // SDK follow-up batch: create the account session via
-                // APIClient.shared.createPayoutSession() and present the
-                // AccountOnboardingController here.
+                onboarding.launch {
+                    Task { await refreshAfterOnboarding() }
+                }
             } label: {
-                Text(status == .none ? "Set up payouts" : "Continue setup")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                HStack {
+                    if onboarding.isLaunching || isRefreshingAfterOnboarding {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(isRefreshingAfterOnboarding ? "Checking your status…"
+                         : status == .none ? "Set up payouts" : "Continue setup")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
             }
             .buttonStyle(.borderedProminent)
             .tint(.driveBaiPrimary)
-            .disabled(!AppConfig.payoutOnboardingEnabled)
+            .disabled(!AppConfig.payoutOnboardingEnabled || onboarding.isLaunching || isRefreshingAfterOnboarding)
 
+            if let launchError = onboarding.launchError {
+                Text(launchError)
+                    .font(.footnote)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !AppConfig.payoutOnboardingEnabled {
                 Text("Payout setup will be available in the next update. Everything you earn until then is safely held and pays out the moment you're set up.")
                     .font(.footnote)
@@ -1297,6 +1408,18 @@ struct EarningsPayoutsSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// Server-truth refresh after the component closes. The GET endpoint
+    /// reads the live account from Stripe and updates our mirror, so
+    /// whatever the user did in there — finished, bailed, got queued for
+    /// review, was asked for more documents — the status card lands on the
+    /// accurate state with its own actionable copy.
+    @MainActor
+    private func refreshAfterOnboarding() async {
+        isRefreshingAfterOnboarding = true
+        await load()
+        isRefreshingAfterOnboarding = false
     }
 
     // MARK: Earnings

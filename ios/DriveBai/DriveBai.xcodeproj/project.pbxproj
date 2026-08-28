@@ -20,6 +20,7 @@
 		871B608D2FEE764B0056B004 /* DriveBaiWidgetsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 871B607A2FEE764A0056B004 /* DriveBaiWidgetsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		871B609F2FEE77D90056B004 /* PickupActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */; };
 		8787D9FF2F5590E9001618B0 /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = 8787D9FE2F5590E9001618B0 /* StripePaymentSheet */; };
+		8787DA012F5590E9001618B0 /* StripeConnect in Frameworks */ = {isa = PBXBuildFile; productRef = 8787DA002F5590E9001618B0 /* StripeConnect */; };
 		880A42098D3B87B5D861CA75 /* ImageAttachmentViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D19F4A638AA1A970D0C75AB0 /* ImageAttachmentViewerView.swift */; };
 		A7C849DD12C04F1E78A85B01 /* PickupActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C849DD12C04F1E78A85B02 /* PickupActivityAttributes.swift */; };
 		B8D95AEE23D15F2F89B96C01 /* PickupLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D95AEE23D15F2F89B96C02 /* PickupLiveActivityManager.swift */; };
@@ -378,6 +379,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8787D9FF2F5590E9001618B0 /* StripePaymentSheet in Frameworks */,
+				8787DA012F5590E9001618B0 /* StripeConnect in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1282,7 +1284,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = DriveBai;
-				INFOPLIST_KEY_NSCameraUsageDescription = "We need camera access so you can take photos of your car and upload verification documents";
+				INFOPLIST_KEY_NSCameraUsageDescription = "DriveBai uses the camera to photograph your car and, during payout setup, your identity document. Identity photos go directly to Stripe, our payments partner, for verification \U2014 DriveBai never stores them.";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "DriveBai uses your location to center the map when choosing a pickup location for your car listing.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "We need permission to save images to your photo library when you download or export photos.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "We need access to your photo library so you can upload car photos and required documents.";
@@ -1317,7 +1320,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = DriveBai;
-				INFOPLIST_KEY_NSCameraUsageDescription = "We need camera access so you can take photos of your car and upload verification documents";
+				INFOPLIST_KEY_NSCameraUsageDescription = "DriveBai uses the camera to photograph your car and, during payout setup, your identity document. Identity photos go directly to Stripe, our payments partner, for verification \U2014 DriveBai never stores them.";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "DriveBai uses your location to center the map when choosing a pickup location for your car listing.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "We need permission to save images to your photo library when you download or export photos.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "We need access to your photo library so you can upload car photos and required documents.";
@@ -1387,6 +1391,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8787D9FA2F557D49001618B0 /* XCRemoteSwiftPackageReference "stripe-ios" */;
 			productName = StripePaymentSheet;
+		};
+		8787DA002F5590E9001618B0 /* StripeConnect */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8787D9FA2F557D49001618B0 /* XCRemoteSwiftPackageReference "stripe-ios" */;
+			productName = StripeConnect;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
