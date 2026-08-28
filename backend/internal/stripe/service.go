@@ -18,9 +18,12 @@ type Service struct {
 	secretKey      string
 	publishableKey string
 	webhookSecret  string
-	feeBPS         int // platform fee in basis points
-	logger         *slog.Logger
-	httpClient     *http.Client
+	// connectWebhookSecret signs events from the SEPARATE Connect webhook
+	// endpoint (connected-account events); wired via SetConnectWebhookSecret.
+	connectWebhookSecret string
+	feeBPS               int // platform fee in basis points
+	logger               *slog.Logger
+	httpClient           *http.Client
 }
 
 func NewService(secretKey, publishableKey, webhookSecret string, feeBPS int, logger *slog.Logger) *Service {
