@@ -35,7 +35,15 @@ type VehicleReturnHandler struct {
 	stripe       *stripeService.Service
 	wsHub        *ws.Hub
 	notifHandler *NotificationHandler
+	payoutH      *PayoutHandler
 	logger       *slog.Logger
+}
+
+// SetPayoutHandler wires the owner-payout engine so a completed return
+// settles the owner's share (Stripe Connect batch). Setter, per the house
+// pattern.
+func (h *VehicleReturnHandler) SetPayoutHandler(p *PayoutHandler) {
+	h.payoutH = p
 }
 
 // SetTicketRepository wires the support-ticket repo so a dispute opens a
@@ -672,6 +680,226 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// AdminSettleRent — POST /api/v1/admin/rents/{id}/settle
+// Body: {resolution: "close"|"payout_only"|"withhold", driver_refund_cents?, note}.
+//
+// The settlement path for rentals that never reach a clean return
+// (amendment ⑥): every terminal state must resolve to either "owner paid"
+// or "explicitly not paid, with the reason recorded".
+//
+//   - close: an admin-authored return completion. Creates (or revives) the
+//     return row with the admin-chosen driver refund — defaulting to the
+//     standard formula — and drives it through the SAME resolve→refund→
+//     payout pipeline as a normal return: driver refunded, car released,
+//     tickets resolved, owner paid, one ledger row. Nothing bespoke.
+//   - payout_only: pays the owner their share of the full amount while the
+//     rental stays open — the overdue case, where the term is exhausted
+//     (the refund formula yields $0 past term) but the car isn't back.
+//   - withhold: deliberate non-payment, note required — fraud, forfeiture,
+//     or a policy decision. Refuses if the money already moved.
+func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Request) {
+	if h.payoutH == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("PAYOUTS_DISABLED", "payout engine not configured"))
+		return
+	}
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("invalid rent id"))
+		return
+	}
+	var body struct {
+		Resolution        string `json:"resolution"`
+		DriverRefundCents *int64 `json:"driver_refund_cents"`
+		Note              string `json:"note"`
+	}
+	if err := httputil.DecodeJSON(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
+	}
+	resolution := strings.ToLower(strings.TrimSpace(body.Resolution))
+	if resolution != "close" && resolution != "payout_only" && resolution != "withhold" {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("resolution must be 'close', 'payout_only' or 'withhold'"))
+		return
+	}
+	// Settlement moves (or deliberately holds) money — the reasoning is
+	// non-optional, same bounds as dispute resolution.
+	note := strings.TrimSpace(body.Note)
+	if n := utf8.RuneCountInString(note); n < 5 || n > 500 {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("a settlement note is required (5–500 characters)"))
+		return
+	}
+
+	lr, err := h.leaseRepo.GetByID(r.Context(), leaseID)
+	if err != nil || lr == nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrLeaseRequestNotFound)
+		return
+	}
+	var paidCents int64
+	if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID); perr == nil && payment != nil {
+		paidCents = payment.Amount
+	}
+	if paidCents <= 0 {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_PAYMENT", "this rent has no recorded payment — nothing to settle"))
+		return
+	}
+
+	switch resolution {
+	case "withhold":
+		row, werr := h.payoutH.AdminWithhold(r.Context(), leaseID, lr.OwnerID, paidCents, note)
+		if werr != nil {
+			if apiErr := models.GetAPIError(werr); apiErr != nil {
+				httputil.WriteError(w, http.StatusConflict, apiErr)
+				return
+			}
+			h.logger.Error("admin settle: withhold", "error", werr, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"payout": row})
+		return
+
+	case "payout_only":
+		if existing, gerr := h.payoutH.LedgerRow(r.Context(), leaseID); gerr == nil && existing != nil {
+			switch existing.Status {
+			case models.PayoutPaid:
+				httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYOUT_STATE", "owner already paid for this rent"))
+				return
+			case models.PayoutWithheld:
+				// payout_only on a withheld row is the deliberate reversal.
+				row, rerr := h.payoutH.AdminReviveWithheld(r.Context(), existing.ID, note)
+				if rerr != nil {
+					if apiErr := models.GetAPIError(rerr); apiErr != nil {
+						httputil.WriteError(w, http.StatusConflict, apiErr)
+						return
+					}
+					h.logger.Error("admin settle: revive withheld", "error", rerr, "lease_request_id", leaseID)
+					httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+					return
+				}
+				httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"payout": row})
+				return
+			}
+		}
+		h.payoutH.SettleRentalPayout(r.Context(), leaseID, lr.OwnerID, paidCents, models.PayoutSourceAdminSettlement, &note)
+		row, gerr := h.payoutH.LedgerRow(r.Context(), leaseID)
+		if gerr != nil || row == nil {
+			h.logger.Error("admin settle: payout_only ledger read-back", "error", gerr, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"payout": row})
+		return
+	}
+
+	// ── close ──
+	if lr.Status != models.LeaseStatusPaid || lr.PickupConfirmedAt == nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETTLE_NOT_ALLOWED", "close applies to an active (paid, picked-up) rental — this rent isn't one"))
+		return
+	}
+	now := time.Now().UTC()
+	calc := models.ComputeReturnRefund(paidCents, lr.Weeks, *lr.PickupConfirmedAt, now)
+	refundCents := calc.RefundAmountCents
+	if body.DriverRefundCents != nil {
+		refundCents = *body.DriverRefundCents
+		if refundCents < 0 || refundCents > paidCents {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("driver_refund_cents must be between 0 and the paid amount"))
+			return
+		}
+	}
+
+	target, gerr := h.repo.GetByLeaseRequestID(r.Context(), leaseID)
+	if gerr != nil {
+		// Not-found is the NORMAL close case — the rental never got a
+		// return row; we author one below.
+		if models.GetAPIError(gerr) == models.ErrVehicleReturnNotFound {
+			target = nil
+		} else {
+			h.logger.Error("admin settle: load return", "error", gerr, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+	}
+	switch {
+	case target == nil:
+		target, err = h.repo.CreateForLease(r.Context(), repository.CreateForLeaseParams{
+			LeaseRequestID:    leaseID,
+			CarID:             lr.ListingID,
+			OwnerID:           lr.OwnerID,
+			DriverID:          lr.DriverID,
+			PickupConfirmedAt: *lr.PickupConfirmedAt,
+			ReturnedAt:        now,
+			RentalWeeks:       lr.Weeks,
+			PaidAmountCents:   paidCents,
+			UsedDays:          calc.UsedDays,
+			RefundAmountCents: refundCents,
+		})
+		if err != nil {
+			h.logger.Error("admin settle: create return", "error", err, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+	case target.Status == models.VehicleReturnCancelled:
+		target, err = h.repo.ReviveCancelled(r.Context(), target.ID, lr.DriverID, now, calc.UsedDays, refundCents, paidCents)
+		if err != nil {
+			if apiErr := models.GetAPIError(err); apiErr != nil {
+				httputil.WriteError(w, http.StatusConflict, apiErr)
+				return
+			}
+			h.logger.Error("admin settle: revive return", "error", err, "return_id", target.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+	case target.Status == models.VehicleReturnDriverInitiated || target.Status == models.VehicleReturnDisputed:
+		// An open return already exists — resolve THAT one (its own
+		// snapshotted refund applies; use /vehicle-returns/{id}/resolve to
+		// keep one authoritative flow for open rows).
+	default:
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETTLE_NOT_ALLOWED", "this rent's return is already settling — the refund scanner will complete it"))
+		return
+	}
+
+	resolved, err := h.repo.ResolveDispute(r.Context(), target.ID, "accept", note)
+	if err != nil {
+		if apiErr := models.GetAPIError(err); apiErr != nil {
+			httputil.WriteError(w, http.StatusConflict, apiErr)
+			return
+		}
+		h.logger.Error("admin settle: resolve", "error", err, "return_id", target.ID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if h.ticketRepo != nil {
+		if terr := h.ticketRepo.ResolveForVehicleReturn(r.Context(), resolved.ID); terr != nil {
+			h.logger.Error("admin settle: resolve tickets", "error", terr, "return_id", resolved.ID)
+		}
+	}
+	out := resolved
+	if finalized := h.issueRefund(r.Context(), resolved); finalized != nil {
+		out = finalized
+	}
+	h.broadcast("vehicle_return_owner_confirmed", out)
+
+	resp := h.buildResponse(r.Context(), out, out.OwnerID)
+	httputil.WriteJSON(w, http.StatusOK, resp)
+	h.postSystemMessage(r.Context(), out, "admin_accept_dispute", resp)
+
+	chatID := resp.ChatID
+	leaseRef := out.LeaseRequestID
+	carTitle := carTitleOr(resp.CarTitle)
+	refundLine := "No refund applies."
+	if out.RefundAmountCents > 0 {
+		refundLine = fmt.Sprintf("A refund of %s is being processed.", formatMoney(out.RefundAmountCents))
+	}
+	go h.notifHandler.Notify(out.DriverID, models.NotificationTypeLeaseRequest,
+		"Rental closed by support",
+		fmt.Sprintf("Support closed your rental of %s. %s %s", carTitle, note, refundLine),
+		chatID, &leaseRef)
+	go h.notifHandler.Notify(out.OwnerID, models.NotificationTypeLeaseRequest,
+		"Rental closed by support",
+		fmt.Sprintf("Support closed the rental of %s. %s The car is back on the market.", carTitle, note),
+		chatID, &leaseRef)
+}
+
 // ─── Refund pipeline ────────────────────────────────────────────────────────
 
 // issueRefund runs the Stripe call for a return that has reached
@@ -696,6 +924,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		resp := h.buildResponseCtx(ctx, completed, completed.OwnerID)
 		h.postSystemMessage(ctx, completed, "completed_no_refund", resp)
 		h.resolveLinkedTickets(ctx, completed)
+		h.settleOwnerPayout(ctx, completed)
 		return completed
 	}
 
@@ -741,6 +970,7 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 	resp := h.buildResponseCtx(ctx, completed, completed.OwnerID)
 	h.postSystemMessage(ctx, completed, "completed_with_refund", resp)
 	h.resolveLinkedTickets(ctx, completed)
+	h.settleOwnerPayout(ctx, completed)
 
 	chatID := resp.ChatID
 	leaseRef := completed.LeaseRequestID
@@ -754,6 +984,30 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 		chatID, &leaseRef)
 
 	return completed
+}
+
+// settleOwnerPayout hands what the driver's payment left after the refund
+// to the payout engine. kept = paid − refund; both completion paths land
+// here, so every clean return produces exactly one ledger row (the engine
+// is idempotent per lease).
+func (h *VehicleReturnHandler) settleOwnerPayout(ctx context.Context, completed *models.VehicleReturn) {
+	if h.payoutH == nil {
+		return
+	}
+	refund := completed.RefundAmountCents
+	if refund < 0 {
+		refund = 0
+	}
+	// A return an admin drove to completion is admin settlement — the
+	// ledger records who decided and why (the required resolution note).
+	source := models.PayoutSourceReturnCompleted
+	var note *string
+	if completed.DisputeResolvedBy != nil && *completed.DisputeResolvedBy == "admin" {
+		source = models.PayoutSourceAdminSettlement
+		note = completed.ResolutionNote
+	}
+	h.payoutH.SettleRentalPayout(ctx, completed.LeaseRequestID, completed.OwnerID,
+		completed.PaidAmountCents-refund, source, note)
 }
 
 // notifyRefundDelay tells the driver their refund is being processed

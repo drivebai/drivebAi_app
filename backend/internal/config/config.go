@@ -54,7 +54,13 @@ type Config struct {
 	StripeSecretKey      string
 	StripePublishableKey string
 	StripeWebhookSecret  string
-	PlatformFeeBPS       int // basis points, e.g. 500 = 5%
+	// StripeConnectWebhookSecret signs the SECOND webhook endpoint — the
+	// Connect one (account.updated etc., created with connect=true). Its
+	// own secret; the payment webhook's does not verify these events.
+	// Optional: empty means Connect webhooks are rejected (payouts still
+	// settle via the live-refresh path, just without push updates).
+	StripeConnectWebhookSecret string
+	PlatformFeeBPS             int // basis points, e.g. 500 = 5%
 
 	// Listing price constraints
 	MinWeeklyRentPrice float64 // minimum allowed weekly rent price; default 50
@@ -119,10 +125,11 @@ func Load() (*Config, error) {
 		RequirePrivateUploadSignatures: getEnv("REQUIRE_PRIVATE_UPLOAD_SIGNATURES", "") != "false" &&
 			getEnv("ENV", "development") != "development",
 
-		StripeSecretKey:      getEnv("STRIPE_SECRET_KEY", ""),
-		StripePublishableKey: getEnv("STRIPE_PUBLISHABLE_KEY", ""),
-		StripeWebhookSecret:  getEnv("STRIPE_WEBHOOK_SECRET", ""),
-		PlatformFeeBPS:       getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
+		StripeSecretKey:            getEnv("STRIPE_SECRET_KEY", ""),
+		StripePublishableKey:       getEnv("STRIPE_PUBLISHABLE_KEY", ""),
+		StripeWebhookSecret:        getEnv("STRIPE_WEBHOOK_SECRET", ""),
+		StripeConnectWebhookSecret: getEnv("STRIPE_CONNECT_WEBHOOK_SECRET", ""),
+		PlatformFeeBPS:             getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
 
 		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
 		AutoApproveCars:    getEnv("AUTO_APPROVE_CARS", "false") == "true",

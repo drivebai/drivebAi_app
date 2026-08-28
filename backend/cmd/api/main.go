@@ -249,6 +249,15 @@ func main() {
 	vehicleReturnHandler.SetTicketRepository(ticketRepo)
 	leaseHandler.SetTicketRepository(ticketRepo)
 
+	// Owner payouts (Stripe Connect, separate charges & transfers). The
+	// Connect webhook has its own signing secret — the payment webhook's
+	// secret does not verify Connect events.
+	stripeSvc.SetConnectWebhookSecret(cfg.StripeConnectWebhookSecret)
+	payoutRepo := repository.NewPayoutRepository(db)
+	payoutHandler := handlers.NewPayoutHandler(payoutRepo, leaseRepo, userRepo, ticketRepo, stripeSvc, wsHub, notifHandler, cfg.PlatformFeeBPS, logger)
+	// A completed return settles the owner's share automatically.
+	vehicleReturnHandler.SetPayoutHandler(payoutHandler)
+
 	// Purchase (buy the car) — mirrors the lease flow but with manual capture
 	// held until buyer inspection accept. See DESIGN SPEC for the state
 	// machine.
@@ -333,6 +342,9 @@ func main() {
 
 		// Stripe webhook (no auth — verified via signature)
 		r.Post("/stripe/webhook", leaseHandler.HandleWebhook)
+		// Stripe CONNECT webhook — separate endpoint, separate secret
+		// (account.updated etc. from connected accounts).
+		r.Post("/stripe/connect-webhook", payoutHandler.HandleConnectWebhook)
 
 		// Protected routes
 		r.Group(func(r chi.Router) {
@@ -363,6 +375,13 @@ func main() {
 
 			// Onboarding (signup flow)
 			r.Post("/onboarding/complete", userHandler.CompleteOnboarding)
+
+			// Owner payout account (Stripe Connect). The session endpoint
+			// backs the embedded onboarding component (iOS SDK ships in a
+			// follow-up batch — status screens consume these today).
+			r.Get("/payout-account", payoutHandler.GetPayoutAccount)
+			r.Post("/payout-account/session", payoutHandler.CreateOnboardingSession)
+			r.Get("/payout-account/payouts", payoutHandler.ListMyPayouts)
 
 			// Ratings: rate the car and/or the counterparty of a COMPLETED
 			// purchase or rental (1-5 stars, once per transaction).
@@ -617,6 +636,12 @@ func main() {
 				r.Get("/vehicle-returns", vehicleReturnHandler.AdminList)
 				r.Post("/vehicle-returns/{id}/resolve", vehicleReturnHandler.AdminResolve)
 
+				// Owner payouts — every balance with its age, plus the
+				// settlement path for rentals that never reach a clean
+				// return (close | payout_only | withhold).
+				r.Get("/payouts", payoutHandler.AdminListPayouts)
+				r.Post("/rents/{id}/settle", vehicleReturnHandler.AdminSettleRent)
+
 				// Purchase requests + rejections.
 				r.Get("/purchase-requests", purchaseHandler.AdminList)
 				r.Get("/purchase-requests/{id}", purchaseHandler.AdminGet)
@@ -722,6 +747,10 @@ func main() {
 	// Their term flags have been pre-stamped in the DB, so RE-ENABLING is
 	// safe and burst-free: uncomment the line below and redeploy.
 	// go leaseHandler.StartRentalTermScanner(workerCtx, scanInterval)
+	// Owner payouts: executes pending/retryable transfers, drains escrow
+	// when an owner becomes ready, weekly reminders on unclaimed balances,
+	// 60-day escalation tickets. Same cadence, same cheap-no-op shape.
+	go payoutHandler.StartPayoutSweep(workerCtx, scanInterval)
 
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)

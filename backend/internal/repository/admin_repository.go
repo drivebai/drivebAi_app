@@ -798,6 +798,18 @@ type AdminRentRow struct {
 	// confirmed — distinct from EndDate, which is the terminal-status
 	// updated_at the existing "Rent End Date" column shows for history.
 	RentalEndsAt *time.Time `json:"rental_ends_at,omitempty"`
+
+	// Owner-payout columns (LEFT-joined from owner_payouts, migration
+	// 000049) — "where is the owner's money" for this rent. NULL until the
+	// rent settles.
+	PayoutStatus           *string    `json:"payout_status,omitempty"`
+	PayoutSource           *string    `json:"payout_source,omitempty"`
+	PayoutOwnerAmountCents *int64     `json:"payout_owner_amount_cents,omitempty"`
+	PayoutFeeCents         *int64     `json:"payout_fee_cents,omitempty"`
+	PayoutTransferID       *string    `json:"payout_transfer_id,omitempty"`
+	PayoutNote             *string    `json:"payout_note,omitempty"`
+	PayoutPaidAt           *time.Time `json:"payout_paid_at,omitempty"`
+	PayoutCreatedAt        *time.Time `json:"payout_created_at,omitempty"`
 }
 
 type AdminRentsPage struct {
@@ -859,6 +871,7 @@ func (r *AdminRepository) ListRents(ctx context.Context, query, statusFilter str
 		JOIN users o ON o.id = lr.owner_id
 		LEFT JOIN payments p ON p.lease_request_id = lr.id
 		LEFT JOIN vehicle_returns vr ON vr.lease_request_id = lr.id
+		LEFT JOIN owner_payouts op ON op.lease_request_id = lr.id
 		%s
 		ORDER BY lr.created_at DESC
 		LIMIT $%d OFFSET $%d
@@ -915,7 +928,9 @@ const adminRentSelectCols = `
 	COALESCE(lr.rental_ends_at,
 	         CASE WHEN lr.pickup_confirmed_at IS NOT NULL
 	              THEN lr.pickup_confirmed_at + (GREATEST(lr.weeks, 1) * INTERVAL '7 days')
-	         END)
+	         END),
+	op.status, op.source, op.owner_amount_cents, op.fee_cents,
+	op.stripe_transfer_id, op.note, op.paid_at, op.created_at
 `
 
 // rowScanner is satisfied by pgx.Row and pgx.Rows; lets scanAdminRent
@@ -941,6 +956,10 @@ func scanAdminRent(s rowScanner, rent *AdminRentRow) error {
 		&rent.ReturnDisputeReason,
 		&rent.ReturnResolutionNote,
 		&rent.RentalEndsAt,
+		&rent.PayoutStatus, &rent.PayoutSource,
+		&rent.PayoutOwnerAmountCents, &rent.PayoutFeeCents,
+		&rent.PayoutTransferID, &rent.PayoutNote,
+		&rent.PayoutPaidAt, &rent.PayoutCreatedAt,
 	)
 }
 
@@ -1108,6 +1127,7 @@ func (r *AdminRepository) GetRentDetail(ctx context.Context, id uuid.UUID) (*Adm
 		JOIN users o ON o.id = lr.owner_id
 		LEFT JOIN payments p ON p.lease_request_id = lr.id
 		LEFT JOIN vehicle_returns vr ON vr.lease_request_id = lr.id
+		LEFT JOIN owner_payouts op ON op.lease_request_id = lr.id
 		WHERE lr.id = $1
 	`, adminRentSelectCols), id)
 	if err := scanAdminRent(row, &rent); err != nil {
