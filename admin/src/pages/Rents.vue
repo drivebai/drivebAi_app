@@ -177,6 +177,91 @@ function startResolve(r: AdminRent, resolution: 'accept' | 'reject') {
   resolutionError.value = null
 }
 
+// ---- Owner payout (Stripe Connect batch) ----
+// Where the owner's money is for a settled rent, plus the settlement path
+// for rents that never reach a clean return: close (author the completion),
+// payout_only (pay the owner, rental stays open — the overdue case), and
+// withhold (deliberately not pay, reason recorded). payout_only on a
+// withheld rent reverses the withhold.
+function payoutLabel(r: AdminRent): string {
+  switch (r.payout_status) {
+    case 'awaiting_onboarding': return 'Awaiting owner setup'
+    case 'pending':             return 'Sending'
+    case 'paid':                return 'Paid'
+    case 'failed':              return 'Failed — retrying'
+    case 'withheld':            return 'Withheld'
+    default:                    return '—'
+  }
+}
+function payoutTone(r: AdminRent): 'success' | 'danger' | 'warning' | 'neutral' {
+  switch (r.payout_status) {
+    case 'paid':     return 'success'
+    case 'failed':   return 'danger'
+    case 'withheld': return 'neutral'
+    default:         return 'warning'
+  }
+}
+// Settling is offered for active paid rents (close/payout_only/withhold)
+// and for any rent with an unpaid ledger row (withhold / reversal). The
+// server guards every state transition — this only decides visibility.
+function canSettle(r: AdminRent): boolean {
+  if (r.payout_status === 'paid') return false
+  return r.status === 'paid' || !!r.payout_status
+}
+
+const settling = ref<AdminRent | null>(null)
+const settleResolution = ref<'close' | 'payout_only' | 'withhold'>('close')
+const settleRefundDollars = ref('') // empty = standard formula
+const settleNote = ref('')
+const settleError = ref<string | null>(null)
+const savingSettle = ref(false)
+
+function startSettle(r: AdminRent) {
+  settling.value = r
+  // A withheld rent's natural next action is the reversal.
+  settleResolution.value = r.payout_status === 'withheld' ? 'payout_only' : 'close'
+  settleRefundDollars.value = ''
+  settleNote.value = ''
+  settleError.value = null
+}
+
+async function confirmSettle() {
+  const target = settling.value
+  if (!target || savingSettle.value) return
+  const note = settleNote.value.trim()
+  if (note.length < 5) {
+    settleError.value = 'A note is required — settlement decisions are recorded with their reasoning.'
+    return
+  }
+  const body: { resolution: 'close' | 'payout_only' | 'withhold'; driver_refund_cents?: number; note: string } = {
+    resolution: settleResolution.value, note,
+  }
+  if (settleResolution.value === 'close' && settleRefundDollars.value.trim() !== '') {
+    const dollars = Number(settleRefundDollars.value)
+    if (!Number.isFinite(dollars) || dollars < 0) {
+      settleError.value = 'Driver refund must be a non-negative dollar amount.'
+      return
+    }
+    body.driver_refund_cents = Math.round(dollars * 100)
+  }
+  savingSettle.value = true
+  settleError.value = null
+  try {
+    await adminApi.settleRent(target.id, body)
+    toast.success(
+      settleResolution.value === 'close' ? 'Rent closed — refund, car release and owner payout are settling'
+      : settleResolution.value === 'payout_only' ? 'Owner payout released — the rental itself stays open'
+      : 'Payout withheld — the reason is recorded on the ledger')
+    settling.value = null
+    detail.value = null
+    load()
+  } catch (e: any) {
+    settleError.value = e?.message || 'Failed to settle the rent'
+  } finally {
+    savingSettle.value = false
+  }
+}
+
 async function confirmResolve() {
   const target = resolving.value
   if (!target || savingResolution.value) return
@@ -354,6 +439,29 @@ async function confirmResolve() {
       <h4 class="section">Vehicle Return</h4>
       <p class="muted">No return on file for this rental.</p>
     </template>
+
+    <h4 class="section">Owner payout</h4>
+    <template v-if="detail.payout_status">
+      <dl class="kv">
+        <dt>Status</dt><dd><StatusBadge :label="payoutLabel(detail)" :tone="payoutTone(detail)" /></dd>
+        <dt>Owner amount</dt><dd><strong>{{ fmtCents(detail.payout_owner_amount_cents, detail.currency) }}</strong></dd>
+        <dt>Platform fee</dt><dd>{{ fmtCents(detail.payout_fee_cents, detail.currency) }}</dd>
+        <dt>Source</dt><dd>{{ detail.payout_source === 'admin_settlement' ? 'Admin settlement' : 'Return completed' }}</dd>
+        <template v-if="detail.payout_paid_at">
+          <dt>Paid</dt><dd>{{ fmtDateTime(detail.payout_paid_at) }}</dd>
+        </template>
+        <template v-if="detail.payout_transfer_id">
+          <dt>Stripe transfer</dt><dd>{{ detail.payout_transfer_id }}</dd>
+        </template>
+        <template v-if="detail.payout_note">
+          <dt>Note</dt><dd>{{ detail.payout_note }}</dd>
+        </template>
+      </dl>
+    </template>
+    <p v-else class="muted">Not settled yet — the owner's share moves when the rent settles (return completed or an admin settlement).</p>
+    <div v-if="canSettle(detail)" class="resolve-actions">
+      <button class="secondary" @click="startSettle(detail)">Settle rent…</button>
+    </div>
   </Drawer>
 
   <!-- Focused return dialog: a tiny modal so admins can scan return state
@@ -409,6 +517,76 @@ async function confirmResolve() {
             <button class="primary" @click="startResolve(returnFocus, 'accept')">Accept return…</button>
             <button class="danger" @click="startResolve(returnFocus, 'reject')">Reject dispute…</button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settle-rent modal (Stripe Connect batch): resolution choice + required
+       note. Every terminal state of a rental resolves to either "owner paid"
+       or "explicitly not paid, with the reason recorded". -->
+  <div v-if="settling" class="modal-overlay" @click.self="!savingSettle && (settling = null)">
+    <div class="modal" role="dialog" aria-labelledby="settleTitle">
+      <header>
+        <h2 id="settleTitle">Settle — {{ settling.car_title }} {{ settling.car_year }}</h2>
+        <button class="ghost close" :disabled="savingSettle" @click="settling = null" aria-label="Close">×</button>
+      </header>
+      <div class="modal-body">
+        <div class="settle-options">
+          <label class="settle-option">
+            <input type="radio" value="close" v-model="settleResolution" :disabled="savingSettle" />
+            <span>
+              <strong>Close the rental</strong>
+              <em>Author the return completion: driver refunded (standard formula unless overridden below), car back on the market, owner paid their share.</em>
+            </span>
+          </label>
+          <label class="settle-option">
+            <input type="radio" value="payout_only" v-model="settleResolution" :disabled="savingSettle" />
+            <span>
+              <strong>Pay the owner only</strong>
+              <em>The rental stays open (e.g. overdue — term exhausted, car not back). {{ settling.payout_status === 'withheld' ? 'On this withheld rent, this REVERSES the withhold and releases the payout.' : 'Owner receives their share of the full paid amount.' }}</em>
+            </span>
+          </label>
+          <label class="settle-option">
+            <input type="radio" value="withhold" v-model="settleResolution" :disabled="savingSettle" />
+            <span>
+              <strong>Withhold the payout</strong>
+              <em>Deliberately do not pay the owner (fraud, forfeiture, policy). The owner is notified with your reason. Reversible later via "Pay the owner only".</em>
+            </span>
+          </label>
+        </div>
+        <label v-if="settleResolution === 'close'" class="resolve-label">
+          Driver refund in dollars (leave empty for the standard formula)
+          <input
+            v-model="settleRefundDollars"
+            type="number" min="0" step="0.01"
+            :disabled="savingSettle"
+            placeholder="e.g. 0 for no refund"
+          />
+        </label>
+        <label class="resolve-label">
+          Note (required — recorded on the ledger{{ settleResolution === 'withhold' ? ', sent to the owner' : '' }})
+          <textarea
+            v-model="settleNote"
+            rows="3"
+            maxlength="500"
+            :disabled="savingSettle"
+            placeholder="e.g. Overdue-escalated; owner recovered the car offline on 8/25."
+          ></textarea>
+        </label>
+        <p v-if="settleError" class="danger-text">{{ settleError }}</p>
+        <div class="resolve-actions">
+          <button class="secondary" :disabled="savingSettle" @click="settling = null">Cancel</button>
+          <button
+            :class="settleResolution === 'withhold' ? 'danger' : 'primary'"
+            :disabled="savingSettle"
+            @click="confirmSettle"
+          >
+            {{ savingSettle ? 'Settling…'
+              : settleResolution === 'close' ? 'Close rental'
+              : settleResolution === 'payout_only' ? (settling.payout_status === 'withheld' ? 'Reverse withhold & pay' : 'Pay owner')
+              : 'Withhold payout' }}
+          </button>
         </div>
       </div>
     </div>
@@ -511,6 +689,18 @@ async function confirmResolve() {
 .modal-body {
   padding: 16px 18px;
   overflow-y: auto;
+}
+
+/* Settle rent */
+.settle-options { display: flex; flex-direction: column; gap: 10px; }
+.settle-option { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.settle-option input { margin-top: 3px; }
+.settle-option span { display: block; font-size: 13px; }
+.settle-option em { display: block; font-style: normal; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+.resolve-label input {
+  display: block; width: 100%; margin-top: 6px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 14px; background: var(--bg, #fff); color: var(--text, #111);
 }
 
 /* Dispute resolution */

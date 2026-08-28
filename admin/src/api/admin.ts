@@ -4,7 +4,7 @@
 import { api, qs } from './client'
 import type {
   AdminUser, AdminUserDocument, AdminCar, AdminCarDetail, AdminCarDocument, AdminChat, AdminMessage,
-  AdminRent, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
+  AdminRent, AdminPayout, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
   AdminTicket, AdminTicketsPage,
   PurchaseRequest, PurchaseRequestDetail, PurchaseRejection, PurchaseBillOfSale,
 } from './types'
@@ -146,6 +146,22 @@ export const adminApi = {
    */
   resolveVehicleReturn: (returnId: string, resolution: 'accept' | 'reject', note: string) =>
     api.post<unknown>(`${BASE}/vehicle-returns/${returnId}/resolve`, { resolution, note }),
+
+  // ---- Owner payouts (Stripe Connect) ----
+  /** Every owner balance with its age, oldest first. Optional status filter. */
+  listPayouts: (status?: string) =>
+    api.get<{ payouts: AdminPayout[] }>(`${BASE}/payouts${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  /**
+   * Settle a rent that never reached a clean return. Keys on the RENT id.
+   * close = author the return completion (driver refunded per
+   * driver_refund_cents — omitted means the standard formula — car
+   * released, owner paid). payout_only = pay the owner while the rental
+   * stays open (the overdue case). withhold = deliberately not pay, reason
+   * required; payout_only on a withheld rent reverses the withhold. The
+   * note is required (5–500 chars). 409 when the rent is already settled.
+   */
+  settleRent: (rentId: string, body: { resolution: 'close' | 'payout_only' | 'withhold'; driver_refund_cents?: number; note: string }) =>
+    api.post<unknown>(`${BASE}/rents/${rentId}/settle`, body),
 
   // ---- Support ----
   listSupportChats: () => api.get<{ chats: AdminSupportChat[] }>(`${BASE}/support/chats`),

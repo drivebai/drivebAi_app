@@ -16,6 +16,7 @@ const items = [
   { to: '/vehicles',  label: 'Vehicles',  icon: 'car' },
   { to: '/chats',     label: 'Chats',     icon: 'chat' },
   { to: '/rents',     label: 'Rents',     icon: 'rent' },
+  { to: '/payouts',   label: 'Payouts',   icon: 'purchase' },
   { to: '/support',   label: 'Support',   icon: 'support' },
   { to: '/tickets',   label: 'Tickets',   icon: 'ticket' },
   { to: '/accidents', label: 'Accidents', icon: 'accident' },

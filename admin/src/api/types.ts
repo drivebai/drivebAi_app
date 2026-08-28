@@ -215,6 +215,50 @@ export interface AdminRent {
    * from end_date, which is the terminal-status timestamp for history rows.
    */
   rental_ends_at?: string | null
+
+  // ---- Owner payout fields (optional; LEFT-joined from owner_payouts) ----
+  // "Where is the owner's money" for this rent. Null until the rent
+  // settles (return completed or admin settlement).
+  payout_status?: 'awaiting_onboarding' | 'pending' | 'paid' | 'failed' | 'withheld' | null
+  payout_source?: 'return_completed' | 'admin_settlement' | null
+  payout_owner_amount_cents?: number | null
+  payout_fee_cents?: number | null
+  payout_transfer_id?: string | null
+  /** Settlement/withhold reasoning — recorded, deliberate decisions only. */
+  payout_note?: string | null
+  payout_paid_at?: string | null
+  payout_created_at?: string | null
+}
+
+/**
+ * One owner-payout ledger row as the admin payouts view sees it: the split,
+ * where the money currently is, and — for unpaid balances — how long it has
+ * been waiting (age_days) and what nudges have gone out.
+ */
+export interface AdminPayout {
+  id: string
+  lease_request_id: string
+  owner_id: string
+  gross_kept_cents: number
+  fee_bps: number
+  fee_cents: number
+  owner_amount_cents: number
+  currency: string
+  status: 'awaiting_onboarding' | 'pending' | 'paid' | 'failed' | 'withheld'
+  source: 'return_completed' | 'admin_settlement'
+  stripe_transfer_id?: string | null
+  failure_reason?: string | null
+  note?: string | null
+  reminder_count: number
+  last_reminder_at?: string | null
+  escalated_at?: string | null
+  paid_at?: string | null
+  created_at: string
+  updated_at: string
+  owner_name: string
+  owner_email: string
+  car_title: string
+  age_days: number
 }
 
 export interface AdminSupportChat {

@@ -19,6 +19,7 @@ const router = createRouter({
         { path: 'vehicles',  name: 'vehicles',  component: () => import('../pages/Vehicles.vue') },
         { path: 'chats',     name: 'chats',     component: () => import('../pages/Chats.vue') },
         { path: 'rents',     name: 'rents',     component: () => import('../pages/Rents.vue') },
+        { path: 'payouts',   name: 'payouts',   component: () => import('../pages/Payouts.vue') },
         { path: 'support',   name: 'support',   component: () => import('../pages/Support.vue') },
         { path: 'tickets',   name: 'tickets',   component: () => import('../pages/Tickets.vue') },
         { path: 'accidents', name: 'accidents', component: () => import('../pages/Accidents.vue') },
