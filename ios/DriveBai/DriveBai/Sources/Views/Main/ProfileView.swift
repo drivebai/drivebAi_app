@@ -59,6 +59,7 @@ struct AuthenticatedProfileView: View {
     // wearing chevrons). Now they open real screens.
     @State private var showNotificationSettings = false
     @State private var showPrivacySecurity = false
+    @State private var showDeleteAccount = false
     /// Set when a replayed tip was armed for its own screen rather than played here.
     @State private var armedTourNotice: String?
 
@@ -205,6 +206,17 @@ struct AuthenticatedProfileView: View {
                 }
                 .padding(.top, 16)
 
+                // Delete account (App Review 5.1.1(v)) — a REAL deletion,
+                // not deactivation; two-step confirm inside the sheet.
+                Button(action: { showDeleteAccount = true }) {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("Delete account")
+                    }
+                    .foregroundColor(.red)
+                }
+                .padding(.top, 8)
+
                 Spacer(minLength: 32)
             }
         }
@@ -213,6 +225,10 @@ struct AuthenticatedProfileView: View {
         // an admin decline without the user opening the sheet first.
         .task {
             await authStore.fetchDocuments()
+        }
+        .sheet(isPresented: $showDeleteAccount) {
+            DeleteAccountSheet()
+                .environmentObject(authStore)
         }
         .sheet(isPresented: $showSupportHub) {
             SupportHubView().environmentObject(supportInboxStore)
@@ -741,6 +757,131 @@ private struct DriverDocsRequiredSheet: View {
             if document.type != .driversLicense {
                 addedOptionalTypes.remove(document.type)
             }
+        }
+    }
+}
+
+// MARK: - Delete account (App Review 5.1.1(v))
+
+/// Two-step, fully in-app account deletion. Step 1 states exactly what is
+/// lost and that it is permanent; step 2 requires typing DELETE (plus the
+/// password, for accounts that have one) before the destructive call. On
+/// success the store clears the session and the app lands on the welcome
+/// screen. Lives in this file deliberately — new Swift files need manual
+/// pbxproj registration.
+struct DeleteAccountSheet: View {
+    @EnvironmentObject private var authStore: AuthStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var confirming = false // step 1 → step 2
+    @State private var typedConfirm = ""
+    @State private var password = ""
+    @State private var isDeleting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("This is permanent", systemImage: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                        .foregroundColor(.red)
+
+                    Text("Deleting your account:")
+                        .font(.subheadline.weight(.semibold))
+                    VStack(alignment: .leading, spacing: 8) {
+                        bullet("Removes your profile, name, email, and phone number from DriveBai")
+                        bullet("Permanently deletes your uploaded identity documents")
+                        bullet("Removes your car listings from the marketplace")
+                        bullet("Closes any open rental requests (the other party is notified)")
+                        bullet("Signs you out everywhere — this cannot be undone")
+                    }
+                    Text("Rental and payment records are kept for bookkeeping, attributed to “Deleted User”. If you have an active rental or a payment in progress, you'll be asked to finish it first — every step can be completed right here in the app.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+
+                    if confirming {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Type DELETE to confirm")
+                                .font(.subheadline.weight(.semibold))
+                            TextField("DELETE", text: $typedConfirm)
+                                .textInputAutocapitalization(.characters)
+                                .autocorrectionDisabled()
+                                .textFieldStyle(.roundedBorder)
+
+                            Text("Account password")
+                                .font(.subheadline.weight(.semibold))
+                            SecureField("Leave empty if you sign in with email codes", text: $password)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        .padding(.top, 4)
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Button(action: primaryTapped) {
+                        HStack {
+                            if isDeleting { ProgressView().tint(.white) }
+                            Text(confirming ? "Delete my account" : "Continue")
+                                .font(.headline)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(canSubmit ? Color.red : Color.red.opacity(0.4))
+                        .cornerRadius(12)
+                    }
+                    .disabled(!canSubmit || isDeleting)
+
+                    Button("Cancel") { dismiss() }
+                        .frame(maxWidth: .infinity)
+                        .disabled(isDeleting)
+                }
+                .padding(20)
+            }
+            .navigationTitle("Delete account")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .interactiveDismissDisabled(isDeleting)
+    }
+
+    private var canSubmit: Bool {
+        !confirming || typedConfirm.trimmingCharacters(in: .whitespaces).uppercased() == "DELETE"
+    }
+
+    private func bullet(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("•")
+            Text(text)
+        }
+        .font(.subheadline)
+    }
+
+    private func primaryTapped() {
+        if !confirming {
+            confirming = true
+            return
+        }
+        isDeleting = true
+        errorMessage = nil
+        Task {
+            do {
+                try await authStore.deleteAccount(
+                    confirm: typedConfirm.trimmingCharacters(in: .whitespaces),
+                    password: password
+                )
+                // Session is cleared — the app is already on the welcome
+                // screen underneath; just close the sheet.
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isDeleting = false
         }
     }
 }

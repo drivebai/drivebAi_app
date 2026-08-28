@@ -113,6 +113,7 @@ protocol APIClientProtocol {
     func resetPassword(request: ResetPasswordRequest) async throws -> MessageResponse
     func logout(request: RefreshTokenRequest) async throws -> MessageResponse
     func resendOTP(request: ResendOTPRequest) async throws -> MessageResponse
+    func deleteAccount(confirm: String, password: String) async throws -> OkResponse
 
     /// POST /auth/check-email — used by signup to show "email already in
     /// use" inline. Returns `true` if the email is NOT registered yet (i.e.
@@ -431,6 +432,21 @@ final class APIClient: APIClientProtocol {
 
     func deleteDocument(id: UUID) async throws -> MessageResponse {
         try await delete(path: "documents/\(id.uuidString)", authenticated: true)
+    }
+
+    // MARK: - Account deletion (App Review 5.1.1(v))
+
+    /// DELETE /users/me — permanent self-service account deletion. The
+    /// server requires the literal word DELETE (typed by the user) and the
+    /// account password when one exists; passwordless email-code accounts
+    /// send an empty password. 409 DELETION_BLOCKED carries human-readable,
+    /// in-app-completable steps in its message.
+    func deleteAccount(confirm: String, password: String) async throws -> OkResponse {
+        try await deleteWithBody(
+            path: "users/me",
+            body: DeleteAccountRequest(confirm: confirm, password: password),
+            authenticated: true
+        )
     }
 
     // MARK: - Profile Photo Methods
@@ -1003,6 +1019,13 @@ final class APIClient: APIClientProtocol {
     }
 
     // MARK: - Private Request Methods
+
+    // MARK: - Account deletion wire types
+
+    struct DeleteAccountRequest: Codable {
+        let confirm: String
+        let password: String
+    }
 
     private func post<T: Encodable, R: Decodable>(
         path: String,

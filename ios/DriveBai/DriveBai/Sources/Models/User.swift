@@ -241,6 +241,11 @@ struct UpdateProfileRequest: Codable {
 
 // MARK: - API Responses
 
+/// Bare `{ "ok": true }` acknowledgements (e.g. account deletion).
+struct OkResponse: Codable {
+    let ok: Bool
+}
+
 struct MessageResponse: Codable {
     let message: String
 }

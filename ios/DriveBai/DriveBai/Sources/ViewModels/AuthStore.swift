@@ -201,6 +201,20 @@ final class AuthStore: ObservableObject {
         }
     }
 
+    // MARK: - Account deletion (App Review 5.1.1(v))
+
+    /// Permanently deletes the signed-in account, then clears the local
+    /// session the same way logout does. Throws with a user-readable message
+    /// when the server refuses (wrong password / typed word, or in-flight
+    /// transactions listed step by step in the message).
+    func deleteAccount(confirm: String, password: String) async throws {
+        _ = try await apiClient.deleteAccount(confirm: confirm, password: password)
+        // Server has tombstoned the account and revoked every token —
+        // logout() is best-effort against the API and always clears local
+        // state, landing on the welcome screen.
+        await logout()
+    }
+
     // MARK: - Logout
 
     func logout() async {
