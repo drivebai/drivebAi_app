@@ -209,6 +209,9 @@ func main() {
 	keyHandoverRepo := repository.NewKeyHandoverRepository(db)
 	pickupDeadline := time.Duration(cfg.PickupDeadlineMinutes) * time.Minute
 	leaseHandler := handlers.NewLeaseRequestHandler(leaseRepo, carRepo, carDocRepo, userRepo, chatRepo, docRepo, sharedDocsRepo, keyHandoverRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, pickupDeadline, logger)
+	// Self-service account deletion (App Review 5.1.1(v)) — reuses the
+	// admin tombstone path plus the lifecycle-aware orchestration.
+	userHandler.SetAccountDeletionDependencies(adminRepo, leaseRepo, carRepo, stripeSvc, wsHub, blockList, notifHandler)
 	todayHandler := handlers.NewTodayHandler(leaseRepo, userRepo, logger)
 	accidentRepo := repository.NewAccidentRepository(db)
 	adminHandler := handlers.NewAdminHandler(adminRepo, userRepo, wsHub, privateURLSigner, logger)
@@ -353,6 +356,10 @@ func main() {
 			r.Get("/documents", userHandler.GetDocuments)
 			r.Post("/documents/{type}", userHandler.UploadDocument)
 			r.Delete("/documents/{id}", userHandler.DeleteDocument)
+
+			// Self-service account deletion (App Review 5.1.1(v)). Acts on
+			// the CALLER only — no id parameter by design.
+			r.Delete("/users/me", userHandler.DeleteAccount)
 
 			// Onboarding (signup flow)
 			r.Post("/onboarding/complete", userHandler.CompleteOnboarding)

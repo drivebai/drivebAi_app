@@ -30,6 +30,9 @@ type UserHandler struct {
 	// document responses. Wired via SetURLSigner (the established setter
 	// pattern); nil degrades to unsigned relative paths — the dev config.
 	urlSigner *PrivateURLSigner
+	// deletionDeps carries the self-service account-deletion collaborators
+	// (App Review 5.1.1(v)); wired via SetAccountDeletionDependencies.
+	deletionDeps *accountDeletionDeps
 }
 
 // SetURLSigner wires private-URL signing for document responses. Setter,

@@ -281,3 +281,36 @@ func (o *LoginOTP) IsConsumed() bool {
 func (o *LoginOTP) IsLocked() bool {
 	return o.Attempts >= LoginOTPMaxAttempts
 }
+
+// ─── Self-service account deletion (App Review 5.1.1(v)) ────────────────────
+
+// AccountDeletionBlocker is one reason the account cannot be deleted RIGHT
+// NOW, with enough context for the app to tell the user exactly what to
+// finish themselves — Apple accepts confirmation steps, never "contact
+// support".
+type AccountDeletionBlocker struct {
+	// Kind: awaiting_pickup | active_rental_driver | active_rental_owner |
+	// purchase_in_flight
+	Kind     string `json:"kind"`
+	CarTitle string `json:"car_title"`
+	// Detail is the user-facing sentence, including the in-app exit.
+	Detail string `json:"detail"`
+}
+
+// DeleteAccountBody confirms intent. Confirm must be the literal word
+// DELETE (typed by the user); Password is additionally required whenever
+// the account has one — passwordless (email-code) accounts confirm with the
+// word alone.
+type DeleteAccountBody struct {
+	Confirm  string `json:"confirm"`
+	Password string `json:"password"`
+}
+
+const (
+	// ErrCodeDeletionBlocked: in-flight money or a car that is physically
+	// out. The Details map carries the blocker list under "blockers".
+	ErrCodeDeletionBlocked = "DELETION_BLOCKED"
+	// ErrCodeInvalidDeleteConfirm: the confirmation word or password was
+	// wrong — nothing was deleted.
+	ErrCodeInvalidDeleteConfirm = "INVALID_DELETE_CONFIRMATION"
+)
