@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/stripe/stripe-go/v81/webhook"
 )
@@ -111,8 +112,13 @@ func (s *Service) CreateConnectedAccount(email, userID string) (*ConnectedAccoun
 	params.Set("metadata[user_id]", userID)
 
 	var acct ConnectedAccount
-	// Idempotent on the user: a double-tap can't mint two accounts.
-	if err := s.postFormWithIdem("/v1/accounts", params, "connect-acct-"+userID, &acct); err != nil {
+	// Idempotent per user within a 5-minute bucket: a double-tap can't
+	// mint two accounts, but a PERMANENTLY stable key would replay a
+	// deleted/rejected account's id from Stripe's 24h idempotency cache
+	// when the owner legitimately restarts setup (found in E2E testing —
+	// the replayed dead account 400s every account_session after it).
+	idemKey := fmt.Sprintf("connect-acct-%s-%d", userID, time.Now().Unix()/300)
+	if err := s.postFormWithIdem("/v1/accounts", params, idemKey, &acct); err != nil {
 		return nil, err
 	}
 	return &acct, nil
@@ -158,7 +164,8 @@ type Transfer struct {
 // connected account. source_transaction ties the transfer to the original
 // charge (availability rides the charge's settlement; amount must not
 // exceed the charge — always true here since owner_share ≤ kept ≤ charge).
-// The stable idempotency key makes scanner retries safe.
+// Callers pass a PER-ATTEMPT idempotency key and rely on
+// FindTransferByGroup reconciliation for cross-attempt double-pay safety.
 func (s *Service) CreateTransfer(accountID string, amountCents int64, currency, sourceChargeID, transferGroup, idempotencyKey string) (*Transfer, error) {
 	params := url.Values{}
 	params.Set("destination", accountID)
@@ -176,6 +183,25 @@ func (s *Service) CreateTransfer(accountID string, amountCents int64, currency, 
 		return nil, err
 	}
 	return &tr, nil
+}
+
+// FindTransferByGroup returns the transfer already created for a group, if
+// any. The payout engine checks this BEFORE creating a transfer —
+// reconciliation-first is what makes retries double-pay-safe (a stable
+// idempotency key cannot be: Stripe caches ERROR responses under the key
+// for 24h, so one transient 400 would poison every retry — hit in E2E via
+// the payouts_enabled/transfers-capability activation race).
+func (s *Service) FindTransferByGroup(transferGroup string) (*Transfer, error) {
+	var list struct {
+		Data []Transfer `json:"data"`
+	}
+	if err := s.getJSON("/v1/transfers?limit=1&transfer_group="+url.QueryEscape(transferGroup), &list); err != nil {
+		return nil, err
+	}
+	if len(list.Data) == 0 {
+		return nil, nil
+	}
+	return &list.Data[0], nil
 }
 
 // GetLatestChargeID resolves the charge behind a PaymentIntent, for

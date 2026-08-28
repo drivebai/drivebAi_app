@@ -334,6 +334,18 @@ func (r *PayoutRepository) SetStripeAccount(ctx context.Context, userID uuid.UUI
 	return err
 }
 
+// ClearStripeAccount forgets a connected account that no longer exists at
+// Stripe (deleted/rejected-and-removed) so the owner can start over.
+// Guarded on the exact stale id — never clears a fresher account written
+// by a concurrent request.
+func (r *PayoutRepository) ClearStripeAccount(ctx context.Context, userID uuid.UUID, staleAccountID string) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE users SET stripe_account_id = NULL, payout_status = 'none',
+		       payout_requirements = NULL, payout_status_updated_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND stripe_account_id = $2`, userID, staleAccountID)
+	return err
+}
+
 // UpdatePayoutStatus mirrors the account state locally. requirementsJSON may
 // be nil.
 func (r *PayoutRepository) UpdatePayoutStatus(ctx context.Context, accountID string, status models.UserPayoutStatus, requirementsJSON []byte) (uuid.UUID, models.UserPayoutStatus, error) {

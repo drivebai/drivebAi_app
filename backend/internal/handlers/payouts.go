@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,6 +104,30 @@ func (h *PayoutHandler) CreateOnboardingSession(w http.ResponseWriter, r *http.R
 	}
 
 	sess, err := h.stripe.CreateAccountSession(*accountID)
+	if err != nil && strings.Contains(err.Error(), "resource_missing") {
+		// The stored account no longer exists at Stripe (deleted or
+		// rejected-and-removed). Without recovery this dead-ends the owner
+		// forever (E2E finding) — forget it and start a fresh account.
+		h.logger.Warn("payout: stored account gone at Stripe — recreating", "stale_account", *accountID, "user_id", userID)
+		if cerr := h.payoutRepo.ClearStripeAccount(r.Context(), userID, *accountID); cerr != nil {
+			h.logger.Error("payout: clear stale account", "error", cerr, "user_id", userID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		acct, cerr := h.stripe.CreateConnectedAccount(user.Email, userID.String())
+		if cerr != nil {
+			h.logger.Error("payout: recreate connected account", "error", cerr, "user_id", userID)
+			httputil.WriteError(w, http.StatusBadGateway, models.NewAPIError("STRIPE_ERROR", "Couldn't start payout setup — try again in a moment"))
+			return
+		}
+		if serr := h.payoutRepo.SetStripeAccount(r.Context(), userID, acct.ID); serr != nil {
+			h.logger.Error("payout: store recreated account id", "error", serr, "user_id", userID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		accountID = &acct.ID
+		sess, err = h.stripe.CreateAccountSession(*accountID)
+	}
 	if err != nil {
 		h.logger.Error("payout: create account session", "error", err, "user_id", userID)
 		httputil.WriteError(w, http.StatusBadGateway, models.NewAPIError("STRIPE_ERROR", "Couldn't start payout setup — try again in a moment"))
@@ -195,9 +220,14 @@ func (h *PayoutHandler) ListMyPayouts(w http.ResponseWriter, r *http.Request) {
 // ─── Status mapping (pure — unit-tested) ────────────────────────────────────
 
 // mapAccountStatus folds the account object into the coarse status the app
-// renders. Order matters: restriction beats everything, then the
-// action-needed states, then readiness.
+// renders. Order matters: never-submitted beats everything (a FRESH account
+// already carries disabled_reason=requirements.past_due, and "one more
+// thing is needed" is the wrong first impression — E2E finding), then
+// restriction, then the action-needed states, then readiness.
 func mapAccountStatus(acct *stripeService.ConnectedAccount) models.UserPayoutStatus {
+	if !acct.DetailsSubmitted && !acct.PayoutsEnabled {
+		return models.PayoutAccountOnboarding
+	}
 	r := acct.Requirements
 	if r.DisabledReason != nil && *r.DisabledReason != "" {
 		switch {
@@ -404,6 +434,25 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 		return
 	}
 
+	// Reconciliation first: if a transfer for this lease already exists
+	// (crash between transfer and MarkPaid, or any ambiguity), adopt it —
+	// never create a second one. This, not the idempotency key, is the
+	// double-pay guard: Stripe caches ERROR responses under an idempotency
+	// key for 24h, so a stable key would replay one transient failure
+	// forever (observed in E2E).
+	transferGroup := "lease-" + row.LeaseRequestID.String()
+	if existing, ferr := h.stripe.FindTransferByGroup(transferGroup); ferr == nil && existing != nil {
+		h.logger.Info("payout: adopting existing transfer", "payout_id", row.ID, "transfer_id", existing.ID)
+		if paid, merr := h.payoutRepo.MarkPaid(ctx, row.ID, existing.ID, *accountID); merr == nil {
+			leaseRef := paid.LeaseRequestID
+			go h.notifHandler.Notify(paid.OwnerID, models.NotificationTypePayment,
+				fmt.Sprintf("%s sent to your bank", formatMoney(paid.OwnerAmountCents)),
+				fmt.Sprintf("Your rental payout of %s is on its way (platform fee %s).", formatMoney(paid.OwnerAmountCents), formatMoney(paid.FeeCents)),
+				nil, &leaseRef)
+		}
+		return
+	}
+
 	// source_transaction: ride the original charge's settlement.
 	sourceCharge := ""
 	if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
@@ -414,9 +463,13 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 		}
 	}
 
-	idemKey := "payout-" + row.LeaseRequestID.String()
+	// Per-attempt idempotency: updated_at changes on every MarkFailed, so
+	// each retry gets a fresh key while any single attempt stays
+	// double-send-safe. The reconciliation above catches the crashed
+	//-after-success case a varying key alone could not.
+	idemKey := fmt.Sprintf("payout-%s-%d", row.ID, row.UpdatedAt.Unix())
 	tr, err := h.stripe.CreateTransfer(*accountID, row.OwnerAmountCents, row.Currency,
-		sourceCharge, "lease-"+row.LeaseRequestID.String(), idemKey)
+		sourceCharge, transferGroup, idemKey)
 	if err != nil {
 		h.logger.Error("payout: transfer failed", "error", err, "payout_id", row.ID)
 		if merr := h.payoutRepo.MarkFailed(ctx, row.ID, err.Error()); merr != nil {
@@ -426,8 +479,8 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	}
 	paid, err := h.payoutRepo.MarkPaid(ctx, row.ID, tr.ID, *accountID)
 	if err != nil {
-		// The transfer DID land; the stable idempotency key makes the next
-		// sweep's replay a no-op at Stripe, and MarkPaid will then succeed.
+		// The transfer DID land; the next sweep's FindTransferByGroup
+		// reconciliation adopts it and MarkPaid then succeeds.
 		h.logger.Error("payout: transfer landed but MarkPaid failed — sweep will reconcile", "error", err, "payout_id", row.ID, "transfer_id", tr.ID)
 		return
 	}
@@ -456,7 +509,12 @@ func (h *PayoutHandler) executeAwaitingForOwner(ctx context.Context, ownerID uui
 
 // ─── Sweep scanner ──────────────────────────────────────────────────────────
 
-const payoutFailedRetryAfter = 10 * time.Minute
+// payoutFailedRetryAfter matches the return-refund scanner's 2-minute
+// staleness. It matters on the very first payout: Stripe can report
+// payouts_enabled seconds before the transfers capability finishes
+// activating (observed in E2E — insufficient_capabilities_for_transfer),
+// and the sweep retry is the designed recovery for that race.
+const payoutFailedRetryAfter = 2 * time.Minute
 
 // StartPayoutSweep retries failed transfers, executes rows whose owner
 // became ready, sends escrow reminders on the weekly cadence, and opens ONE
