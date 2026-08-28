@@ -246,6 +246,102 @@ struct OkResponse: Codable {
     let ok: Bool
 }
 
+// MARK: - Owner payouts (Stripe Connect)
+
+/// Coarse payout-account state the app renders from. Decodes unknown future
+/// statuses as `.none` rather than failing the whole response.
+enum PayoutAccountStatus: String, Codable {
+    case none
+    case onboarding
+    case pendingVerification = "pending_verification"
+    case actionNeeded = "action_needed"
+    case ready
+    case restricted
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PayoutAccountStatus(rawValue: raw) ?? .none
+    }
+}
+
+struct PayoutEarnings: Codable {
+    let paidCents: Int
+    let awaitingCents: Int
+    let pendingCents: Int
+
+    enum CodingKeys: String, CodingKey {
+        case paidCents = "paid_cents"
+        case awaitingCents = "awaiting_cents"
+        case pendingCents = "pending_cents"
+    }
+}
+
+/// GET /payout-account — status, what Stripe still needs, and the earnings
+/// picture. Everything beyond `status` is optional: absent until a payout
+/// account exists.
+struct PayoutAccount: Codable {
+    let status: PayoutAccountStatus
+    let payoutsEnabled: Bool?
+    let currentlyDue: [String]?
+    let pastDue: [String]?
+    let disabledReason: String?
+    let currentDeadline: String?
+    let earnings: PayoutEarnings?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case payoutsEnabled = "payouts_enabled"
+        case currentlyDue = "currently_due"
+        case pastDue = "past_due"
+        case disabledReason = "disabled_reason"
+        case currentDeadline = "current_deadline"
+        case earnings
+    }
+}
+
+/// POST /payout-account/session — the account-session secret the embedded
+/// onboarding component consumes (SDK follow-up batch).
+struct PayoutSessionResponse: Codable {
+    let clientSecret: String
+    let publishableKey: String
+    let accountId: String
+
+    enum CodingKeys: String, CodingKey {
+        case clientSecret = "client_secret"
+        case publishableKey = "publishable_key"
+        case accountId = "account_id"
+    }
+}
+
+/// One ledger row of the owner's earnings history.
+struct OwnerPayoutItem: Codable, Identifiable {
+    let id: UUID
+    let leaseRequestId: UUID
+    let grossKeptCents: Int
+    let feeCents: Int
+    let ownerAmountCents: Int
+    let currency: String
+    /// awaiting_onboarding | pending | paid | failed | withheld
+    let status: String
+    let createdAt: String
+    let paidAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case leaseRequestId = "lease_request_id"
+        case grossKeptCents = "gross_kept_cents"
+        case feeCents = "fee_cents"
+        case ownerAmountCents = "owner_amount_cents"
+        case currency, status
+        case createdAt = "created_at"
+        case paidAt = "paid_at"
+    }
+}
+
+struct OwnerPayoutsResponse: Codable {
+    let payouts: [OwnerPayoutItem]?
+}
+
 struct MessageResponse: Codable {
     let message: String
 }

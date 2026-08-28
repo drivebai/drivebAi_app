@@ -40,6 +40,14 @@ enum AppConfig {
         }
     }
 
+    /// Stripe Connect embedded onboarding launch. The backend (account
+    /// creation, account sessions, transfers) is live, but the StripeConnect
+    /// SDK module ships in a follow-up batch — until then the Earnings &
+    /// payouts screen shows status and explains, and the launch button is
+    /// disabled with "available in the next update". Flip to true in the
+    /// SDK batch.
+    static let payoutOnboardingEnabled = false
+
     /// True when running on a development/TestFlight build — tells the backend
     /// to use the APNs sandbox gateway instead of production.
     static var apnsSandbox: Bool {

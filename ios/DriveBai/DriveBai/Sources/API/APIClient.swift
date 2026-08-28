@@ -146,6 +146,11 @@ protocol APIClientProtocol {
     // Onboarding
     func completeOnboarding() async throws -> MessageResponse
 
+    // Owner payouts (Stripe Connect)
+    func fetchPayoutAccount() async throws -> PayoutAccount
+    func createPayoutSession() async throws -> PayoutSessionResponse
+    func fetchOwnerPayouts() async throws -> OwnerPayoutsResponse
+
     // Cars (Owner)
     func fetchCars() async throws -> [Car]
     func getCar(id: UUID) async throws -> Car
@@ -465,6 +470,27 @@ final class APIClient: APIClientProtocol {
 
     func completeOnboarding() async throws -> MessageResponse {
         try await postEmpty(path: "onboarding/complete", authenticated: true)
+    }
+
+    // MARK: - Owner payouts (Stripe Connect)
+
+    /// GET /payout-account — payout-account status + requirements + earnings
+    /// summary. Safe to call for users with no account yet (status "none").
+    func fetchPayoutAccount() async throws -> PayoutAccount {
+        try await get(path: "payout-account", authenticated: true)
+    }
+
+    /// POST /payout-account/session — creates the connected account on first
+    /// call and mints the account-session secret the embedded onboarding
+    /// component consumes. The UI behind this is feature-flagged until the
+    /// StripeConnect SDK ships (AppConfig.payoutOnboardingEnabled).
+    func createPayoutSession() async throws -> PayoutSessionResponse {
+        try await postEmpty(path: "payout-account/session", authenticated: true)
+    }
+
+    /// GET /payout-account/payouts — the owner's earnings history.
+    func fetchOwnerPayouts() async throws -> OwnerPayoutsResponse {
+        try await get(path: "payout-account/payouts", authenticated: true)
     }
 
     // MARK: - Car Methods

@@ -60,6 +60,9 @@ struct AuthenticatedProfileView: View {
     @State private var showNotificationSettings = false
     @State private var showPrivacySecurity = false
     @State private var showDeleteAccount = false
+    /// Earnings & payouts (Stripe Connect): status + earnings for owners.
+    /// The onboarding launch is feature-flagged until the SDK ships.
+    @State private var showEarningsPayouts = false
     /// Set when a replayed tip was armed for its own screen rather than played here.
     @State private var armedTourNotice: String?
 
@@ -184,6 +187,14 @@ struct AuthenticatedProfileView: View {
                         badge: rejectedDocumentsCount,
                         action: { showMyDocuments = true }
                     )
+                    if user.role == .carOwner {
+                        Divider().padding(.leading, 56)
+                        ProfileActionRow(
+                            icon: "banknote.fill",
+                            title: "Earnings & payouts",
+                            action: { showEarningsPayouts = true }
+                        )
+                    }
                     Divider().padding(.leading, 56)
                     ProfileActionRow(icon: "bell.fill", title: "Notifications", action: { showNotificationSettings = true })
                     Divider().padding(.leading, 56)
@@ -229,6 +240,9 @@ struct AuthenticatedProfileView: View {
         .sheet(isPresented: $showDeleteAccount) {
             DeleteAccountSheet()
                 .environmentObject(authStore)
+        }
+        .sheet(isPresented: $showEarningsPayouts) {
+            EarningsPayoutsSheet()
         }
         .sheet(isPresented: $showSupportHub) {
             SupportHubView().environmentObject(supportInboxStore)
@@ -1111,5 +1125,291 @@ struct PrivacySecurityView: View {
         } catch {
             resetError = "Couldn't send the reset email. Please try again."
         }
+    }
+}
+
+// MARK: - Earnings & payouts (Stripe Connect)
+
+/// Owner-facing payout home: what "getting paid" means, where their account
+/// stands, and every payout with its state. The backend (accounts, account
+/// sessions, transfers) is fully live; the embedded onboarding LAUNCH is
+/// feature-flagged off until the StripeConnect SDK ships in the next
+/// update. Lives in this file deliberately — new Swift files need manual
+/// pbxproj registration.
+struct EarningsPayoutsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var account: PayoutAccount?
+    @State private var payouts: [OwnerPayoutItem] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    if isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView("Loading your earnings…")
+                                .padding(.vertical, 48)
+                            Spacer()
+                        }
+                    } else if let errorMessage {
+                        VStack(spacing: 12) {
+                            Image(systemName: "wifi.exclamationmark")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary)
+                            Text(errorMessage)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                            Button("Try again") { Task { await load() } }
+                                .buttonStyle(.bordered)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                    } else {
+                        statusCard
+                        earningsCard
+                        historySection
+                    }
+                }
+                .padding()
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Earnings & payouts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task { await load() }
+        }
+    }
+
+    // MARK: Status
+
+    private var status: PayoutAccountStatus { account?.status ?? .none }
+
+    @ViewBuilder
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: statusIcon)
+                    .font(.title2)
+                    .foregroundColor(statusColor)
+                Text(statusTitle)
+                    .font(.headline)
+            }
+            Text(statusBody)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if status == .actionNeeded, let due = account?.currentlyDue, !due.isEmpty {
+                Text("Stripe still needs \(due.count) item\(due.count == 1 ? "" : "s") from you.")
+                    .font(.footnote)
+                    .foregroundColor(.orange)
+            }
+
+            if status == .none || status == .onboarding || status == .actionNeeded {
+                setupButton
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+    }
+
+    private var statusIcon: String {
+        switch status {
+        case .none:                return "banknote"
+        case .onboarding:          return "person.crop.circle.badge.clock"
+        case .pendingVerification: return "clock.badge.checkmark"
+        case .actionNeeded:        return "exclamationmark.circle.fill"
+        case .ready:               return "checkmark.seal.fill"
+        case .restricted:          return "pause.circle.fill"
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .ready:                          return .green
+        case .actionNeeded, .restricted:      return .orange
+        default:                              return .driveBaiPrimary
+        }
+    }
+
+    private var statusTitle: String {
+        switch status {
+        case .none:                return "Get paid automatically"
+        case .onboarding:          return "Finish setting up payouts"
+        case .pendingVerification: return "Stripe is reviewing your details"
+        case .actionNeeded:        return "One more thing is needed"
+        case .ready:               return "You're set up"
+        case .restricted:          return "Payouts are paused"
+        }
+    }
+
+    private var statusBody: String {
+        switch status {
+        case .none:
+            return "When a rental completes, your share is transferred straight to your bank account — no invoices, no chasing. Payouts run on Stripe, the same payment platform behind the rest of DriveBai: your identity check and bank details go directly to Stripe, and we never see them."
+        case .onboarding:
+            return "Your payout account was started but Stripe hasn't received all your details yet. Anything you earn in the meantime is held safely and transfers automatically the moment setup is complete."
+        case .pendingVerification:
+            return "Your details are submitted and Stripe is verifying them — this usually takes minutes, occasionally up to a couple of days. Your earnings are held safely and transfer automatically once verification finishes."
+        case .actionNeeded:
+            return "Stripe needs a little more information to keep your payouts running. Your earnings are held safely in the meantime."
+        case .ready:
+            return "Rental payouts go straight to your bank automatically when a rental completes. Nothing else to do."
+        case .restricted:
+            return "Stripe has paused payouts on your account. Rentals you complete are held safely until this is resolved — contact support and we'll help you sort it out."
+        }
+    }
+
+    /// The launch button — feature-flagged until the StripeConnect SDK
+    /// ships. Disabled state explains itself rather than dead-ending.
+    @ViewBuilder
+    private var setupButton: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                // SDK follow-up batch: create the account session via
+                // APIClient.shared.createPayoutSession() and present the
+                // AccountOnboardingController here.
+            } label: {
+                Text(status == .none ? "Set up payouts" : "Continue setup")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.driveBaiPrimary)
+            .disabled(!AppConfig.payoutOnboardingEnabled)
+
+            if !AppConfig.payoutOnboardingEnabled {
+                Text("Payout setup will be available in the next update. Everything you earn until then is safely held and pays out the moment you're set up.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: Earnings
+
+    @ViewBuilder
+    private var earningsCard: some View {
+        let paid = account?.earnings?.paidCents ?? 0
+        let awaiting = account?.earnings?.awaitingCents ?? 0
+        let pending = account?.earnings?.pendingCents ?? 0
+        if paid > 0 || awaiting > 0 || pending > 0 {
+            VStack(spacing: 0) {
+                earningsRow("Paid to you", cents: paid, color: .green)
+                if pending > 0 {
+                    Divider().padding(.leading, 16)
+                    earningsRow("On the way", cents: pending, color: .driveBaiPrimary)
+                }
+                if awaiting > 0 {
+                    Divider().padding(.leading, 16)
+                    earningsRow("Waiting for setup", cents: awaiting, color: .orange)
+                }
+            }
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+        }
+    }
+
+    private func earningsRow(_ title: String, cents: Int, color: Color) -> some View {
+        HStack {
+            Text(title).font(.subheadline)
+            Spacer()
+            Text(Self.money(cents))
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(color)
+        }
+        .padding()
+    }
+
+    // MARK: History
+
+    @ViewBuilder
+    private var historySection: some View {
+        if !payouts.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Payout history")
+                    .font(.headline)
+                    .padding(.horizontal, 4)
+                VStack(spacing: 0) {
+                    ForEach(Array(payouts.enumerated()), id: \.element.id) { index, payout in
+                        if index > 0 { Divider().padding(.leading, 16) }
+                        payoutRow(payout)
+                    }
+                }
+                .background(Color(.systemBackground))
+                .cornerRadius(12)
+            }
+        }
+    }
+
+    private func payoutRow(_ payout: OwnerPayoutItem) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.money(payout.ownerAmountCents))
+                    .font(.subheadline.weight(.semibold))
+                Text(String(payout.createdAt.prefix(10)))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Text(payoutStatusLabel(payout.status))
+                .font(.caption.weight(.medium))
+                .foregroundColor(payoutStatusColor(payout.status))
+        }
+        .padding()
+    }
+
+    private func payoutStatusLabel(_ status: String) -> String {
+        switch status {
+        case "paid":                return "Paid"
+        case "pending", "failed":   return "On the way"
+        case "awaiting_onboarding": return "Waiting for setup"
+        case "withheld":            return "On hold"
+        default:                    return status
+        }
+    }
+
+    private func payoutStatusColor(_ status: String) -> Color {
+        switch status {
+        case "paid":                return .green
+        case "awaiting_onboarding": return .orange
+        case "withheld":            return .secondary
+        default:                    return .driveBaiPrimary
+        }
+    }
+
+    // MARK: Data
+
+    @MainActor
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            async let accountReq = APIClient.shared.fetchPayoutAccount()
+            async let payoutsReq = APIClient.shared.fetchOwnerPayouts()
+            let (acct, history) = try await (accountReq, payoutsReq)
+            account = acct
+            payouts = history.payouts ?? []
+        } catch {
+            errorMessage = "Couldn't load your earnings. Check your connection and try again."
+        }
+        isLoading = false
+    }
+
+    private static func money(_ cents: Int) -> String {
+        String(format: "$%.2f", Double(cents) / 100.0)
     }
 }
