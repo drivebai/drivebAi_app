@@ -144,8 +144,11 @@ export const adminApi = {
    * Response is the per-viewer return shape, NOT an AdminRent; refetch the
    * list rather than merging it.
    */
-  resolveVehicleReturn: (returnId: string, resolution: 'accept' | 'reject', note: string) =>
-    api.post<unknown>(`${BASE}/vehicle-returns/${returnId}/resolve`, { resolution, note }),
+  resolveVehicleReturn: (returnId: string, resolution: 'accept' | 'reject', note: string, driverRefundCents?: number) =>
+    api.post<unknown>(`${BASE}/vehicle-returns/${returnId}/resolve`,
+      driverRefundCents === undefined
+        ? { resolution, note }
+        : { resolution, note, driver_refund_cents: driverRefundCents }),
 
   // ---- Owner payouts (Stripe Connect) ----
   /** Every owner balance with its age, oldest first. Optional status filter. */

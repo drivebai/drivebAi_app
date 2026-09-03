@@ -164,6 +164,9 @@ function termChip(r: AdminRent): { label: string; tone: 'danger' | 'warning' | '
 // note is REQUIRED — both parties receive the outcome with it.
 const resolving = ref<{ rent: AdminRent; resolution: 'accept' | 'reject' } | null>(null)
 const resolutionNote = ref('')
+// Item 1: optional refund override on ACCEPT — the lever between "full
+// snapshot" and "$0 reject" on a contested return. Empty = snapshot.
+const resolutionRefundDollars = ref('')
 const savingResolution = ref(false)
 const resolutionError = ref<string | null>(null)
 
@@ -174,6 +177,7 @@ function isDisputed(r: AdminRent): boolean {
 function startResolve(r: AdminRent, resolution: 'accept' | 'reject') {
   resolving.value = { rent: r, resolution }
   resolutionNote.value = ''
+  resolutionRefundDollars.value = ''
   resolutionError.value = null
 }
 
@@ -274,10 +278,19 @@ async function confirmResolve() {
     resolutionError.value = 'A note is required — both parties will see the outcome.'
     return
   }
+  let refundCents: number | undefined
+  if (target.resolution === 'accept' && resolutionRefundDollars.value.trim() !== '') {
+    const dollars = Number(resolutionRefundDollars.value)
+    if (!Number.isFinite(dollars) || dollars < 0) {
+      resolutionError.value = 'Refund override must be a non-negative dollar amount.'
+      return
+    }
+    refundCents = Math.round(dollars * 100)
+  }
   savingResolution.value = true
   resolutionError.value = null
   try {
-    await adminApi.resolveVehicleReturn(target.rent.return_id, target.resolution, note)
+    await adminApi.resolveVehicleReturn(target.rent.return_id, target.resolution, note, refundCents)
     toast.success(target.resolution === 'accept'
       ? 'Return confirmed — refund on its way; both parties notified'
       : 'Dispute upheld — the rental continues; both parties notified')
@@ -612,6 +625,15 @@ async function confirmResolve() {
             : `Sides with the owner: the return is cancelled, ${resolving.rent.car_title} stays rented, and the driver must submit a new return when the car is actually back.` }}
           Both parties are notified with your note.
         </p>
+        <label v-if="resolving.resolution === 'accept'" class="resolve-label">
+          Driver refund override in dollars — leave empty to refund the computed amount{{ resolving.rent.return_refund_amount_cents != null ? ` (${fmtCents(resolving.rent.return_refund_amount_cents, resolving.rent.currency)})` : '' }}. Use 0 when the car never came back.
+          <input
+            v-model="resolutionRefundDollars"
+            type="number" min="0" step="0.01"
+            :disabled="savingResolution"
+            placeholder="e.g. 0"
+          />
+        </label>
         <label class="resolve-label">
           Note (visible to both parties)
           <textarea
