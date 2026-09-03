@@ -33,7 +33,8 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
 			status, is_paused, rented_weeks, total_earned,
-			created_at, updated_at
+			created_at, updated_at,
+			rent_price_period, rent_price_amount
 		) VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7, $8, $9, $10, $11,
@@ -41,7 +42,8 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 			$20, $21, $22, $23, $24,
 			$25, $26, $27,
 			$28, $29, $30, $31,
-			$32, $33
+			$32, $33,
+			$34, $35
 		)
 	`
 
@@ -53,6 +55,7 @@ func (r *CarRepository) Create(ctx context.Context, car *models.Car) error {
 		car.MinYearsLicensed, car.DepositAmount, car.InsuranceCoverage,
 		car.Status, car.IsPaused, car.RentedWeeks, car.TotalEarned,
 		car.CreatedAt, car.UpdatedAt,
+		car.RentPricePeriod, car.RentPriceAmount,
 	)
 
 	return err
@@ -123,7 +126,8 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
 			status, is_paused, is_approved, rented_weeks, total_earned,
-			archived_at, created_at, updated_at
+			archived_at, created_at, updated_at,
+			rent_price_period, rent_price_amount
 		FROM cars
 		WHERE id = $1
 	`
@@ -137,6 +141,7 @@ func (r *CarRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Car,
 		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
 		&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 		&car.ArchivedAt, &car.CreatedAt, &car.UpdatedAt,
+		&car.RentPricePeriod, &car.RentPriceAmount,
 	)
 
 	if err != nil {
@@ -233,6 +238,7 @@ const ownerCarWithActiveRentalSelect = `
 		c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
 		c.status, c.is_paused, c.is_approved, c.rented_weeks, c.total_earned,
 		c.archived_at, c.created_at, c.updated_at,
+		c.rent_price_period, c.rent_price_amount,
 		lr.id, lr.driver_id, lr.weeks,
 		COALESCE(lr.offered_weekly_price, lr.weekly_price),
 		lr.pickup_confirmed_at,
@@ -277,6 +283,7 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
 		&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 		&car.ArchivedAt, &car.CreatedAt, &car.UpdatedAt,
+		&car.RentPricePeriod, &car.RentPriceAmount,
 		&leaseID, &driverID, &weeks,
 		&weeklyPriceDollars,
 		&pickupConfirmedAt,
@@ -370,7 +377,8 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 			is_for_rent, weekly_rent_price, is_for_sale, sale_price, currency,
 			min_years_licensed, deposit_amount, insurance_coverage,
 			status, is_paused, is_approved, rented_weeks, total_earned,
-			created_at, updated_at
+			created_at, updated_at,
+			rent_price_period, rent_price_amount
 		FROM cars
 		WHERE owner_id = $1 AND archived_at IS NULL
 		ORDER BY created_at DESC
@@ -393,6 +401,7 @@ func (r *CarRepository) GetByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
 			&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 			&car.CreatedAt, &car.UpdatedAt,
+			&car.RentPricePeriod, &car.RentPriceAmount,
 		)
 		if err != nil {
 			return nil, err
@@ -414,7 +423,8 @@ func (r *CarRepository) Update(ctx context.Context, car *models.Car) error {
 			area = $15, street = $16, block = $17, zip = $18,
 			is_for_rent = $19, weekly_rent_price = $20, is_for_sale = $21, sale_price = $22,
 			min_years_licensed = $23, deposit_amount = $24, insurance_coverage = $25,
-			status = $26, is_paused = $27
+			status = $26, is_paused = $27,
+			rent_price_period = $28, rent_price_amount = $29
 		WHERE id = $1
 	`
 
@@ -427,6 +437,7 @@ func (r *CarRepository) Update(ctx context.Context, car *models.Car) error {
 		car.IsForRent, car.WeeklyRentPrice, car.IsForSale, car.SalePrice,
 		car.MinYearsLicensed, car.DepositAmount, car.InsuranceCoverage,
 		car.Status, car.IsPaused,
+		car.RentPricePeriod, car.RentPriceAmount,
 	)
 
 	if err != nil {
@@ -615,6 +626,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 			c.min_years_licensed, c.deposit_amount, c.insurance_coverage,
 			c.status, c.is_paused, c.is_approved, c.rented_weeks, c.total_earned,
 			c.created_at, c.updated_at,
+			c.rent_price_period, c.rent_price_amount,
 			EXISTS (
 				SELECT 1 FROM purchase_requests pr
 				WHERE pr.car_id = c.id
@@ -670,6 +682,7 @@ func (r *CarRepository) GetAvailableListings(ctx context.Context, status string,
 			&car.MinYearsLicensed, &car.DepositAmount, &car.InsuranceCoverage,
 			&car.Status, &car.IsPaused, &car.IsApproved, &car.RentedWeeks, &car.TotalEarned,
 			&car.CreatedAt, &car.UpdatedAt,
+			&car.RentPricePeriod, &car.RentPriceAmount,
 			&car.HasActivePurchase,
 		)
 		if err != nil {

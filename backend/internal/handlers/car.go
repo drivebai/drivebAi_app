@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -186,6 +187,52 @@ func (h *CarHandler) ownerCarResponse(ctx context.Context, carID, ownerID uuid.U
 // sub-object only once the rental actually runs — keeping that wire
 // contract byte-identical (paid + picked up, non-null pickup timestamp).
 // Callers are all owner-gated.
+
+// applyRentPricing resolves the owner-typed price into storage: the typed
+// (amount, period) pair is stored verbatim as the source of truth and the
+// canonical weekly booking price is DERIVED from it in cents (migration
+// 000050). Old clients that send only weekly_rent_price get typed-weekly
+// semantics. Returns a validation error or nil.
+func applyRentPricing(car *models.Car, period *string, amount, weekly *float64) *models.APIError {
+	switch {
+	case period != nil || amount != nil:
+		if period == nil || amount == nil {
+			return models.NewValidationError("rent_price_period and rent_price_amount must be sent together")
+		}
+		if !models.ValidRentPeriod(*period) {
+			return models.NewValidationError("rent_price_period must be 'daily', 'weekly' or 'monthly'")
+		}
+		if *amount <= 0 {
+			return models.NewValidationError("rent_price_amount must be positive")
+		}
+		amountCents := int64(math.Round(*amount * 100))
+		weeklyCents := models.WeeklyEquivalentCents(amountCents, *period)
+		car.RentPricePeriod = *period
+		car.RentPriceAmount = sql.NullFloat64{Float64: *amount, Valid: true}
+		car.WeeklyRentPrice = sql.NullFloat64{Float64: float64(weeklyCents) / 100, Valid: true}
+	case weekly != nil:
+		car.RentPricePeriod = models.RentPeriodWeekly
+		car.RentPriceAmount = sql.NullFloat64{Float64: *weekly, Valid: true}
+		car.WeeklyRentPrice = sql.NullFloat64{Float64: *weekly, Valid: true}
+	}
+	return nil
+}
+
+// rentPriceBelowMinimum reports whether the derived weekly price undercuts
+// the configured weekly floor, and builds the period-aware message ("at
+// least $7.15/day") so the error speaks the owner's unit.
+func rentPriceBelowMinimum(car *models.Car, minWeekly float64) (bool, string) {
+	if !car.IsForRent || !car.WeeklyRentPrice.Valid || car.WeeklyRentPrice.Float64 >= minWeekly {
+		return false, ""
+	}
+	period := car.RentPricePeriod
+	if period == "" {
+		period = models.RentPeriodWeekly
+	}
+	minCents := models.MinRentCentsForPeriod(int64(math.Round(minWeekly*100)), period)
+	return true, fmt.Sprintf("Price must be at least $%.2f/%s", float64(minCents)/100, models.RentPeriodLabel(period))
+}
+
 func applyRentalContext(resp *models.CarResponse, row *repository.OwnerCarActiveRental) {
 	if resp == nil || row == nil {
 		return
@@ -408,8 +455,9 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	if req.Zip != nil {
 		car.Zip = sql.NullString{String: *req.Zip, Valid: true}
 	}
-	if req.WeeklyRentPrice != nil {
-		car.WeeklyRentPrice = sql.NullFloat64{Float64: *req.WeeklyRentPrice, Valid: true}
+	if verr := applyRentPricing(car, req.RentPricePeriod, req.RentPriceAmount, req.WeeklyRentPrice); verr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, verr)
+		return
 	}
 	if req.SalePrice != nil {
 		car.SalePrice = sql.NullFloat64{Float64: *req.SalePrice, Valid: true}
@@ -436,10 +484,8 @@ func (h *CarHandler) CreateCar(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate pricing
-	if car.IsForRent && car.WeeklyRentPrice.Valid && car.WeeklyRentPrice.Float64 < h.minWeeklyRentPrice {
-		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
-			fmt.Sprintf("Weekly rent price must be at least %.0f", h.minWeeklyRentPrice),
-		))
+	if below, msg := rentPriceBelowMinimum(car, h.minWeeklyRentPrice); below {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(msg))
 		return
 	}
 	// A for-sale car must carry a positive price at every write entry point.
@@ -564,13 +610,14 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 
 	// Apply updates. Status / is_paused / deposit_amount in the payload are
 	// deliberately IGNORED — see applyCarUpdateRequest.
-	applyCarUpdateRequest(car, &req)
+	if verr := applyCarUpdateRequest(car, &req); verr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, verr)
+		return
+	}
 
 	// Validate pricing
-	if car.IsForRent && car.WeeklyRentPrice.Valid && car.WeeklyRentPrice.Float64 < h.minWeeklyRentPrice {
-		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(
-			fmt.Sprintf("Weekly rent price must be at least %.0f", h.minWeeklyRentPrice),
-		))
+	if below, msg := rentPriceBelowMinimum(car, h.minWeeklyRentPrice); below {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError(msg))
 		return
 	}
 
@@ -649,7 +696,7 @@ func (h *CarHandler) UpdateCar(w http.ResponseWriter, r *http.Request) {
 //     clobber a rented status or silently unpause a listing;
 //   - deposit_amount (QA pt-7 / D8): deposits are removed; the field is
 //     accepted on the wire for old builds but never persisted (stays 0).
-func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
+func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) *models.APIError {
 	if req.Title != nil {
 		car.Title = *req.Title
 	}
@@ -709,8 +756,8 @@ func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
 	if req.IsForRent != nil {
 		car.IsForRent = *req.IsForRent
 	}
-	if req.WeeklyRentPrice != nil {
-		car.WeeklyRentPrice = sql.NullFloat64{Float64: *req.WeeklyRentPrice, Valid: true}
+	if verr := applyRentPricing(car, req.RentPricePeriod, req.RentPriceAmount, req.WeeklyRentPrice); verr != nil {
+		return verr
 	}
 	if req.IsForSale != nil {
 		car.IsForSale = *req.IsForSale
@@ -725,6 +772,7 @@ func applyCarUpdateRequest(car *models.Car, req *models.UpdateCarRequest) {
 		car.InsuranceCoverage = *req.InsuranceCoverage
 	}
 	// req.Status, req.IsPaused, req.DepositAmount: intentionally not applied.
+	return nil
 }
 
 // Machine-readable reason in SALE_REQUIREMENTS_NOT_MET details.missing.

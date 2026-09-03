@@ -164,6 +164,12 @@ type Car struct {
 	// Pricing
 	IsForRent       bool            `json:"is_for_rent"`
 	WeeklyRentPrice sql.NullFloat64 `json:"-"`
+	// RentPricePeriod + RentPriceAmount are the OWNER-TYPED source of
+	// truth (migration 000050): the number they entered, in the unit they
+	// chose. WeeklyRentPrice is DERIVED from them and stays the canonical
+	// booking price for every money path.
+	RentPricePeriod string          `json:"rent_price_period"`
+	RentPriceAmount sql.NullFloat64 `json:"-"`
 	IsForSale       bool            `json:"is_for_sale"`
 	SalePrice       sql.NullFloat64 `json:"-"`
 	Currency        string          `json:"currency"`
@@ -285,6 +291,12 @@ type CarResponse struct {
 	// Pricing
 	IsForRent       bool     `json:"is_for_rent"`
 	WeeklyRentPrice *float64 `json:"weekly_rent_price,omitempty"`
+	// RentPricePeriod/RentPriceAmount: the owner-typed price in the unit
+	// they chose (migration 000050). weekly_rent_price stays the derived
+	// canonical booking price; these drive DISPLAY ("$60/day") and the
+	// edit form. Defaults weekly/weekly-price for legacy listings.
+	RentPricePeriod string   `json:"rent_price_period"`
+	RentPriceAmount *float64 `json:"rent_price_amount,omitempty"`
 	IsForSale       bool     `json:"is_for_sale"`
 	SalePrice       *float64 `json:"sale_price,omitempty"`
 	Currency        string   `json:"currency"`
@@ -489,6 +501,19 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 		price := c.WeeklyRentPrice.Float64
 		resp.WeeklyRentPrice = &price
 	}
+	resp.RentPricePeriod = c.RentPricePeriod
+	if resp.RentPricePeriod == "" {
+		resp.RentPricePeriod = RentPeriodWeekly
+	}
+	if c.RentPriceAmount.Valid {
+		amt := c.RentPriceAmount.Float64
+		resp.RentPriceAmount = &amt
+	} else if c.WeeklyRentPrice.Valid {
+		// Legacy row that predates the backfill: the typed amount IS the
+		// weekly price.
+		amt := c.WeeklyRentPrice.Float64
+		resp.RentPriceAmount = &amt
+	}
 	if c.SalePrice.Valid {
 		price := c.SalePrice.Float64
 		resp.SalePrice = &price
@@ -638,6 +663,11 @@ type CreateCarRequest struct {
 	// Pricing
 	IsForRent       bool     `json:"is_for_rent"`
 	WeeklyRentPrice *float64 `json:"weekly_rent_price,omitempty"`
+	// Optional owner-typed price + unit (migration 000050); when present
+	// the server derives weekly_rent_price, when absent (old clients)
+	// weekly_rent_price is taken as typed-weekly.
+	RentPricePeriod *string  `json:"rent_price_period,omitempty"`
+	RentPriceAmount *float64 `json:"rent_price_amount,omitempty"`
 	IsForSale       bool     `json:"is_for_sale"`
 	SalePrice       *float64 `json:"sale_price,omitempty"`
 
@@ -677,6 +707,8 @@ type UpdateCarRequest struct {
 	// Pricing
 	IsForRent       *bool    `json:"is_for_rent,omitempty"`
 	WeeklyRentPrice *float64 `json:"weekly_rent_price,omitempty"`
+	RentPricePeriod *string  `json:"rent_price_period,omitempty"`
+	RentPriceAmount *float64 `json:"rent_price_amount,omitempty"`
 	IsForSale       *bool    `json:"is_for_sale,omitempty"`
 	SalePrice       *float64 `json:"sale_price,omitempty"`
 
