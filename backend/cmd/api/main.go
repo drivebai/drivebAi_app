@@ -131,10 +131,17 @@ func main() {
 	wsHub := ws.NewHub(logger)
 	go wsHub.Run()
 
-	// Rate limiter for auth endpoints: 10 requests per minute per IP.
-	// Internally starts a background cleanup goroutine.
-	authRateLimiter := middleware.NewRateLimiter(10, time.Minute)
+	// Auth rate limiting, split into two buckets (client fix batch, item
+	// 9). ONE shared 10/min bucket used to cover all 13 /auth endpoints,
+	// so the signup wizard's typing-debounced /check-email calls and
+	// background /token/refresh silently ate the login budget — and
+	// CGNAT'd mobile users pool into one IP, so real users hit 429 during
+	// ordinary logins. Credential-guessing endpoints stay strict; benign
+	// high-frequency traffic gets its own generous bucket.
+	authRateLimiter := middleware.NewRateLimiter(15, time.Minute)
 	defer authRateLimiter.Stop()
+	authSoftRateLimiter := middleware.NewRateLimiter(60, time.Minute)
+	defer authSoftRateLimiter.Stop()
 
 	// Rate limiter for the public listings endpoint: 10 req/min per IP —
 	// deliberately as tight as auth. The endpoint has no pagination, so a
@@ -312,29 +319,32 @@ func main() {
 			middleware.OptionalAuth(jwtSvc, blockList),
 		).Get("/listings", carHandler.ListAvailableListings)
 
-		// Auth routes (public) — rate limited: 10 req/min per IP
+		// Auth routes (public) — two rate-limit buckets so benign traffic
+		// (availability checks, token refresh) can't starve logins.
 		r.Route("/auth", func(r chi.Router) {
-			r.Use(middleware.RateLimit(authRateLimiter))
-			r.Post("/register", authHandler.Register)
-			r.Post("/verify-email", authHandler.VerifyEmail)
-			r.Post("/login", authHandler.Login)
-			r.Post("/token/refresh", authHandler.RefreshToken)
-			r.Post("/password/forgot", authHandler.ForgotPassword)
-			r.Post("/password/reset", authHandler.ResetPassword)
-			r.Post("/logout", authHandler.Logout)
-			r.Post("/resend-otp", authHandler.ResendOTP)
+			strict := r.With(middleware.RateLimit(authRateLimiter))     // 15/min: credential attempts
+			soft := r.With(middleware.RateLimit(authSoftRateLimiter))   // 60/min: benign, high-frequency
 
-			// Email-availability check (signup inline UX). Public, rate-limited
-			// by the same middleware as everything else in /auth; privacy
-			// posture matches /auth/otp/verify which already reveals account
-			// existence via its kind discriminator.
-			r.Post("/check-email", authHandler.CheckEmail)
-			r.Post("/check-phone", authHandler.CheckPhone)
+			strict.Post("/register", authHandler.Register)
+			strict.Post("/login", authHandler.Login)
+			strict.Post("/password/forgot", authHandler.ForgotPassword)
+			strict.Post("/password/reset", authHandler.ResetPassword)
+			strict.Post("/resend-otp", authHandler.ResendOTP)
+			strict.Post("/otp/request", otpAuthHandler.RequestOTP)
 
-			// OTP email login (passwordless)
-			r.Post("/otp/request", otpAuthHandler.RequestOTP)
-			r.Post("/otp/verify", otpAuthHandler.VerifyOTP)
-			r.Post("/otp/complete-registration", otpAuthHandler.CompleteRegistration)
+			soft.Post("/verify-email", authHandler.VerifyEmail)
+			soft.Post("/token/refresh", authHandler.RefreshToken)
+			soft.Post("/logout", authHandler.Logout)
+			// Email-availability check (signup inline UX): fired on a
+			// 600ms typing debounce, so it must not share the login
+			// budget. Privacy posture matches /auth/otp/verify which
+			// already reveals account existence via its kind discriminator.
+			soft.Post("/check-email", authHandler.CheckEmail)
+			soft.Post("/check-phone", authHandler.CheckPhone)
+			// OTP verify/complete are code-guessing surfaces but carry
+			// their own per-email attempt limits in the handler/table.
+			soft.Post("/otp/verify", otpAuthHandler.VerifyOTP)
+			soft.Post("/otp/complete-registration", otpAuthHandler.CompleteRegistration)
 		})
 
 		// WebSocket endpoint (auth via query param, not middleware)

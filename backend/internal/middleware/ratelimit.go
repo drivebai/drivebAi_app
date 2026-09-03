@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,8 +69,10 @@ func (rl *RateLimiter) Stop() {
 	close(rl.stop)
 }
 
-// Allow returns true when the IP is within its rate limit, false when throttled.
-func (rl *RateLimiter) Allow(ip string) bool {
+// Allow returns true when the IP is within its rate limit. When throttled
+// it returns false plus how long until the window resets, so callers can
+// tell the user when to retry instead of a bare "try again later".
+func (rl *RateLimiter) Allow(ip string) (bool, time.Duration) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -78,24 +82,30 @@ func (rl *RateLimiter) Allow(ip string) bool {
 	if !exists || now.After(e.windowEnd) {
 		// First request in this window, or window has rolled over.
 		rl.visitors[ip] = &rlEntry{count: 1, windowEnd: now.Add(rl.window)}
-		return true
+		return true, 0
 	}
 
 	if e.count >= rl.rate {
-		return false
+		return false, time.Until(e.windowEnd)
 	}
 	e.count++
-	return true
+	return true, 0
 }
 
 // RateLimit returns a chi-compatible middleware that applies the given RateLimiter.
-// Throttled requests receive 429 Too Many Requests with the standard error shape.
+// Throttled requests receive 429 with a Retry-After header and a message
+// that says how long to wait (client fix batch, item 9).
 func RateLimit(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := clientIP(r)
-			if !rl.Allow(ip) {
-				httputil.WriteError(w, http.StatusTooManyRequests, models.ErrRateLimited)
+			ok, retryIn := rl.Allow(ip)
+			if !ok {
+				secs := int(retryIn.Seconds()) + 1
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+				httputil.WriteError(w, http.StatusTooManyRequests,
+					models.NewAPIError(models.ErrCodeRateLimited,
+						fmt.Sprintf("Too many requests — try again in %d seconds", secs)))
 				return
 			}
 			next.ServeHTTP(w, r)
