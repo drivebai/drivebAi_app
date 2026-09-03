@@ -488,8 +488,15 @@ func (r *LeaseRequestRepository) SetPaymentPending(ctx context.Context, id uuid.
 // Accepts both statuses because the webhook may arrive before SetPaymentPending completes.
 func (r *LeaseRequestRepository) SetPaid(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
 	var lr models.LeaseRequest
+	// price_change_pending clears on the paid transition: the driver paid
+	// the amount they agreed to, so an owner price-adjust racing a
+	// succeeding Stripe payment must not strand a paid lease in an
+	// unresolvable review state (client fix batch, item 2 — the paid
+	// amount stands; the money already moved).
 	err := r.db.Pool.QueryRow(ctx, `
-		UPDATE lease_requests SET status = $2, updated_at = NOW()
+		UPDATE lease_requests SET status = $2, updated_at = NOW(),
+		       price_change_pending = FALSE,
+		       price_change_acted_at = COALESCE(price_change_acted_at, NOW())
 		WHERE id = $1 AND status IN ('accepted', 'payment_pending')
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
@@ -640,8 +647,12 @@ func (r *LeaseRequestRepository) UpdateOfferedPrice(ctx context.Context, id, own
 	}
 
 	switch lr.Status {
-	case models.LeaseStatusRequested, models.LeaseStatusAccepted, models.LeaseStatusPaymentPending:
-		// OK — price adjustable while no payment has actually succeeded.
+	case models.LeaseStatusRequested, models.LeaseStatusAccepted:
+		// OK — price adjustable while the driver hasn't started paying.
+		// payment_pending is EXCLUDED (client fix batch, item 2): the
+		// driver may be mid-confirmation at Stripe, and an adjust racing a
+		// succeeding payment used to strand the paid lease with
+		// price_change_pending stuck TRUE.
 	default:
 		return nil, "", models.ErrPriceLocked
 	}
