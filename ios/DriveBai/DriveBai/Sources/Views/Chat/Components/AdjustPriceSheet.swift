@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AdjustPriceSheet: View {
+    @FocusState private var priceFocused: Bool
     let leaseRequest: LeaseRequest
     let onSave: (Double) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -71,6 +72,16 @@ struct AdjustPriceSheet: View {
                                 .font(.title.weight(.semibold))
                                 .multilineTextAlignment(.center)
                                 .frame(minWidth: 80)
+                                .focused($priceFocused)
+                                // Item 8: .decimalPad has no return key —
+                                // without a Done button the keyboard is
+                                // permanently stuck on this sheet.
+                                .toolbar {
+                                    ToolbarItemGroup(placement: .keyboard) {
+                                        Spacer()
+                                        Button("Done") { priceFocused = false }
+                                    }
+                                }
                         }
 
                         Button {

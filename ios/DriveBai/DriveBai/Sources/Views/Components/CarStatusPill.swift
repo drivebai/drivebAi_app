@@ -53,6 +53,14 @@ struct CarStatusPill: View {
                 return "Rented · \(rental.weeks)w"
             }
             return "Currently rented"
+        case .reserved(let state, let firstName):
+            let who = (firstName?.isEmpty == false) ? " · \(firstName!)" : ""
+            switch state {
+            case "accepted":            return "Pending rent\(who)"
+            case "payment_pending":     return "Awaiting payment\(who)"
+            case "paid_awaiting_pickup": return "Paid · pickup pending\(who)"
+            default:                    return "Reserved\(who)"
+            }
         case .available:
             return style == .hero ? "Available now!" : "Available"
         case .awaitingApproval:
@@ -76,6 +84,7 @@ struct CarStatusPill: View {
         switch state {
         case .available: return .green
         case .rented: return .orange
+        case .reserved: return .orange
         case .awaitingApproval: return .orange
         case .pendingReview: return .orange
         case .paused: return .gray
@@ -87,6 +96,7 @@ struct CarStatusPill: View {
         switch state {
         case .available: return "checkmark.circle.fill"
         case .rented: return "key.fill"
+        case .reserved: return "person.crop.circle.badge.clock"
         case .awaitingApproval: return "clock.fill"
         case .pendingReview: return "clock.fill"
         case .paused: return "pause.circle.fill"

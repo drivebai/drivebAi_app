@@ -34,6 +34,10 @@ enum CarBusinessState: Equatable {
     case pendingReview
     case available
     case rented(ActiveRentalSummary?)
+    /// A committed lease that has not started running yet (item 5):
+    /// accepted, payment_pending, or paid_awaiting_pickup. The car is
+    /// reserved and hidden from Discover, so "Available now!" was a lie.
+    case reserved(state: String, renterFirstName: String?)
     case paused
     case sold
 
@@ -45,6 +49,11 @@ enum CarBusinessState: Equatable {
         // a car they no longer own.
         if car.isSold { return .sold }
         if let rental = car.activeRental { return .rented(rental) }   // active lease wins over paused
+        // Pre-pickup committed lease (item 5): the car is spoken for even
+        // though cars.status still says 'available'.
+        if let rs = car.rentalState, rs != "picked_up" {
+            return .reserved(state: rs, renterFirstName: car.renterFirstName)
+        }
         if car.isPaused || car.status == .paused { return .paused }
         // Awaiting admin approval. `is_approved` is authoritative: an
         // unapproved listing always reads as awaiting, and once the flag

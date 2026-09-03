@@ -1262,6 +1262,11 @@ struct ListingDetailView: View {
                     switch CarBusinessState.forCar(car) {
                     case .rented:
                         rentUnavailableNotice("Currently rented — check back later")
+                    case .reserved:
+                        // Discovery payloads never carry rental_state (it's
+                        // owner-scoped), but the derivation is shared — a
+                        // reserved car reads as spoken for, never available.
+                        rentUnavailableNotice("Reserved — check back later")
                     case .sold:
                         rentUnavailableNotice("This car has been sold")
                     case .paused, .awaitingApproval, .pendingReview:

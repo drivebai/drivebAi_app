@@ -321,7 +321,7 @@ struct LeaseRequestCardView: View {
                             ProgressView().tint(.white).scaleEffect(0.85)
                         }
                         Image(systemName: "arrow.uturn.backward.circle.fill")
-                        Text(isReturnSubmitting ? "Submitting…" : "I returned the car")
+                        Text(isReturnSubmitting ? "Submitting…" : "Request to Return the Vehicle")
                     }
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
@@ -356,7 +356,7 @@ struct LeaseRequestCardView: View {
             } else {
                 // No return row yet — quiet info line; owner can't kick
                 // off the return.
-                Label("Waiting for the driver to mark the car returned.", systemImage: "hourglass")
+                Label("Waiting for the driver to request the return.", systemImage: "hourglass")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

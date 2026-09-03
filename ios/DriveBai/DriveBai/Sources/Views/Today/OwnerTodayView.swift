@@ -159,7 +159,13 @@ struct OwnerTodayView: View {
                 await carsStore.fetchCars()
                 async let actionsTask: () = viewModel.fetchActions()
                 async let notifTask: () = viewModel.fetchNotifications()
-                _ = await (actionsTask, notifTask)
+                // Key handovers and returns were fetched only at VM init /
+                // live WS events, so an owner whose app was backgrounded
+                // when the driver PAID opened Today to "All done" with no
+                // handover card (client fix batch, item 3).
+                async let handoversTask: () = viewModel.fetchKeyHandovers()
+                async let returnsTask: () = viewModel.fetchVehicleReturns()
+                _ = await (actionsTask, notifTask, handoversTask, returnsTask)
                 viewModel.markActionsSeen()
                 if !viewModel.tasks.isEmpty { tour.handle(.firstTodayActionPresent) }
             }
@@ -180,7 +186,9 @@ struct OwnerTodayView: View {
             // re-fetch the purchase list whenever the scene reactivates.
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
-                Task { await viewModel.fetchPurchaseRequests() }
+                // Full refresh, not just purchases: the same missed-event
+                // window applies to key handovers and returns (item 3).
+                Task { await viewModel.refresh() }
             }
         }
     }

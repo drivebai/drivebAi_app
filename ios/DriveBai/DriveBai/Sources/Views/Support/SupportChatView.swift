@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SupportChatView: View {
+    /// Item 8: the keyboard drops on send and on scroll/tap-outside.
+    @FocusState private var composerFocused: Bool
     @StateObject private var viewModel = SupportChatViewModel()
     @EnvironmentObject private var supportInboxStore: SupportInboxStore
     @Environment(\.dismiss) private var dismiss
@@ -74,6 +76,9 @@ struct SupportChatView: View {
                 }
                 .padding(.vertical, 12)
             }
+            // Item 8: scroll or tap on the thread drops the keyboard.
+            .scrollDismissesKeyboard(.interactively)
+            .onTapGesture { composerFocused = false }
             .onChange(of: viewModel.messages.count) { _ in
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -152,8 +157,10 @@ struct SupportChatView: View {
                 .padding(.vertical, 10)
                 .background(Color(.systemGray6))
                 .clipShape(RoundedRectangle(cornerRadius: 22))
+                .focused($composerFocused)
 
             Button {
+                composerFocused = false
                 Task { await viewModel.sendMessage() }
             } label: {
                 Image(systemName: "arrow.up.circle.fill")

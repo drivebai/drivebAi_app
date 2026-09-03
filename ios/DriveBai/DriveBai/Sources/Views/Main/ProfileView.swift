@@ -1434,11 +1434,11 @@ struct EarningsPayoutsSheet: View {
                 earningsRow("Paid to you", cents: paid, color: .green)
                 if pending > 0 {
                     Divider().padding(.leading, 16)
-                    earningsRow("On the way", cents: pending, color: .driveBaiPrimary)
+                    earningsRow("Sending", cents: pending, color: .driveBaiPrimary)
                 }
                 if awaiting > 0 {
                     Divider().padding(.leading, 16)
-                    earningsRow("Waiting for setup", cents: awaiting, color: .orange)
+                    earningsRow("Awaiting setup", cents: awaiting, color: .orange)
                 }
             }
             .background(Color(.systemBackground))
@@ -1479,28 +1479,42 @@ struct EarningsPayoutsSheet: View {
     }
 
     private func payoutRow(_ payout: OwnerPayoutItem) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(Self.money(payout.ownerAmountCents))
-                    .font(.subheadline.weight(.semibold))
-                Text(String(payout.createdAt.prefix(10)))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.money(payout.ownerAmountCents))
+                        .font(.subheadline.weight(.semibold))
+                    Text(String(payout.createdAt.prefix(10)))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Text(payoutStatusLabel(payout.status))
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(payoutStatusColor(payout.status))
+            }
+            // A withheld payout is a deliberate decision, not a delay — the
+            // recorded reason must be visible, or "withheld" reads as
+            // "arriving soon" (client item 4).
+            if payout.status == "withheld", let note = payout.note, !note.isEmpty {
+                Text(note)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            Text(payoutStatusLabel(payout.status))
-                .font(.caption.weight(.medium))
-                .foregroundColor(payoutStatusColor(payout.status))
         }
         .padding()
     }
 
+    /// Each ledger status says exactly what it means — no euphemisms.
+    /// "withheld" is a decision (reason shown above), not a hold.
     private func payoutStatusLabel(_ status: String) -> String {
         switch status {
         case "paid":                return "Paid"
-        case "pending", "failed":   return "On the way"
-        case "awaiting_onboarding": return "Waiting for setup"
-        case "withheld":            return "On hold"
+        case "pending":             return "Sending"
+        case "failed":              return "Failed — retrying"
+        case "awaiting_onboarding": return "Awaiting setup"
+        case "withheld":            return "Withheld"
         default:                    return status
         }
     }
@@ -1508,6 +1522,7 @@ struct EarningsPayoutsSheet: View {
     private func payoutStatusColor(_ status: String) -> Color {
         switch status {
         case "paid":                return .green
+        case "failed":              return .orange
         case "awaiting_onboarding": return .orange
         case "withheld":            return .secondary
         default:                    return .driveBaiPrimary

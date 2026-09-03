@@ -210,6 +210,13 @@ struct VehicleReturnCard: View {
             detailLine = "Full rental period used (\(vehicleReturn.totalPaidDays) days)"
             icon = "info.circle.fill"
             tone = Color.driveBaiSecondary
+        case .disputed:
+            // A contested return must NOT promise money (client fix batch,
+            // item 1): the review can end with a reduced or zero refund.
+            primaryLine = "Refund \(refundAmount) paused"
+            detailLine = "On hold while the dispute is reviewed — the final amount depends on the outcome"
+            icon = "pause.circle.fill"
+            tone = .orange
         default:
             primaryLine = "Refund \(refundAmount)"
             detailLine = ""

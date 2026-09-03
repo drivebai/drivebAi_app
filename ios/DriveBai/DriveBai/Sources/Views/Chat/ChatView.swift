@@ -346,6 +346,10 @@ struct ChatView: View {
                     .padding(.horizontal)
                 }
                 .defaultScrollAnchor(.bottom)
+                // Item 8: dragging the thread or tapping outside the input
+                // drops the keyboard — it used to be stuck on every surface.
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture { hideKeyboard() }
                 .onChange(of: viewModel.messages.count) { _, _ in
                     if let lastId = viewModel.messages.last?.id {
                         withAnimation(.easeOut(duration: 0.2)) {

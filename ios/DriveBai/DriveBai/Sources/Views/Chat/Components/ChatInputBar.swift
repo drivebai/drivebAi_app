@@ -5,6 +5,10 @@ struct ChatInputBar: View {
     let onSend: () -> Void
     let onRequestTap: () -> Void
 
+    // The keyboard drops on send (client fix batch, item 8) — the field
+    // was permanently focused with no way to dismiss on any chat surface.
+    @FocusState private var inputFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
             Divider()
@@ -23,9 +27,13 @@ struct ChatInputBar: View {
                     .padding(.vertical, 8)
                     .background(Color(.systemGray6))
                     .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .focused($inputFocused)
 
                 // Send button
-                Button(action: onSend) {
+                Button(action: {
+                    inputFocused = false
+                    onSend()
+                }) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title2)
                         .foregroundColor(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .driveBaiPrimary)

@@ -167,7 +167,7 @@ extension VehicleReturn {
             return "\(counterpartyName) will confirm receipt of the car."
         case (.driverInitiated, .owner):
             if hasRefund {
-                return "\(counterpartyName) marked it returned. A refund of \(formattedRefundAmount) for \(unusedDaysCount()) unused day\(unusedDaysCount() == 1 ? "" : "s") will be issued on confirm."
+                return "\(counterpartyName) requested to return the car. A refund of \(formattedRefundAmount) for \(unusedDaysCount()) unused day\(unusedDaysCount() == 1 ? "" : "s") will be issued on confirm."
             }
             return "Full rental period used. No refund will be issued on confirm."
         case (.ownerConfirmed, _):

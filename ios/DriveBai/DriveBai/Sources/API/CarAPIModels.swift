@@ -44,6 +44,11 @@ struct CarAPIResponse: Codable {
     /// Optional so older backends (or non-owner endpoints) that don't emit
     /// the field decode cleanly to nil.
     let activeRental: ActiveRentalAPIResponse?
+    /// Owner-scoped committed-lease context for the window BEFORE pickup
+    /// (item 5): "accepted" | "payment_pending" | "paid_awaiting_pickup" |
+    /// "picked_up". Optional — absent on discovery payloads/old backends.
+    let rentalState: String?
+    let renterFirstName: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -63,6 +68,8 @@ struct CarAPIResponse: Codable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case activeRental = "active_rental"
+        case rentalState = "rental_state"
+        case renterFirstName = "renter_first_name"
     }
 }
 
@@ -474,6 +481,8 @@ extension CarAPIResponse {
             createdAt: createdAt,
             updatedAt: updatedAt,
             activeRental: activeRental?.toDomain(),
+            rentalState: rentalState,
+            renterFirstName: renterFirstName,
             // CarListingStatus has no .sold case (see Car.isSold docs), so a
             // sold car decodes with status fallback .pending + this flag set.
             isSold: status.lowercased() == "sold",

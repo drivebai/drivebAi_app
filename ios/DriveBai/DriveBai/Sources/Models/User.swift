@@ -323,6 +323,9 @@ struct OwnerPayoutItem: Codable, Identifiable {
     let currency: String
     /// awaiting_onboarding | pending | paid | failed | withheld
     let status: String
+    /// Settlement/withhold reasoning — shown for withheld payouts so the
+    /// decision is visible, not just the state.
+    let note: String?
     let createdAt: String
     let paidAt: String?
 
@@ -332,7 +335,7 @@ struct OwnerPayoutItem: Codable, Identifiable {
         case grossKeptCents = "gross_kept_cents"
         case feeCents = "fee_cents"
         case ownerAmountCents = "owner_amount_cents"
-        case currency, status
+        case currency, status, note
         case createdAt = "created_at"
         case paidAt = "paid_at"
     }

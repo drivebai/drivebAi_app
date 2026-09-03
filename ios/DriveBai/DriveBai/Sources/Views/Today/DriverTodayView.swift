@@ -171,7 +171,12 @@ struct DriverTodayView: View {
                 // Refresh documents so the "Add your driver's license" checklist
                 // row reflects real upload state, not a stale/empty cache.
                 async let docsTask: () = authStore.fetchDocuments()
-                _ = await (actionsTask, notifTask, docsTask)
+                // Same missed-event window as the owner side (item 3): a
+                // backgrounded driver must see fresh handover/return cards
+                // on open, not only on live WS events.
+                async let handoversTask: () = viewModel.fetchKeyHandovers()
+                async let returnsTask: () = viewModel.fetchVehicleReturns()
+                _ = await (actionsTask, notifTask, docsTask, handoversTask, returnsTask)
                 viewModel.markActionsSeen()
                 if !viewModel.tasks.isEmpty { tour.handle(.firstTodayActionPresent) }
             }
@@ -209,7 +214,9 @@ struct DriverTodayView: View {
             // stale. Re-fetch the purchase list when the scene reactivates.
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
-                Task { await viewModel.fetchPurchaseRequests() }
+                // Full refresh (item 3): purchases, handovers, and returns
+                // all share the same missed-WS-event window.
+                Task { await viewModel.refresh() }
             }
         }
     }
@@ -571,7 +578,7 @@ struct ActiveRentalCard: View {
                 // No refund promise: past the end, used days equal paid days
                 // and the computed refund is $0 — the true incentive is
                 // closing out the rental, and saying anything else would lie.
-                Text("The rental period has ended. Hand the car back and tap “I returned the car” to close out the rental.")
+                Text("The rental period has ended. Hand the car back and tap “Request to Return the Vehicle” to close out the rental.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -594,7 +601,7 @@ struct ActiveRentalCard: View {
             HStack(spacing: 8) {
                 if !hasOpenReturn {
                     Button(action: onReturn) {
-                        Text("I returned the car")
+                        Text("Request to Return the Vehicle")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)

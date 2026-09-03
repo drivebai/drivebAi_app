@@ -549,6 +549,13 @@ struct Car: Identifiable, Equatable, Hashable {
     /// decode it optionally so iOS runs against both).
     var activeRental: ActiveRentalSummary? = nil
 
+    /// Committed-lease state for the pre-pickup window (item 5):
+    /// accepted / payment_pending / paid_awaiting_pickup / picked_up.
+    var rentalState: String? = nil
+    /// First name of the renter for the states above — surname stays
+    /// private until the rental runs.
+    var renterFirstName: String? = nil
+
     /// True when the backend reports `status == "sold"`. Kept as a separate
     /// flag because `CarListingStatus` has no `.sold` case (adding one would
     /// break exhaustive switches owned by wave-2 screens); a sold car's
@@ -592,6 +599,8 @@ struct Car: Identifiable, Equatable, Hashable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         activeRental: ActiveRentalSummary? = nil,
+        rentalState: String? = nil,
+        renterFirstName: String? = nil,
         isSold: Bool = false,
         hasActivePurchase: Bool = false
     ) {
@@ -616,6 +625,8 @@ struct Car: Identifiable, Equatable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.activeRental = activeRental
+        self.rentalState = rentalState
+        self.renterFirstName = renterFirstName
         self.hasActivePurchase = hasActivePurchase
         self.isSold = isSold
     }

@@ -295,7 +295,9 @@ enum MyCarsStatusFilter: String, CaseIterable, Identifiable {
     static func forCar(_ car: Car) -> MyCarsStatusFilter {
         switch CarBusinessState.forCar(car) {
         case .available: return .available
-        case .rented: return .rented
+        // A reserved car files under Rented for filtering — it is spoken
+        // for, which is what the owner's filter is asking (item 5).
+        case .rented, .reserved: return .rented
         case .awaitingApproval, .pendingReview: return .pending
         case .paused: return .paused
         case .sold: return .sold
