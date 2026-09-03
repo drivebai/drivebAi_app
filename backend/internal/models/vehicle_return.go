@@ -231,6 +231,12 @@ type DisputeVehicleReturnBody struct {
 type ResolveVehicleReturnBody struct {
 	Resolution string `json:"resolution"` // "accept" | "reject"
 	Note       string `json:"note,omitempty"`
+	// DriverRefundCents optionally overrides the snapshotted refund when
+	// accepting. This is the admin's lever between "full snapshot" and
+	// "$0 reject" on a contested return: a "driver did not return" dispute
+	// resolved in the owner's favour is accepted with 0 — the return
+	// closes, the car releases, and no money goes back to the driver.
+	DriverRefundCents *int64 `json:"driver_refund_cents,omitempty"`
 }
 
 // VehicleReturnResponse is the per-viewer API shape, mirroring

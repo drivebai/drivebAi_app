@@ -487,6 +487,30 @@ func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UU
 	return v, nil
 }
 
+// UpdateRefundAmount overrides the snapshotted driver refund on a return
+// that has NOT started refunding — the admin's lever on contested rows
+// (client fix batch, item 1: a "did not return" dispute must be closable
+// with a $0 refund). Guards: only pre-refund states, never above the paid
+// snapshot, never after a Stripe refund id exists.
+func (r *VehicleReturnRepository) UpdateRefundAmount(ctx context.Context, id uuid.UUID, refundCents int64) (*models.VehicleReturn, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE vehicle_returns
+		SET refund_amount_cents = $2, updated_at = NOW()
+		WHERE id = $1
+		  AND status IN ('driver_initiated', 'disputed')
+		  AND refund_id IS NULL
+		  AND $2 >= 0 AND $2 <= paid_amount_cents
+		RETURNING `+vehicleReturnColumns, id, refundCents)
+	v, err := scanVehicleReturn(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, models.NewAPIError("REFUND_LOCKED", "refund can no longer be changed on this return (already resolving, already refunded, or amount exceeds what was paid)")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update refund amount: %w", err)
+	}
+	return v, nil
+}
+
 // ReviveCancelled re-opens a cancelled return as a fresh driver_initiated
 // submission. Without this, cancelled is LEASE-FATAL: UNIQUE(lease_request_id)
 // plus Initiate's return-existing-row idempotency means a driver who undid a

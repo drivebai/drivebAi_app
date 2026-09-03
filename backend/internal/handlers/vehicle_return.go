@@ -178,8 +178,8 @@ func (h *VehicleReturnHandler) Initiate(w http.ResponseWriter, r *http.Request) 
 	driverName := nameOr(resp.DriverName, "The driver")
 	carTitle := carTitleOr(resp.CarTitle)
 	go h.notifHandler.Notify(created.OwnerID, models.NotificationTypeLeaseRequest,
-		"Driver returned the car",
-		fmt.Sprintf("%s marked %s as returned. Confirm receipt to release the refund.", driverName, carTitle),
+		"Return requested",
+		fmt.Sprintf("%s requested to return %s. Confirm receipt to release the refund.", driverName, carTitle),
 		chatID, &leaseRef)
 }
 
@@ -215,8 +215,8 @@ func (h *VehicleReturnHandler) reviveCancelledReturn(w http.ResponseWriter, r *h
 	chatID := resp.ChatID
 	leaseRef := revived.LeaseRequestID
 	go h.notifHandler.Notify(revived.OwnerID, models.NotificationTypeLeaseRequest,
-		"Driver returned the car",
-		fmt.Sprintf("%s marked %s as returned. Confirm receipt to release the refund.",
+		"Return requested",
+		fmt.Sprintf("%s requested to return %s. Confirm receipt to release the refund.",
 			nameOr(resp.DriverName, "The driver"), carTitleOr(resp.CarTitle)),
 		chatID, &leaseRef)
 }
@@ -603,6 +603,25 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Optional refund override, applied BEFORE the accept flips the row —
+	// once refund_status goes pending the amount is committed. Bounds are
+	// enforced against the row's own paid snapshot in the repo guard.
+	if resolution == "accept" && body.DriverRefundCents != nil {
+		if *body.DriverRefundCents < 0 {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("driver_refund_cents must be non-negative"))
+			return
+		}
+		if _, uerr := h.repo.UpdateRefundAmount(r.Context(), id, *body.DriverRefundCents); uerr != nil {
+			if apiErr := models.GetAPIError(uerr); apiErr != nil {
+				httputil.WriteError(w, http.StatusConflict, apiErr)
+				return
+			}
+			h.logger.Error("vehicle return: refund override", "error", uerr, "id", id)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+	}
+
 	resolved, err := h.repo.ResolveDispute(r.Context(), id, resolution, note)
 	if err != nil {
 		if apiErr := models.GetAPIError(err); apiErr != nil {
@@ -850,9 +869,23 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 			return
 		}
 	case target.Status == models.VehicleReturnDriverInitiated || target.Status == models.VehicleReturnDisputed:
-		// An open return already exists — resolve THAT one (its own
-		// snapshotted refund applies; use /vehicle-returns/{id}/resolve to
-		// keep one authoritative flow for open rows).
+		// An open return already exists — resolve THAT one. The admin's
+		// driver_refund_cents was previously DROPPED here, which turned
+		// "close this did-not-return dispute with $0" into a silent
+		// force-accept that refunded the full initiation-day snapshot
+		// (client fix batch, item 1). Honor the override; without one, the
+		// row's snapshot still applies.
+		if body.DriverRefundCents != nil {
+			if _, uerr := h.repo.UpdateRefundAmount(r.Context(), target.ID, refundCents); uerr != nil {
+				if apiErr := models.GetAPIError(uerr); apiErr != nil {
+					httputil.WriteError(w, http.StatusConflict, apiErr)
+					return
+				}
+				h.logger.Error("admin settle: refund override", "error", uerr, "return_id", target.ID)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+		}
 	default:
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETTLE_NOT_ALLOWED", "this rent's return is already settling — the refund scanner will complete it"))
 		return
@@ -1114,7 +1147,7 @@ func (h *VehicleReturnHandler) runStuckRefundSweep(ctx context.Context) {
 		leaseRef := v.LeaseRequestID
 		go h.notifHandler.Notify(v.OwnerID, models.NotificationTypeLeaseRequest,
 			"Return waiting on you",
-			fmt.Sprintf("%s marked %s as returned two days ago and is still waiting. Confirm receipt to release their refund, or dispute it if something is wrong.",
+			fmt.Sprintf("%s requested to return %s two days ago and is still waiting. Confirm receipt to release their refund, or dispute it if something is wrong.",
 				nameOr(resp.DriverName, "The driver"), carTitleOr(resp.CarTitle)),
 			chatID, &leaseRef)
 		h.logger.Info("vehicle return: owner reminder sent", "return_id", v.ID, "owner_id", v.OwnerID)
@@ -1253,7 +1286,7 @@ func (h *VehicleReturnHandler) postSystemMessage(ctx context.Context, v *models.
 	var senderID uuid.UUID
 	switch kind {
 	case "driver_initiated":
-		body = fmt.Sprintf("%s marked the car as returned. %s, please confirm receipt.", driverName, ownerName)
+		body = fmt.Sprintf("%s requested to return the car. %s, please confirm receipt.", driverName, ownerName)
 		senderID = v.DriverID
 	case "driver_cancelled":
 		body = fmt.Sprintf("%s cancelled the return request.", driverName)
