@@ -752,11 +752,11 @@ func main() {
 	// escalation tickets (lifecycle batch, defect 2). Same cadence — each
 	// phase's claimed-once flag makes frequent ticks cheap no-ops.
 	//
-	// HELD DARK for the 2026-08-21 deploy (client call in progress): the
-	// first tick would notify real users about genuinely old rentals.
-	// Their term flags have been pre-stamped in the DB, so RE-ENABLING is
-	// safe and burst-free: uncomment the line below and redeploy.
-	// go leaseHandler.StartRentalTermScanner(workerCtx, scanInterval)
+	// RE-ENABLED 2026-09-03 (nine-fix deploy): a live rental ends Sep 6
+	// and needs its T-24h notice. Verified pre-deploy that the first tick
+	// touches nothing: the old rentals' flags are pre-stamped and the live
+	// rental is outside every phase window until Sep 5.
+	go leaseHandler.StartRentalTermScanner(workerCtx, scanInterval)
 	// Owner payouts: executes pending/retryable transfers, drains escrow
 	// when an owner becomes ready, weekly reminders on unclaimed balances,
 	// 60-day escalation tickets. Same cadence, same cheap-no-op shape.
