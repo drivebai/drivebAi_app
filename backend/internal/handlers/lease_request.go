@@ -1857,30 +1857,22 @@ type SharedDocumentsListResponse struct {
 // AFTER the lease request transaction commits and treated as best-effort:
 // a failure here must never prevent the lease request from being returned.
 func (h *LeaseRequestHandler) shareDriverDocs(ctx context.Context, lr *models.LeaseRequest) {
-	// Share only the driver's photo ID. The other onboarding doc
-	// (DocumentRegistration) is the driver's OWN vehicle registration, kept
-	// for identity verification — it's not relevant to the car owner
-	// deciding whether to rent THEIR car out, and the UI label "Vehicle
-	// Registration" caused owners to confuse it with the listing's car
-	// papers. Vehicle/car documents go through the dedicated car_documents
-	// surface on the driver side; see ListSharedDocuments below.
-	required := []models.DocumentType{
-		models.DocumentDriversLicense,
+	// Share EVERYTHING the driver has uploaded, with live status (client
+	// fix batch, item 7: owners vet TLC/commercial licences too, not just
+	// the photo ID). The earlier licence-only tightening existed because
+	// the "Vehicle Registration" label read as the LISTING's papers — that
+	// is a labeling concern, not an access one; each row now carries its
+	// type and verification status.
+	docs, err := h.docRepo.GetByUserID(ctx, lr.DriverID)
+	if err != nil {
+		h.logger.Warn("share driver docs: lookup failed",
+			"error", err, "driver_id", lr.DriverID)
+		return
 	}
-
 	var docIDs []uuid.UUID
-	for _, t := range required {
-		doc, err := h.docRepo.GetByUserIDAndType(ctx, lr.DriverID, t)
-		if err != nil {
-			h.logger.Warn("share driver docs: lookup failed",
-				"error", err, "driver_id", lr.DriverID, "type", t)
-			continue
-		}
-		if doc != nil {
-			docIDs = append(docIDs, doc.ID)
-		}
+	for _, d := range docs {
+		docIDs = append(docIDs, d.ID)
 	}
-
 	if len(docIDs) == 0 {
 		return
 	}
@@ -1933,12 +1925,27 @@ func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http
 		viewerRole = "owner"
 	}
 
-	// Driver documents (license) — populated for the OWNER viewer only.
-	// We filter to drivers_license to keep the surface correctly scoped
-	// even on lease requests created before shareDriverDocs was tightened
-	// (those have a stale `registration` row that we want to suppress).
+	// Driver documents — populated for the OWNER viewer only, every type
+	// the driver has uploaded, with live verification status (item 7).
+	// Self-heal first: documents uploaded AFTER the lease request was made
+	// (and chats created before this change) were never linked, so re-link
+	// the driver's current documents to the chat's newest lease request —
+	// idempotent (ON CONFLICT DO NOTHING), and gated on a lease request
+	// existing, which keeps the authorization exactly as tight: an owner
+	// only ever sees documents of a driver who requested THEIR car.
 	driverDocs := make([]SharedDocumentResponse, 0)
 	if viewerRole == "owner" {
+		if lrs, lerr := h.leaseRepo.ListForChat(r.Context(), chatID); lerr == nil && len(lrs) > 0 {
+			if docs, derr := h.docRepo.GetByUserID(r.Context(), chat.DriverID); derr == nil && len(docs) > 0 {
+				ids := make([]uuid.UUID, 0, len(docs))
+				for _, d := range docs {
+					ids = append(ids, d.ID)
+				}
+				if serr := h.sharedDocsRepo.CreateForLeaseRequest(r.Context(), lrs[0].ID, ids); serr != nil {
+					h.logger.Warn("shared docs: self-heal relink failed", "error", serr, "chat_id", chatID)
+				}
+			}
+		}
 		infos, err := h.sharedDocsRepo.ListByChatID(r.Context(), chatID)
 		if err != nil {
 			h.logger.Error("shared docs: list failed", "error", err, "chat_id", chatID)
@@ -1946,9 +1953,6 @@ func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http
 			return
 		}
 		for _, info := range infos {
-			if info.Type != models.DocumentDriversLicense {
-				continue
-			}
 			driverDocs = append(driverDocs, SharedDocumentResponse{
 				ID:         info.ID,
 				DocumentID: info.DocumentID,
