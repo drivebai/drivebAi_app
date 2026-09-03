@@ -21,6 +21,10 @@ struct CarAPIResponse: Codable {
     let location: CarLocationResponse
     let isForRent: Bool
     let weeklyRentPrice: Double?
+    /// Owner-typed price + unit (migration 000050). weekly_rent_price
+    /// stays the canonical booking price; these drive display/edit.
+    let rentPricePeriod: String?
+    let rentPriceAmount: Double?
     let isForSale: Bool
     let salePrice: Double?
     let currency: String
@@ -56,6 +60,8 @@ struct CarAPIResponse: Codable {
         case title, description, specs, location
         case isForRent = "is_for_rent"
         case weeklyRentPrice = "weekly_rent_price"
+        case rentPricePeriod = "rent_price_period"
+        case rentPriceAmount = "rent_price_amount"
         case isForSale = "is_for_sale"
         case salePrice = "sale_price"
         case currency, requirements, status
@@ -240,6 +246,8 @@ struct CreateCarRequest: Codable {
     var zip: String?
     var isForRent: Bool
     var weeklyRentPrice: Double?
+    var rentPricePeriod: String?
+    var rentPriceAmount: Double?
     var isForSale: Bool
     var salePrice: Double?
     var minYearsLicensed: Int?
@@ -256,6 +264,8 @@ struct CreateCarRequest: Codable {
         case area, street, block, zip
         case isForRent = "is_for_rent"
         case weeklyRentPrice = "weekly_rent_price"
+        case rentPricePeriod = "rent_price_period"
+        case rentPriceAmount = "rent_price_amount"
         case isForSale = "is_for_sale"
         case salePrice = "sale_price"
         case minYearsLicensed = "min_years_licensed"
@@ -278,6 +288,8 @@ struct UpdateCarRequest: Codable {
     var longitude: Double?
     var isForRent: Bool?
     var weeklyRentPrice: Double?
+    var rentPricePeriod: String?
+    var rentPriceAmount: Double?
     var isForSale: Bool?
     var salePrice: Double?
     var minYearsLicensed: Int?
@@ -296,6 +308,8 @@ struct UpdateCarRequest: Codable {
         case mileage, address, neighborhood, latitude, longitude
         case isForRent = "is_for_rent"
         case weeklyRentPrice = "weekly_rent_price"
+        case rentPricePeriod = "rent_price_period"
+        case rentPriceAmount = "rent_price_amount"
         case isForSale = "is_for_sale"
         case salePrice = "sale_price"
         case minYearsLicensed = "min_years_licensed"
@@ -467,6 +481,8 @@ extension CarAPIResponse {
             owner: carOwner,
             isForRent: isForRent,
             weeklyRentPrice: weeklyRentPrice.map { Money(amount: $0, currency: currency) },
+            rentPricePeriod: rentPricePeriod ?? "weekly",
+            rentPriceAmount: rentPriceAmount,
             isForSale: isForSale,
             salePrice: salePrice.map { Money(amount: $0, currency: currency) },
             status: carStatus,
@@ -514,6 +530,8 @@ extension Car {
             zip: location.zip.isEmpty ? nil : location.zip,
             isForRent: isForRent,
             weeklyRentPrice: weeklyRentPrice?.amount,
+            rentPricePeriod: rentPricePeriod,
+            rentPriceAmount: rentPriceAmount ?? weeklyRentPrice?.amount,
             isForSale: isForSale,
             salePrice: salePrice?.amount,
             minYearsLicensed: requirements.minYearsLicensedDriving,
@@ -538,6 +556,8 @@ extension Car {
             longitude: location.longitude != 0 ? location.longitude : nil,
             isForRent: isForRent,
             weeklyRentPrice: weeklyRentPrice?.amount,
+            rentPricePeriod: rentPricePeriod,
+            rentPriceAmount: rentPriceAmount ?? weeklyRentPrice?.amount,
             isForSale: isForSale,
             salePrice: salePrice?.amount,
             minYearsLicensed: requirements.minYearsLicensedDriving,

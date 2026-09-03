@@ -75,6 +75,49 @@ class CreateListingState: ObservableObject {
     // Pricing
     @Published var isForRent: Bool = true
     @Published var weeklyRentPrice: Double = 350
+    /// The unit the owner is typing in ("daily"/"weekly"/"monthly"). The
+    /// typed (amount, period) pair is the source of truth; switching units
+    /// converts the DISPLAYED number from that source (never chained), so
+    /// $400/wk → daily shows $57.14 and switching straight back shows
+    /// exactly $400.00 again. A month is 4 weeks (28 days), everywhere.
+    @Published var rentPricePeriod: String = "weekly"
+
+    static func rentPeriodDays(_ p: String) -> Double {
+        switch p { case "daily": return 1; case "monthly": return 28; default: return 7 }
+    }
+
+    /// One-hop conversion with cent rounding — display projection only.
+    static func convertRent(_ amount: Double, from: String, to: String) -> Double {
+        guard from != to else { return amount }
+        let cents = (amount * 100 * rentPeriodDays(to) / rentPeriodDays(from)).rounded()
+        return cents / 100
+    }
+
+    /// The weekly floor scaled to the selected period (ceil to the cent so
+    /// a converted price can never sneak under the weekly minimum).
+    static func minRent(for period: String, minWeekly: Double) -> Double {
+        switch period {
+        case "daily": return (minWeekly * 100 / 7).rounded(.up) / 100
+        case "monthly": return minWeekly * 4
+        default: return minWeekly
+        }
+    }
+
+    /// Switching the dropdown: convert the current typed pair to the new
+    /// unit in one hop; the converted value becomes the new source only
+    /// because the OWNER sees and can retype it — matching the client's
+    /// described flow exactly.
+    func switchRentPeriod(to newPeriod: String) {
+        guard newPeriod != rentPricePeriod else { return }
+        weeklyRentPrice = Self.convertRent(weeklyRentPrice, from: rentPricePeriod, to: newPeriod)
+        rentPricePeriod = newPeriod
+    }
+
+    /// The canonical weekly equivalent of the typed pair — what validation
+    /// compares against the weekly floor.
+    var weeklyEquivalent: Double {
+        Self.convertRent(weeklyRentPrice, from: rentPricePeriod, to: "weekly")
+    }
     @Published var isForSale: Bool = false
     @Published var salePrice: Double = 25000
 
@@ -190,7 +233,7 @@ class CreateListingState: ObservableObject {
 
     var isPricingValid: Bool {
         (isForRent || isForSale) &&
-        (!isForRent || weeklyRentPrice >= kMinWeeklyRentPrice) &&
+        (!isForRent || weeklyEquivalent >= kMinWeeklyRentPrice) &&
         (!isForSale || salePrice > 0)
     }
 
@@ -394,7 +437,9 @@ class CreateListingState: ObservableObject {
             location: location,
             owner: owner,
             isForRent: isForRent,
-            weeklyRentPrice: isForRent ? Money(amount: weeklyRentPrice) : nil,
+            weeklyRentPrice: isForRent ? Money(amount: Self.convertRent(weeklyRentPrice, from: rentPricePeriod, to: "weekly")) : nil,
+            rentPricePeriod: rentPricePeriod,
+            rentPriceAmount: isForRent ? weeklyRentPrice : nil,
             isForSale: isForSale,
             salePrice: isForSale ? Money(amount: salePrice) : nil,
             status: .pending,
@@ -1199,16 +1244,29 @@ struct CreateListingPricingStep: View {
 
                 if state.isForRent {
                     VStack(alignment: .leading, spacing: 8) {
+                        // Daily/Weekly/Monthly (client request): switching
+                        // converts the shown number from the typed pair in
+                        // one hop; a month is 4 weeks.
+                        Picker("Price period", selection: Binding(
+                            get: { state.rentPricePeriod },
+                            set: { state.switchRentPeriod(to: $0) }
+                        )) {
+                            Text("Daily").tag("daily")
+                            Text("Weekly").tag("weekly")
+                            Text("Monthly").tag("monthly")
+                        }
+                        .pickerStyle(.segmented)
+
                         PriceEditorRow(
-                            label: "Weekly Rent Price",
-                            suffix: "/ week",
+                            label: "\(state.rentPricePeriod == "daily" ? "Daily" : state.rentPricePeriod == "monthly" ? "Monthly" : "Weekly") Rent Price",
+                            suffix: "/ \(state.rentPricePeriod == "daily" ? "day" : state.rentPricePeriod == "monthly" ? "month" : "week")",
                             value: $state.weeklyRentPrice,
-                            minValue: kMinWeeklyRentPrice,
-                            step: 10,
-                            sheetTitle: "Weekly rent"
+                            minValue: CreateListingState.minRent(for: state.rentPricePeriod, minWeekly: kMinWeeklyRentPrice),
+                            step: state.rentPricePeriod == "daily" ? 5 : 10,
+                            sheetTitle: "\(state.rentPricePeriod.capitalized) rent"
                         )
 
-                        Text("Minimum $\(Int(kMinWeeklyRentPrice)) — tap to edit with +/- or type")
+                        Text("Minimum $\(String(format: "%.2f", CreateListingState.minRent(for: state.rentPricePeriod, minWeekly: kMinWeeklyRentPrice)))/\(state.rentPricePeriod == "daily" ? "day" : state.rentPricePeriod == "monthly" ? "month" : "week") — tap to edit with +/- or type")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -1963,7 +2021,7 @@ struct CreateListingReviewStep: View {
                 // Pricing card
                 ReviewSection(title: "Pricing") {
                     if state.isForRent {
-                        ReviewRow(label: "Rent", value: "\(Money(amount: state.weeklyRentPrice).formatted) / week")
+                        ReviewRow(label: "Rent", value: "\(Money(amount: state.weeklyRentPrice).formatted) / \(state.rentPricePeriod == "daily" ? "day" : state.rentPricePeriod == "monthly" ? "month" : "week")")
                     }
                     if state.isForSale {
                         ReviewRow(label: "Sale", value: Money(amount: state.salePrice).formatted)

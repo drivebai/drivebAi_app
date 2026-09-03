@@ -603,7 +603,7 @@ struct DiscoverListingCard: View {
                             .fontWeight(.semibold)
                             .foregroundColor(.driveBaiPrimary)
                         +
-                        Text(" per week")
+                        Text(" per \(car.rentPeriodUnit)")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -878,8 +878,8 @@ struct ListingDetailView: View {
                                 if car.isForRent, let price = car.weeklyRentPrice {
                                     PricingCard(
                                         title: "Rent",
-                                        price: price.formatted,
-                                        subtitle: "per week",
+                                        price: Money(amount: car.rentPriceAmount ?? price.amount, currency: price.currency).formatted,
+                                        subtitle: "per \(car.rentPeriodUnit)",
                                         isPrimary: true
                                     )
                                 }

@@ -25,6 +25,8 @@ struct ListingSummary: Identifiable {
     let title: String
     let imageURL: String?
     let weeklyPrice: Double
+    /// Owner-typed unit ("day"/"week"/"month") — defaults week for legacy.
+    var priceUnit: String = "week"
     let rentedWeeks: Int
     let totalEarned: Double
     let status: ListingStatus

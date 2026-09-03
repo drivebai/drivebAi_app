@@ -206,7 +206,7 @@ struct MapPreviewCard: View {
                                 .fontWeight(.bold)
                                 .foregroundColor(.primary)
                             +
-                            Text(" per week")
+                            Text(" per \(car.rentPeriodUnit)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

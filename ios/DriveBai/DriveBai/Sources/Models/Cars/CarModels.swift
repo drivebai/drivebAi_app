@@ -549,6 +549,12 @@ struct Car: Identifiable, Equatable, Hashable {
     /// decode it optionally so iOS runs against both).
     var activeRental: ActiveRentalSummary? = nil
 
+    /// Owner-typed rent price period ("daily"/"weekly"/"monthly") and the
+    /// amount they typed in that unit (migration 000050). weeklyRentPrice
+    /// stays the canonical booking price. A pricing month is 4 weeks.
+    var rentPricePeriod: String = "weekly"
+    var rentPriceAmount: Double? = nil
+
     /// Committed-lease state for the pre-pickup window (item 5):
     /// accepted / payment_pending / paid_awaiting_pickup / picked_up.
     var rentalState: String? = nil
@@ -587,6 +593,8 @@ struct Car: Identifiable, Equatable, Hashable {
         owner: CarOwnerInfo,
         isForRent: Bool = true,
         weeklyRentPrice: Money? = nil,
+        rentPricePeriod: String = "weekly",
+        rentPriceAmount: Double? = nil,
         isForSale: Bool = false,
         salePrice: Money? = nil,
         status: CarListingStatus = .available,
@@ -625,6 +633,8 @@ struct Car: Identifiable, Equatable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.activeRental = activeRental
+        self.rentPricePeriod = rentPricePeriod
+        self.rentPriceAmount = rentPriceAmount
         self.rentalState = rentalState
         self.renterFirstName = renterFirstName
         self.hasActivePurchase = hasActivePurchase
@@ -638,6 +648,25 @@ extension Car {
     var weeklyPriceFormatted: String {
         guard let price = weeklyRentPrice else { return "N/A" }
         return "\(price.formatted) / week"
+    }
+
+    /// The unit suffix for the OWNER-TYPED price ("day"/"week"/"month").
+    var rentPeriodUnit: String {
+        switch rentPricePeriod {
+        case "daily": return "day"
+        case "monthly": return "month"
+        default: return "week"
+        }
+    }
+
+    /// The listing price in the owner's chosen unit — what every display
+    /// surface shows ("$60/day"). Falls back to the weekly price for
+    /// legacy rows. A price without its unit is a bug.
+    var rentPriceDisplay: String {
+        let amount = rentPriceAmount ?? weeklyRentPrice?.amount
+        guard let amount else { return "N/A" }
+        let money = Money(amount: amount, currency: weeklyRentPrice?.currency ?? "USD")
+        return "\(money.formatted)/\(rentPeriodUnit)"
     }
 
     var salePriceFormatted: String {
@@ -683,7 +712,8 @@ extension Car {
             id: id,
             title: displayTitle,
             imageURL: coverPhotoURL,
-            weeklyPrice: weeklyRentPrice?.amount ?? 0,
+            weeklyPrice: rentPriceAmount ?? weeklyRentPrice?.amount ?? 0,
+            priceUnit: rentPeriodUnit,
             rentedWeeks: rentedWeeks,
             totalEarned: totalEarned.amount,
             status: status.toListingStatus

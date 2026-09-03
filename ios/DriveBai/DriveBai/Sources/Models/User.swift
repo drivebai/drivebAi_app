@@ -287,6 +287,11 @@ struct PayoutAccount: Codable {
     let disabledReason: String?
     let currentDeadline: String?
     let earnings: PayoutEarnings?
+    /// Part A: the connected bank ("CHASE •••• 6789") and when payouts
+    /// actually land, shown natively on the Earnings sheet.
+    let bankName: String?
+    let bankLast4: String?
+    let payoutSchedule: PayoutSchedule?
 
     enum CodingKeys: String, CodingKey {
         case status
@@ -296,7 +301,26 @@ struct PayoutAccount: Codable {
         case disabledReason = "disabled_reason"
         case currentDeadline = "current_deadline"
         case earnings
+        case bankName = "bank_name"
+        case bankLast4 = "bank_last4"
+        case payoutSchedule = "payout_schedule"
     }
+}
+
+struct PayoutSchedule: Codable {
+    let interval: String
+    let delayDays: Int
+
+    enum CodingKeys: String, CodingKey {
+        case interval
+        case delayDays = "delay_days"
+    }
+}
+
+/// POST /payout-account/dashboard-link — one-time Stripe Express dashboard
+/// URL for viewing/replacing the bank account (Part A).
+struct PayoutDashboardLinkResponse: Codable {
+    let url: String
 }
 
 /// POST /payout-account/session — the account-session secret the embedded

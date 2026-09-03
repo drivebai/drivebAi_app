@@ -702,17 +702,38 @@ private struct GeneralInformationContent: View {
             }
             .tint(Color.driveBaiPrimary)
 
-            // Weekly rent price
+            // Rent price in the owner's chosen unit (migration 000050):
+            // the typed (amount, period) pair is the source of truth; the
+            // server re-derives the weekly booking price on save.
             if car.isForRent {
+                Picker("Price period", selection: Binding(
+                    get: { car.rentPricePeriod },
+                    set: { newPeriod in
+                        let old = car.rentPricePeriod
+                        guard newPeriod != old else { return }
+                        let current = car.rentPriceAmount ?? car.weeklyRentPrice?.amount ?? 0
+                        car.rentPriceAmount = CreateListingState.convertRent(current, from: old, to: newPeriod)
+                        car.rentPricePeriod = newPeriod
+                    }
+                )) {
+                    Text("Daily").tag("daily")
+                    Text("Weekly").tag("weekly")
+                    Text("Monthly").tag("monthly")
+                }
+                .pickerStyle(.segmented)
+
                 PriceEditorRow(
-                    label: "Weekly rent price",
-                    suffix: "/ week",
+                    label: "\(car.rentPeriodUnit.capitalized) rent price",
+                    suffix: "/ \(car.rentPeriodUnit)",
                     value: Binding(
-                        get: { car.weeklyRentPrice?.amount ?? 0 },
-                        set: { car.weeklyRentPrice = Money(amount: $0) }
+                        get: { car.rentPriceAmount ?? car.weeklyRentPrice?.amount ?? 0 },
+                        set: {
+                            car.rentPriceAmount = $0
+                            car.weeklyRentPrice = Money(amount: CreateListingState.convertRent($0, from: car.rentPricePeriod, to: "weekly"))
+                        }
                     ),
-                    minValue: kMinWeeklyRentPrice,
-                    step: 10,
+                    minValue: CreateListingState.minRent(for: car.rentPricePeriod, minWeekly: kMinWeeklyRentPrice),
+                    step: car.rentPricePeriod == "daily" ? 5 : 10,
                     sheetTitle: "Weekly rent"
                 )
             }

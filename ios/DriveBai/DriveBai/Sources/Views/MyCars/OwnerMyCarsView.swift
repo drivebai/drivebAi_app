@@ -566,7 +566,10 @@ struct CarListRow: View {
     private var metadataRow: some View {
         HStack(spacing: 16) {
             if car.isForRent, let price = car.weeklyRentPrice {
-                CarMetadataLabel(label: "Weekly", value: price.formatted)
+                CarMetadataLabel(
+                    label: car.rentPeriodUnit.capitalized,
+                    value: Money(amount: car.rentPriceAmount ?? price.amount, currency: price.currency).formatted
+                )
             }
             CarMetadataLabel(label: "Rented", value: car.rentedWeeksFormatted)
             CarMetadataLabel(label: "Total", value: car.totalEarnedFormatted)

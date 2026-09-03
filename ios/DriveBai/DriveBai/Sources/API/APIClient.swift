@@ -150,6 +150,7 @@ protocol APIClientProtocol {
     func fetchPayoutAccount() async throws -> PayoutAccount
     func createPayoutSession() async throws -> PayoutSessionResponse
     func fetchOwnerPayouts() async throws -> OwnerPayoutsResponse
+    func fetchPayoutDashboardLink() async throws -> PayoutDashboardLinkResponse
 
     // Cars (Owner)
     func fetchCars() async throws -> [Car]
@@ -491,6 +492,13 @@ final class APIClient: APIClientProtocol {
     /// GET /payout-account/payouts — the owner's earnings history.
     func fetchOwnerPayouts() async throws -> OwnerPayoutsResponse {
         try await get(path: "payout-account/payouts", authenticated: true)
+    }
+
+    /// POST /payout-account/dashboard-link — one-time Express dashboard URL
+    /// for bank-account viewing/replacement (Part A). 409 when no account
+    /// exists yet; callers route into onboarding instead.
+    func fetchPayoutDashboardLink() async throws -> PayoutDashboardLinkResponse {
+        try await postEmpty(path: "payout-account/dashboard-link", authenticated: true)
     }
 
     // MARK: - Car Methods

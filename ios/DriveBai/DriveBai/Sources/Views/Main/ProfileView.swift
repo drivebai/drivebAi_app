@@ -1,3 +1,4 @@
+import SafariServices
 import SwiftUI
 import StripeConnect
 
@@ -1239,6 +1240,12 @@ struct EarningsPayoutsSheet: View {
     /// True while re-fetching status right after the component closed —
     /// the moment the user most wants an accurate answer.
     @State private var isRefreshingAfterOnboarding = false
+    /// Part A: one-time Express dashboard URL for bank management, shown
+    /// in an in-app Safari sheet. Status re-fetches on dismiss — the
+    /// client is never trusted to know what changed in there.
+    @State private var dashboardURL: URL?
+    @State private var isFetchingDashboardLink = false
+    @State private var dashboardLinkError: String?
 
     var body: some View {
         NavigationStack {
@@ -1267,6 +1274,7 @@ struct EarningsPayoutsSheet: View {
                         .padding(.vertical, 40)
                     } else {
                         statusCard
+                        bankCard
                         earningsCard
                         historySection
                     }
@@ -1422,6 +1430,120 @@ struct EarningsPayoutsSheet: View {
         isRefreshingAfterOnboarding = false
     }
 
+    // MARK: Bank account & payout schedule (Part A)
+
+    /// Shown only when payouts are READY — a not-yet-onboarded owner has
+    /// no bank to manage and keeps the onboarding CTA instead (never a
+    /// dead end). Managing opens Stripe's Express dashboard in an in-app
+    /// Safari sheet: the supported bank-editing surface for our account
+    /// configuration. Stripe texts a sign-in code first — expected, and
+    /// the copy says so.
+    @ViewBuilder
+    private var bankCard: some View {
+        if status == .ready {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "building.columns.fill")
+                        .font(.title3)
+                        .foregroundColor(.driveBaiPrimary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(bankLine)
+                            .font(.subheadline.weight(.semibold))
+                        if let schedule = account?.payoutSchedule {
+                            Text(scheduleLine(schedule))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+
+                Button {
+                    openDashboard()
+                } label: {
+                    HStack {
+                        if isFetchingDashboardLink {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text("Manage bank account")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .tint(.driveBaiPrimary)
+                .disabled(isFetchingDashboardLink)
+
+                if let dashboardLinkError {
+                    Text(dashboardLinkError)
+                        .font(.footnote)
+                        .foregroundColor(.orange)
+                }
+
+                Text("Opens your secure Stripe dashboard. Stripe will text a sign-in code to your phone first — that's their standard protection for bank details, not a problem with your account.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
+            .sheet(item: $dashboardURL) { url in
+                PayoutSafariView(url: url)
+                    .ignoresSafeArea()
+                    .onDisappear {
+                        // Never trust the client: whatever happened in the
+                        // dashboard, re-read status/bank from our endpoint.
+                        Task { await load() }
+                    }
+            }
+        }
+    }
+
+    private var bankLine: String {
+        let name = account?.bankName?.isEmpty == false ? account!.bankName! : "Bank account"
+        if let last4 = account?.bankLast4, !last4.isEmpty {
+            return "\(name) •••• \(last4)"
+        }
+        return name
+    }
+
+    private func scheduleLine(_ schedule: PayoutSchedule) -> String {
+        let cadence: String
+        switch schedule.interval {
+        case "daily": cadence = "daily"
+        case "weekly": cadence = "weekly"
+        case "monthly": cadence = "monthly"
+        case "manual": cadence = "manual"
+        default: cadence = schedule.interval
+        }
+        if schedule.delayDays > 0 {
+            return "Payouts \(cadence) · \(schedule.delayDays)-day rolling delay"
+        }
+        return "Payouts \(cadence)"
+    }
+
+    private func openDashboard() {
+        guard !isFetchingDashboardLink else { return }
+        isFetchingDashboardLink = true
+        dashboardLinkError = nil
+        Task { @MainActor in
+            defer { isFetchingDashboardLink = false }
+            do {
+                let link = try await APIClient.shared.fetchPayoutDashboardLink()
+                if let url = URL(string: link.url) {
+                    dashboardURL = url
+                } else {
+                    dashboardLinkError = "Couldn't open payout settings. Try again in a moment."
+                }
+            } catch {
+                dashboardLinkError = "Couldn't open payout settings. Check your connection and try again."
+            }
+        }
+    }
+
     // MARK: Earnings
 
     @ViewBuilder
@@ -1550,4 +1672,23 @@ struct EarningsPayoutsSheet: View {
     private static func money(_ cents: Int) -> String {
         String(format: "$%.2f", Double(cents) / 100.0)
     }
+}
+
+
+// URL as a sheet item for the dashboard link.
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
+}
+
+/// Minimal in-app Safari host for the Stripe Express dashboard (Part A).
+/// SFSafariViewController is the supported surface here — the native
+/// account-management component is Stripe-internal SPI on iOS.
+struct PayoutSafariView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }

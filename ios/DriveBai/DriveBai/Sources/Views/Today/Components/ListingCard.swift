@@ -77,7 +77,7 @@ struct ListingCard: View {
 
             // Metadata row - compact style
             HStack(spacing: 0) {
-                MetadataItem(label: "Weekly", value: String(format: "$%.0f", listing.weeklyPrice))
+                MetadataItem(label: listing.priceUnit.capitalized, value: String(format: "$%.0f", listing.weeklyPrice))
                 Spacer()
                 MetadataItem(label: "Rented", value: "\(listing.rentedWeeks)w")
                 Spacer()

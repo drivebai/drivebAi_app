@@ -237,8 +237,8 @@ private struct CarPriceCards: View {
             if car.isForRent, let rentPrice = car.weeklyRentPrice {
                 PriceCard(
                     title: "Rent",
-                    price: rentPrice.formatted,
-                    subtitle: "/ week",
+                    price: Money(amount: car.rentPriceAmount ?? rentPrice.amount, currency: rentPrice.currency).formatted,
+                    subtitle: "/ \(car.rentPeriodUnit)",
                     iconName: "key.fill",
                     isPrimary: true
                 )
