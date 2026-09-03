@@ -145,7 +145,7 @@ func (h *CarHandler) ListCars(w http.ResponseWriter, r *http.Request) {
 		// planned_end_at and current_earned_cents are DERIVED here — the
 		// canonical facts are pickup_confirmed_at + weeks.
 		if i < len(rentals) && rentals[i] != nil {
-			resp.ActiveRental = buildActiveRentalSummary(rentals[i])
+			applyRentalContext(resp, rentals[i])
 		}
 		responses = append(responses, resp)
 	}
@@ -173,9 +173,7 @@ func (h *CarHandler) ownerCarResponse(ctx context.Context, carID, ownerID uuid.U
 	owner, _ := h.userRepo.GetByID(ctx, ownerID)
 	resp := car.ToResponse(photos, documents, owner, true)
 	h.applyOwnerRating(ctx, resp)
-	if rental != nil {
-		resp.ActiveRental = buildActiveRentalSummary(rental)
-	}
+	applyRentalContext(resp, rental)
 	return resp
 }
 
@@ -183,6 +181,31 @@ func (h *CarHandler) ownerCarResponse(ctx context.Context, carID, ownerID uuid.U
 // from the repository row. planned_end_at is pickup_confirmed_at + weeks*7d.
 // current_earned_cents pro-rates based on how many full weeks of the rental
 // have elapsed at request time (capped at the total contracted weeks).
+// applyRentalContext stamps the owner-facing rental_state and renter first
+// name for ANY committed lease (item 5) and attaches the full active_rental
+// sub-object only once the rental actually runs — keeping that wire
+// contract byte-identical (paid + picked up, non-null pickup timestamp).
+// Callers are all owner-gated.
+func applyRentalContext(resp *models.CarResponse, row *repository.OwnerCarActiveRental) {
+	if resp == nil || row == nil {
+		return
+	}
+	switch {
+	case row.LeaseStatus == string(models.LeaseStatusAccepted):
+		resp.RentalState = "accepted"
+	case row.LeaseStatus == string(models.LeaseStatusPaymentPending):
+		resp.RentalState = "payment_pending"
+	case row.LeaseStatus == string(models.LeaseStatusPaid) && !row.PickedUp:
+		resp.RentalState = "paid_awaiting_pickup"
+	case row.LeaseStatus == string(models.LeaseStatusPaid) && row.PickedUp:
+		resp.RentalState = "picked_up"
+	}
+	resp.RenterFirstName = row.DriverFirstName
+	if row.PickedUp {
+		resp.ActiveRental = buildActiveRentalSummary(row)
+	}
+}
+
 func buildActiveRentalSummary(row *repository.OwnerCarActiveRental) *models.ActiveRentalSummary {
 	// The term end comes from the STORED lease_requests.rental_ends_at
 	// (migration 000046) — a derived value could never be indexed or
@@ -264,9 +287,7 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 	h.applyOwnerRating(ctx, resp)
 	// active_rental carries driver name/earnings; the ownership 403 above
 	// already guarantees the requester is the owner, so it is safe to attach.
-	if rental != nil {
-		resp.ActiveRental = buildActiveRentalSummary(rental)
-	}
+	applyRentalContext(resp, rental)
 	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 

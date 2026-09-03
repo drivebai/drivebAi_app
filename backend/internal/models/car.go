@@ -323,6 +323,13 @@ type CarResponse struct {
 	// Omitted otherwise so drivers browsing Discovery never see rental data
 	// from another user's transaction.
 	ActiveRental *ActiveRentalSummary `json:"active_rental,omitempty"`
+	// RentalState covers the COMMITTED-but-not-yet-running window the
+	// owner's views were blind to (client fix batch, item 5): "accepted",
+	// "payment_pending", "paid_awaiting_pickup", or "picked_up". Owner-
+	// scoped payloads only; absent on discovery. RenterFirstName is first
+	// name only — the surname stays private until the rental runs.
+	RentalState     string `json:"rental_state,omitempty"`
+	RenterFirstName string `json:"renter_first_name,omitempty"`
 
 	// Timestamps
 	CreatedAt RFC3339Time `json:"created_at"`

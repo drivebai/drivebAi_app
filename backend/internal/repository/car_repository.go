@@ -160,6 +160,16 @@ type OwnerCarActiveRental struct {
 	LeaseRequestID            uuid.UUID
 	DriverID                  uuid.UUID
 	DriverName                string
+	// DriverFirstName is what pre-pickup surfaces show ("Renting to
+	// Fenix") — the surname stays private until the rental actually runs.
+	DriverFirstName string
+	// LeaseStatus is the raw lease state joined for the owner's own car
+	// views (client fix batch, item 5): accepted / payment_pending / paid.
+	LeaseStatus string
+	// PickedUp is true once pickup_confirmed_at is stamped; only then are
+	// PickupConfirmedAt/RentalEndsAt meaningful and only then does the
+	// wire-visible active_rental sub-object get built.
+	PickedUp                  bool
 	Weeks                     int
 	EffectiveWeeklyPriceCents int64
 	PickupConfirmedAt         time.Time
@@ -228,12 +238,12 @@ const ownerCarWithActiveRentalSelect = `
 		lr.pickup_confirmed_at,
 		COALESCE(lr.rental_ends_at, lr.pickup_confirmed_at + (GREATEST(lr.weeks, 1) * INTERVAL '7 days')),
 		u.first_name, u.last_name,
-		ch.id
+		ch.id,
+		lr.status::text
 	FROM cars c
 	LEFT JOIN lease_requests lr
 	       ON lr.id = c.reserved_by_lease_request_id
-	      AND lr.status = 'paid'
-	      AND lr.pickup_confirmed_at IS NOT NULL
+	      AND lr.status IN ('accepted', 'payment_pending', 'paid')
 	      AND lr.vehicle_returned_at IS NULL
 	LEFT JOIN users u
 	       ON u.id = lr.driver_id
@@ -257,6 +267,7 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		firstName          *string
 		lastName           *string
 		chatID             *uuid.UUID
+		leaseStatus        *string
 	)
 	if err := row.Scan(
 		&car.ID, &car.OwnerID, &car.Title, &car.Description,
@@ -272,13 +283,17 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		&rentalEndsAt,
 		&firstName, &lastName,
 		&chatID,
+		&leaseStatus,
 	); err != nil {
 		return nil, nil, err
 	}
 
-	// A NULL lease id means the LEFT JOIN found no active rental for
-	// this car — all other rental fields will also be NULL.
-	if leaseID == nil || weeks == nil || weeklyPriceDollars == nil || pickupConfirmedAt == nil || driverID == nil {
+	// A NULL lease id means the LEFT JOIN found no committed lease for
+	// this car. pickup_confirmed_at is deliberately NOT in this bailout
+	// anymore: accepted/payment_pending/paid-awaiting-pickup rows carry a
+	// NULL pickup and are exactly the states the owner's views were blind
+	// to (item 5).
+	if leaseID == nil || weeks == nil || weeklyPriceDollars == nil || driverID == nil || leaseStatus == nil {
 		return &car, nil, nil
 	}
 
@@ -293,22 +308,34 @@ func scanCarWithActiveRental(row pgx.Row) (*models.Car, *OwnerCarActiveRental, e
 		name += *lastName
 	}
 
+	first := ""
+	if firstName != nil {
+		first = *firstName
+	}
 	rental := &OwnerCarActiveRental{
-		LeaseRequestID: *leaseID,
-		DriverID:       *driverID,
-		DriverName:     name,
-		Weeks:          *weeks,
+		LeaseRequestID:  *leaseID,
+		DriverID:        *driverID,
+		DriverName:      name,
+		DriverFirstName: first,
+		LeaseStatus:     *leaseStatus,
+		PickedUp:        pickupConfirmedAt != nil,
+		Weeks:           *weeks,
 		// Round, don't truncate: DECIMAL 349.90 scans as 349.8999… in float64.
 		EffectiveWeeklyPriceCents: int64(math.Round(*weeklyPriceDollars * 100)),
-		PickupConfirmedAt:         *pickupConfirmedAt,
 		ChatID:                    chatID,
 	}
-	if rentalEndsAt != nil {
-		rental.RentalEndsAt = *rentalEndsAt
-	} else {
-		// COALESCE in the select makes this unreachable, but a zero end
-		// date must never leak into overdue math — derive defensively.
-		rental.RentalEndsAt = models.RentalEndsAt(*pickupConfirmedAt, *weeks)
+	// Pickup-dependent facts exist only once the rental actually runs;
+	// pre-pickup rows leave them zero and the wire-visible active_rental
+	// is never built for those (buildActiveRentalSummary gates on PickedUp).
+	if pickupConfirmedAt != nil {
+		rental.PickupConfirmedAt = *pickupConfirmedAt
+		if rentalEndsAt != nil {
+			rental.RentalEndsAt = *rentalEndsAt
+		} else {
+			// COALESCE in the select makes this unreachable, but a zero end
+			// date must never leak into overdue math — derive defensively.
+			rental.RentalEndsAt = models.RentalEndsAt(*pickupConfirmedAt, *weeks)
+		}
 	}
 	return &car, rental, nil
 }
