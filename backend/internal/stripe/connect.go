@@ -91,6 +91,24 @@ type ConnectedAccount struct {
 		DisabledReason      *string  `json:"disabled_reason"`
 		CurrentDeadline     *int64   `json:"current_deadline"`
 	} `json:"requirements"`
+	// Settings.Payouts.Schedule answers "when does money actually land"
+	// (Part A): interval daily/weekly/monthly + the delay days.
+	Settings struct {
+		Payouts struct {
+			Schedule struct {
+				Interval  string `json:"interval"`
+				DelayDays int    `json:"delay_days"`
+			} `json:"schedule"`
+		} `json:"payouts"`
+	} `json:"settings"`
+	// ExternalAccounts is expanded on read (see GetConnectedAccount) so the
+	// app can show "Bank •••• 6789" natively.
+	ExternalAccounts struct {
+		Data []struct {
+			BankName string `json:"bank_name"`
+			Last4    string `json:"last4"`
+		} `json:"data"`
+	} `json:"external_accounts"`
 }
 
 // CreateConnectedAccount creates the owner's connected account in the
@@ -124,13 +142,31 @@ func (s *Service) CreateConnectedAccount(email, userID string) (*ConnectedAccoun
 	return &acct, nil
 }
 
-// GetConnectedAccount reads the current verification state.
+// GetConnectedAccount reads the current verification state, with the
+// external accounts expanded so bank name/last4 ride along.
 func (s *Service) GetConnectedAccount(accountID string) (*ConnectedAccount, error) {
 	var acct ConnectedAccount
-	if err := s.getJSON("/v1/accounts/"+accountID, &acct); err != nil {
+	if err := s.getJSON("/v1/accounts/"+accountID+"?expand[]=external_accounts", &acct); err != nil {
 		return nil, err
 	}
 	return &acct, nil
+}
+
+// CreateLoginLink mints a one-time URL into the connected account's Express
+// dashboard — the SUPPORTED surface for bank-account viewing/replacement on
+// our controller configuration (Part A): the native account_management
+// component is Stripe-internal SPI on iOS, so the app opens this link in
+// SFSafariViewController instead. Stripe SMS-authenticates the owner on
+// entry (disable_stripe_user_authentication is rejected for
+// requirement_collection=stripe accounts — expected, not an error).
+func (s *Service) CreateLoginLink(accountID string) (string, error) {
+	var link struct {
+		URL string `json:"url"`
+	}
+	if err := s.postFormWithIdem("/v1/accounts/"+accountID+"/login_links", url.Values{}, "", &link); err != nil {
+		return "", err
+	}
+	return link.URL, nil
 }
 
 // AccountSession is the client secret the StripeConnect iOS component

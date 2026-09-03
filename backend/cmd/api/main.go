@@ -392,6 +392,7 @@ func main() {
 			r.Get("/payout-account", payoutHandler.GetPayoutAccount)
 			r.Post("/payout-account/session", payoutHandler.CreateOnboardingSession)
 			r.Get("/payout-account/payouts", payoutHandler.ListMyPayouts)
+			r.Post("/payout-account/dashboard-link", payoutHandler.CreateDashboardLink)
 
 			// Ratings: rate the car and/or the counterparty of a COMPLETED
 			// purchase or rental (1-5 stars, once per transaction).

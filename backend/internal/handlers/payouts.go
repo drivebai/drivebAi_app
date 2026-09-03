@@ -170,6 +170,18 @@ func (h *PayoutHandler) GetPayoutAccount(w http.ResponseWriter, r *http.Request)
 			resp["currently_due"] = acct.Requirements.CurrentlyDue
 			resp["past_due"] = acct.Requirements.PastDue
 			resp["disabled_reason"] = acct.Requirements.DisabledReason
+			// Part A: the app shows the connected bank and when money
+			// actually lands, natively.
+			if len(acct.ExternalAccounts.Data) > 0 {
+				resp["bank_name"] = acct.ExternalAccounts.Data[0].BankName
+				resp["bank_last4"] = acct.ExternalAccounts.Data[0].Last4
+			}
+			if acct.Settings.Payouts.Schedule.Interval != "" {
+				resp["payout_schedule"] = map[string]interface{}{
+					"interval":   acct.Settings.Payouts.Schedule.Interval,
+					"delay_days": acct.Settings.Payouts.Schedule.DelayDays,
+				}
+			}
 			if acct.Requirements.CurrentDeadline != nil {
 				resp["current_deadline"] = time.Unix(*acct.Requirements.CurrentDeadline, 0).UTC().Format(time.RFC3339)
 			}
@@ -199,6 +211,37 @@ func (h *PayoutHandler) GetPayoutAccount(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	httputil.WriteJSON(w, http.StatusOK, resp)
+}
+
+// CreateDashboardLink — POST /api/v1/payout-account/dashboard-link.
+// Mints a one-time Stripe Express dashboard URL — the supported surface
+// for viewing/replacing the bank account under our controller config (the
+// native account-management component is Stripe-internal SPI on iOS).
+// Stripe SMS-authenticates on entry; the app's copy sets that expectation.
+// Without an account there is nothing to manage: 409 routes the client
+// back to onboarding, never a dead end.
+func (h *PayoutHandler) CreateDashboardLink(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	accountID, _, err := h.payoutRepo.GetPayoutAccount(r.Context(), userID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrUserNotFound)
+		return
+	}
+	if accountID == nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYOUT_NOT_SET_UP", "Finish payout setup first — there's no account to manage yet"))
+		return
+	}
+	link, err := h.stripe.CreateLoginLink(*accountID)
+	if err != nil {
+		h.logger.Error("payout: create dashboard link", "error", err, "user_id", userID)
+		httputil.WriteError(w, http.StatusBadGateway, models.NewAPIError("STRIPE_ERROR", "Couldn't open payout settings — try again in a moment"))
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]string{"url": link})
 }
 
 // ListMyPayouts — GET /api/v1/payout-account/payouts.
