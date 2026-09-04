@@ -2319,6 +2319,7 @@ func (h *PurchaseRequestHandler) StartExpiryScanner(ctx context.Context, interva
 			return
 		case <-ticker.C:
 			h.runOfferExpiry(ctx)
+			h.runAcceptExpiry(ctx)
 			h.runAuthExpiry(ctx)
 			h.runCaptureRetry(ctx)
 		}
@@ -2374,6 +2375,75 @@ func (h *PurchaseRequestHandler) runOfferExpiry(ctx context.Context) {
 			"Offer expired", body)
 		h.notifyPurchaseParty(p, p.SellerID, models.NotificationTypePurchaseRequest,
 			"Offer expired", body)
+	}
+}
+
+// runAcceptExpiry (audit H3) enforces the post-accept TTL: warn both
+// parties 24h before expiry (claimed-once), then expire at 72h. Until this
+// sweep, `accepted`/`bos_*` blocked every sale AND lease on the car with
+// no seller exit, no admin exit, and no clock — a ghosting buyer froze the
+// car forever. Same shape as the lease accept-expiry sweep.
+func (h *PurchaseRequestHandler) runAcceptExpiry(ctx context.Context) {
+	now := time.Now().UTC()
+
+	// Phase 1: the 24h warning.
+	warnCutoff := now.Add(-(models.PurchaseAcceptTTL - models.PurchaseAcceptWarnBefore))
+	warned, err := h.repo.ClaimPurchaseAcceptWarnings(ctx, warnCutoff, 50)
+	if err != nil {
+		h.logger.Error("purchase accept-expiry: claim warnings", "error", err)
+	}
+	for i := range warned {
+		p := &warned[i]
+		h.notifyPurchaseParty(p, p.BuyerID, models.NotificationTypePurchaseRequest,
+			"Finish the sale within 24 hours",
+			"Your accepted purchase expires in about 24 hours unless you complete the paperwork and authorize payment. Cancel anytime to release the car.")
+		h.notifyPurchaseParty(p, p.SellerID, models.NotificationTypePurchaseRequest,
+			"Sale awaiting the buyer — 24 hours left",
+			"The buyer hasn't completed the sale. If they don't within about 24 hours, the offer expires and your car opens up automatically.")
+	}
+
+	// Phase 2: expiry at the full TTL.
+	expireCutoff := now.Add(-models.PurchaseAcceptTTL)
+	candidates, err := h.repo.ListPurchaseAcceptExpired(ctx, expireCutoff, 50)
+	if err != nil {
+		h.logger.Error("purchase accept-expiry: list", "error", err)
+		return
+	}
+	for i := range candidates {
+		p := &candidates[i]
+		// bos_signed can carry a pre-authorization PaymentIntent. The claim
+		// proceeds ONLY on a proven-neutralized intent — an authorized or
+		// captured one (requires_capture/succeeded) means the payment
+		// pipeline owns this row and the auth-TTL governs it instead.
+		if p.PaymentIntentID != nil && h.stripe != nil {
+			switch neutralizePaymentIntentSvc(h.stripe, *p.PaymentIntentID) {
+			case piMoneyMoved:
+				h.logger.Info("purchase accept-expiry: payment in flight, skipping", "purchase_id", p.ID)
+				continue
+			case piUnknown:
+				h.logger.Warn("purchase accept-expiry: intent state unknown, deferring", "purchase_id", p.ID)
+				continue
+			}
+		}
+		expired, cerr := h.repo.ClaimPurchaseAcceptExpiry(ctx, p.ID)
+		if cerr != nil {
+			continue // state moved (payment authorized / buyer cancelled) — correct
+		}
+		h.logger.Info("purchase accept-expiry: sale expired, car unblocked",
+			"purchase_id", expired.ID, "car_id", expired.CarID)
+
+		h.broadcast("purchase_request_updated", expired, nil)
+		h.postSystemMessage(ctx, expired.ChatID, expired.BuyerID, "Purchase expired — sale not completed in time")
+		carTitle := "the car"
+		if car, err := h.carRepo.GetByID(ctx, expired.CarID); err == nil && car != nil {
+			carTitle = carTitleOr(car.Title)
+		}
+		h.notifyPurchaseParty(expired, expired.BuyerID, models.NotificationTypePurchaseRequest,
+			"Purchase expired",
+			fmt.Sprintf("The sale of %s wasn't completed within 72 hours of acceptance, so it expired. You can send a new offer anytime.", carTitle))
+		h.notifyPurchaseParty(expired, expired.SellerID, models.NotificationTypePurchaseRequest,
+			"Sale expired — car released",
+			fmt.Sprintf("The buyer didn't complete the sale of %s within 72 hours, so it expired. Your car is open to offers and rentals again.", carTitle))
 	}
 }
 

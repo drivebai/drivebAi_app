@@ -145,6 +145,15 @@ const (
 	// After this point, we transition to `expired_auth` and the auth is
 	// released automatically by Stripe. DESIGN SPEC §12 assumption #2.
 	PurchaseAuthTTL = 7 * 24 * time.Hour
+	// PurchaseAcceptTTL (audit H3): how long a sale may sit in the
+	// post-accept, pre-payment states (accepted / bos_pending_* /
+	// bos_signed) before it expires and stops blocking the car. These
+	// states block every other purchase AND every lease on the vehicle,
+	// the seller cannot decline past `requested`, cancel is buyer-only,
+	// and no admin cancel exists — a ghosting buyer froze the car forever.
+	// Same 72h/24h shape as the lease accept TTL (client decision, Sep 4).
+	PurchaseAcceptTTL        = 72 * time.Hour
+	PurchaseAcceptWarnBefore = 24 * time.Hour
 	// PurchaseRejectionMinEvidence is the smallest number of evidence files
 	// required to submit a rejection.
 	PurchaseRejectionMinEvidence = 1
@@ -193,6 +202,11 @@ type PurchaseRequest struct {
 	InspectionDeadlineAt *time.Time
 	InspectionAcceptedAt *time.Time
 	CompletedAt          *time.Time
+
+	// Accept-TTL clocks (000052; audit H3). Explicit stamps — the
+	// set_purchase_requests_updated_at trigger makes updated_at unusable.
+	AcceptedAt           *time.Time
+	AcceptExpiryWarnedAt *time.Time
 
 	PaymentIntentID     *string
 	PaymentStatus       *PaymentStatus

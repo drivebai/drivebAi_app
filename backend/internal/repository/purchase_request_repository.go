@@ -34,6 +34,7 @@ const purchaseRequestColumns = `
 	status, expires_at, auth_expires_at,
 	handover_location, handover_latitude, handover_longitude,
 	handover_scheduled_at, keys_handed_over_at, inspection_deadline_at, inspection_accepted_at, completed_at,
+	accepted_at, accept_expiry_warned_at,
 	payment_intent_id, payment_status, refund_status, refund_id, refunded_at, refund_failure_reason,
 	cancellation_reason,
 	created_at, updated_at`
@@ -48,6 +49,7 @@ func scanPurchaseRequest(row scanRow) (*models.PurchaseRequest, error) {
 		&p.Status, &p.ExpiresAt, &p.AuthExpiresAt,
 		&p.HandoverLocation, &p.HandoverLatitude, &p.HandoverLongitude,
 		&p.HandoverScheduledAt, &p.KeysHandedOverAt, &p.InspectionDeadlineAt, &p.InspectionAcceptedAt, &p.CompletedAt,
+		&p.AcceptedAt, &p.AcceptExpiryWarnedAt,
 		&p.PaymentIntentID, &paymentStatus, &refundStatus, &p.RefundID, &p.RefundedAt, &p.RefundFailureReason,
 		&p.CancellationReason,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -387,7 +389,7 @@ func (r *PurchaseRequestRepository) AcceptOffer(ctx context.Context, id, sellerI
 
 	row := tx.QueryRow(ctx, `
 		UPDATE purchase_requests
-		SET status = 'accepted', updated_at = NOW()
+		SET status = 'accepted', accepted_at = COALESCE(accepted_at, NOW()), updated_at = NOW()
 		WHERE id = $1 AND seller_id = $2 AND status = 'requested'
 		RETURNING `+purchaseRequestColumns, id, sellerID)
 	p, err := scanPurchaseRequest(row)
@@ -2019,4 +2021,97 @@ func (r *PurchaseRequestRepository) AdminListRejections(ctx context.Context, sta
 		out = append(out, rej)
 	}
 	return out, total, nil
+}
+
+// --- Audit H3: post-accept TTL (the lease accept-TTL pattern, ported) ---
+
+// purchaseAcceptTTLStatuses are the post-accept, pre-payment states the TTL
+// governs. They all block the car (BlockingPurchaseStatusesSQL) yet had no
+// seller exit, no admin exit, and no clock. payment_authorized and later
+// are governed by the 7-day auth TTL instead.
+const purchaseAcceptTTLStatuses = `('accepted', 'bos_pending_seller', 'bos_pending_buyer', 'bos_signed')`
+
+// ClaimPurchaseAcceptWarnings claims (once) the 24h-before-expiry warning
+// for post-accept purchases whose clock started before `acceptedBefore`.
+func (r *PurchaseRequestRepository) ClaimPurchaseAcceptWarnings(ctx context.Context, acceptedBefore time.Time, limit int) ([]models.PurchaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		UPDATE purchase_requests pr
+		SET accept_expiry_warned_at = NOW(), updated_at = NOW()
+		FROM (
+			SELECT id AS pid FROM purchase_requests
+			WHERE status IN `+purchaseAcceptTTLStatuses+`
+			  AND accepted_at IS NOT NULL
+			  AND accepted_at <= $1
+			  AND accept_expiry_warned_at IS NULL
+			ORDER BY accepted_at ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		) picked
+		WHERE pr.id = picked.pid
+		RETURNING `+purchaseRequestColumns, acceptedBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim purchase accept warnings: %w", err)
+	}
+	defer rows.Close()
+	var out []models.PurchaseRequest
+	for rows.Next() {
+		p, serr := scanPurchaseRequest(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+// ListPurchaseAcceptExpired returns post-accept purchases past the full TTL.
+func (r *PurchaseRequestRepository) ListPurchaseAcceptExpired(ctx context.Context, acceptedBefore time.Time, limit int) ([]models.PurchaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+purchaseRequestColumns+`
+		FROM purchase_requests
+		WHERE status IN `+purchaseAcceptTTLStatuses+`
+		  AND accepted_at IS NOT NULL
+		  AND accepted_at <= $1
+		ORDER BY accepted_at ASC
+		LIMIT $2`, acceptedBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list purchase accept expired: %w", err)
+	}
+	defer rows.Close()
+	var out []models.PurchaseRequest
+	for rows.Next() {
+		p, serr := scanPurchaseRequest(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+// ClaimPurchaseAcceptExpiry flips one post-accept purchase to `expired`.
+// Status-scoped: a row that moved on (payment authorized, buyer cancelled)
+// refuses the claim — the sweep's losers skip, exactly like the lease
+// sweeps. These states hold no car reservation (that starts at
+// KeysHandedOver), so expiry unblocks the car by leaving the blocking set.
+func (r *PurchaseRequestRepository) ClaimPurchaseAcceptExpiry(ctx context.Context, id uuid.UUID) (*models.PurchaseRequest, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE purchase_requests
+		SET status = 'expired', updated_at = NOW()
+		WHERE id = $1 AND status IN `+purchaseAcceptTTLStatuses+`
+		RETURNING `+purchaseRequestColumns, id)
+	p, err := scanPurchaseRequest(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, models.ErrInvalidPurchaseAction
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim purchase accept expiry: %w", err)
+	}
+	return p, nil
 }

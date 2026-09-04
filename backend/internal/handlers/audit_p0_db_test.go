@@ -492,3 +492,86 @@ func TestAuditP0_StripeCustomerBinding(t *testing.T) {
 		t.Fatalf("rebinding = %v, want cus_test_two", cid)
 	}
 }
+
+// H3: post-accept purchases warn once at 48h, expire at 72h, refuse the
+// claim once payment is authorized — and expiry actually unblocks the car.
+func TestAuditP0_PurchaseAcceptTTL(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	seller := e.seedUser(t, "car_owner", "p0_seller_h3@example.com")
+	buyer := e.seedUser(t, "driver", "p0_buyer_h3@example.com")
+	e.seedLicense(t, buyer)
+	leaseID, carID := seedAcceptedLease(t, e, seller, buyer) // supplies a chat row
+	var chatID uuid.UUID
+	if err := e.db.Pool.QueryRow(ctx, `SELECT chat_id FROM lease_requests WHERE id=$1`, leaseID).Scan(&chatID); err != nil {
+		t.Fatalf("chat lookup: %v", err)
+	}
+
+	purchaseRepo := repository.NewPurchaseRequestRepository(e.db)
+	prID := uuid.New()
+	if _, err := e.db.Pool.Exec(ctx, `
+		INSERT INTO purchase_requests (id, car_id, seller_id, buyer_id, chat_id, offer_amount_cents, currency, status, expires_at, accepted_at)
+		VALUES ($1, $2, $3, $4, $5, 100000, 'USD', 'accepted', NOW() + interval '72 hours', NOW() - interval '49 hours')`,
+		prID, carID, seller, buyer, chatID); err != nil {
+		t.Fatalf("seed purchase: %v", err)
+	}
+	t.Cleanup(func() { e.db.Pool.Exec(ctx, `DELETE FROM purchase_requests WHERE id=$1`, prID) })
+
+	if blocked, _ := e.carRepo.HasBlockingPurchase(ctx, carID); !blocked {
+		t.Fatal("accepted purchase does not block the car — precondition broken")
+	}
+
+	// 49h: warning claims exactly once; not yet expired.
+	warned, err := purchaseRepo.ClaimPurchaseAcceptWarnings(ctx, time.Now().UTC().Add(-48*time.Hour), 50)
+	if err != nil {
+		t.Fatalf("claim warnings: %v", err)
+	}
+	found := false
+	for i := range warned {
+		if warned[i].ID == prID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("49h-old accepted purchase not warned")
+	}
+	warned, _ = purchaseRepo.ClaimPurchaseAcceptWarnings(ctx, time.Now().UTC().Add(-48*time.Hour), 50)
+	for i := range warned {
+		if warned[i].ID == prID {
+			t.Fatal("warning claimed twice — both parties would be spammed")
+		}
+	}
+	if exp, _ := purchaseRepo.ListPurchaseAcceptExpired(ctx, time.Now().UTC().Add(-72*time.Hour), 50); len(exp) > 0 {
+		for i := range exp {
+			if exp[i].ID == prID {
+				t.Fatal("49h-old purchase already listed as expired")
+			}
+		}
+	}
+
+	// 73h: listed, claimed, expired, car unblocked; second claim refuses.
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE purchase_requests SET accepted_at = NOW() - interval '73 hours' WHERE id=$1`, prID); err != nil {
+		t.Fatalf("age: %v", err)
+	}
+	expired, err := purchaseRepo.ClaimPurchaseAcceptExpiry(ctx, prID)
+	if err != nil {
+		t.Fatalf("claim expiry: %v", err)
+	}
+	if expired.Status != models.PurchaseStatusExpired {
+		t.Fatalf("status = %s, want expired", expired.Status)
+	}
+	if blocked, _ := e.carRepo.HasBlockingPurchase(ctx, carID); blocked {
+		t.Fatal("expired purchase still blocks the car")
+	}
+	if _, err := purchaseRepo.ClaimPurchaseAcceptExpiry(ctx, prID); err == nil {
+		t.Fatal("second expiry claim succeeded")
+	}
+
+	// A purchase whose payment authorized refuses the accept-expiry claim.
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE purchase_requests SET status='payment_authorized', accepted_at = NOW() - interval '90 hours' WHERE id=$1`, prID); err != nil {
+		t.Fatalf("to payment_authorized: %v", err)
+	}
+	if _, err := purchaseRepo.ClaimPurchaseAcceptExpiry(ctx, prID); err == nil {
+		t.Fatal("accept-expiry claimed a payment_authorized purchase — the auth TTL owns those")
+	}
+}
