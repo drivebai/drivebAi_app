@@ -337,7 +337,11 @@ struct SignupUserInfoStepView: View {
                             .foregroundColor(signupFlow.acceptedTerms ? .driveBaiPrimary : .gray)
                     }
 
-                    Text("I agree to [DriveBai Terms of Service](https://drivebai.com/terms), [Payments Terms of Service](https://drivebai.com/payments), and [Notification Policy](https://drivebai.com/privacy) and acknowledge the [Privacy Policy](https://drivebai.com/privacy).")
+                    // Only documents that actually exist may be linked here —
+                    // a dead link inside the consent line is a rejection
+                    // magnet. Restore a Payments Terms link if/when that page
+                    // ships (drivebai.com and the landing site both 404 it).
+                    Text("I agree to the [DriveBai Terms of Service](https://drivebai-landing-v2.netlify.app/terms) and acknowledge the [Privacy Policy](https://drivebai-landing-v2.netlify.app/privacy).")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

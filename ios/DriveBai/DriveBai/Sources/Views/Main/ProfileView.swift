@@ -1033,7 +1033,7 @@ struct NotificationSettingsView: View {
 // MARK: - Privacy & Security (batch item 6)
 
 /// A REAL privacy screen: password change via the existing reset-email flow
-/// (reused, not rebuilt), the actual policy pages on drivebai.com, and an
+/// (reused, not rebuilt), the actual policy pages on the landing site, and an
 /// honest note on how documents are stored. No invented toggles.
 struct PrivacySecurityView: View {
     let email: String
@@ -1087,10 +1087,10 @@ struct PrivacySecurityView: View {
                 }
 
                 Section("Policies") {
-                    Link(destination: URL(string: "https://drivebai.com/privacy")!) {
+                    Link(destination: URL(string: "https://drivebai-landing-v2.netlify.app/privacy")!) {
                         Label("Privacy Policy", systemImage: "hand.raised.fill")
                     }
-                    Link(destination: URL(string: "https://drivebai.com/terms")!) {
+                    Link(destination: URL(string: "https://drivebai-landing-v2.netlify.app/terms")!) {
                         Label("Terms of Service", systemImage: "doc.plaintext.fill")
                     }
                 }
