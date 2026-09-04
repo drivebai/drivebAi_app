@@ -226,12 +226,16 @@ func (h *PayoutHandler) CreateDashboardLink(w http.ResponseWriter, r *http.Reque
 		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
 		return
 	}
-	accountID, _, err := h.payoutRepo.GetPayoutAccount(r.Context(), userID)
+	accountID, status, err := h.payoutRepo.GetPayoutAccount(r.Context(), userID)
 	if err != nil {
 		httputil.WriteError(w, http.StatusNotFound, models.ErrUserNotFound)
 		return
 	}
-	if accountID == nil {
+	// A non-onboarded owner (no account, or details never submitted) has
+	// no bank to manage — 409 routes the client into onboarding instead.
+	// ready/action_needed/restricted all legitimately need the dashboard
+	// (that's where a bank problem gets fixed).
+	if accountID == nil || status == models.PayoutAccountNone || status == models.PayoutAccountOnboarding {
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYOUT_NOT_SET_UP", "Finish payout setup first — there's no account to manage yet"))
 		return
 	}
