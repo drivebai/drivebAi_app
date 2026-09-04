@@ -456,6 +456,29 @@ func (h *PayoutHandler) SettleRentalPayout(ctx context.Context, leaseID, ownerID
 		return
 	}
 	if !created {
+		if row.GrossKeptCents != keptCents {
+			// M4: the silent ON CONFLICT DO NOTHING used to swallow exactly
+			// the double-spend case — a second settlement arriving with a
+			// DIFFERENT kept amount (payout_only earlier, refunding close
+			// later). The handlers now guard against reaching this, so a
+			// mismatch here is a real invariant break: surface it loudly.
+			h.logger.Error("payout: LEDGER MISMATCH — settlement amount disagrees with existing row",
+				"lease_request_id", leaseID,
+				"existing_gross_kept_cents", row.GrossKeptCents,
+				"attempted_kept_cents", keptCents,
+				"existing_status", row.Status)
+			if h.ticketRepo != nil {
+				leaseRef := leaseID
+				desc := fmt.Sprintf(
+					"Payout ledger row for lease %s holds gross_kept %d¢ but a settlement just recomputed kept as %d¢ (existing status %q). One charge may be funding both an owner payout and a driver refund — reconcile against the Stripe dashboard before any further payout action.",
+					leaseID, row.GrossKeptCents, keptCents, row.Status)
+				if _, terr := h.ticketRepo.CreateSystemTicket(ctx, ownerID, models.TicketCategoryPayments,
+					"Payout ledger mismatch needs reconciliation", desc, &leaseRef, nil); terr != nil {
+					h.logger.Error("payout: mismatch ticket", "error", terr, "lease_request_id", leaseID)
+				}
+			}
+			return
+		}
 		h.logger.Info("payout: ledger row already exists (idempotent)", "lease_request_id", leaseID, "status", row.Status)
 		return
 	}

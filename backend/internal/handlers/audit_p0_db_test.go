@@ -293,6 +293,12 @@ func TestAuditP0_RetryAdoptsSucceededPayment(t *testing.T) {
 	if _, err := e.leaseRepo.SetPaymentPending(ctx, leaseID); err != nil {
 		t.Fatalf("to payment_pending: %v", err)
 	}
+	// Adoption creates a key-handover row whose car/user FKs are NO ACTION —
+	// it must go before the car/user cleanups (LIFO: registered later runs
+	// earlier).
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM key_handovers WHERE lease_request_id = $1`, leaseID)
+	})
 	intent := "pi_test_adopt_" + leaseID.String()[:8]
 	secret := intent + "_secret"
 	seedPaymentAt(t, e, leaseID, 20000, "succeeded", &intent)
@@ -346,5 +352,81 @@ func TestAuditP0_DeletionBlocksOpenPaymentWindow(t *testing.T) {
 		if !found {
 			t.Fatalf("payment_pending lease does not block deletion for %s", who)
 		}
+	}
+}
+
+// M4: the three settle guards — never-succeeded charges cannot settle,
+// payout_only refuses mid-term, and a driver refund is refused once the
+// ledger holds an owner payout. Plus the positive control (post-term
+// payout_only works) and the mismatch alarm.
+func TestAuditP0_SettleGuards(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	admin := e.seedUser(t, "admin", "p0_admin_g@example.com")
+	owner := e.seedUser(t, "car_owner", "p0_owner_g@example.com")
+	driver := e.seedUser(t, "driver", "p0_driver_g@example.com")
+	e.seedLicense(t, driver)
+
+	// (1) A charge that never succeeded cannot be settled in ANY direction.
+	pendingLease, _ := seedAcceptedLease(t, e, owner, driver)
+	e.cleanupLedger(t, pendingLease)
+	if _, err := e.leaseRepo.SetPaymentPending(ctx, pendingLease); err != nil {
+		t.Fatalf("to payment_pending: %v", err)
+	}
+	seedPaymentAt(t, e, pendingLease, 30000, "requires_payment_method", nil)
+	for _, res := range []string{"payout_only", "close", "withhold"} {
+		rr := httptest.NewRecorder()
+		e.returnH.AdminSettleRent(rr, settleReq(t, admin, pendingLease, `{"resolution":"`+res+`","note":"audit p0 guard test"}`))
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "PAYMENT_NOT_SETTLED") {
+			t.Fatalf("%s on unsucceeded charge = %d (%s), want 409 PAYMENT_NOT_SETTLED", res, rr.Code, rr.Body.String())
+		}
+	}
+	var ledgerRows int
+	e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM owner_payouts WHERE lease_request_id=$1`, pendingLease).Scan(&ledgerRows)
+	if ledgerRows != 0 {
+		t.Fatalf("unsucceeded charge produced %d ledger rows", ledgerRows)
+	}
+
+	// (2) payout_only mid-term is refused; after the term ends it works.
+	activeLease, _ := e.seedActiveRental(t, owner, driver)
+	e.cleanupLedger(t, activeLease)
+	seedPaymentAt(t, e, activeLease, 30000, "succeeded", nil)
+	rr := httptest.NewRecorder()
+	e.returnH.AdminSettleRent(rr, settleReq(t, admin, activeLease, `{"resolution":"payout_only","note":"audit p0 guard test"}`))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "SETTLE_NOT_ALLOWED") {
+		t.Fatalf("mid-term payout_only = %d (%s), want 409 SETTLE_NOT_ALLOWED", rr.Code, rr.Body.String())
+	}
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE lease_requests SET rental_ends_at = NOW() - interval '1 hour' WHERE id=$1`, activeLease); err != nil {
+		t.Fatalf("age term: %v", err)
+	}
+	rr = httptest.NewRecorder()
+	e.returnH.AdminSettleRent(rr, settleReq(t, admin, activeLease, `{"resolution":"payout_only","note":"audit p0 guard test"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("post-term payout_only = %d (%s), want 200", rr.Code, rr.Body.String())
+	}
+
+	// (3) With the owner's payout on the ledger, a refunding close is refused…
+	rr = httptest.NewRecorder()
+	e.returnH.AdminSettleRent(rr, settleReq(t, admin, activeLease, `{"resolution":"close","driver_refund_cents":5000,"note":"audit p0 guard test"}`))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "REFUND_AFTER_PAYOUT") {
+		t.Fatalf("refunding close after payout = %d (%s), want 409 REFUND_AFTER_PAYOUT", rr.Code, rr.Body.String())
+	}
+	// …while a $0 close still completes the rental.
+	rr = httptest.NewRecorder()
+	e.returnH.AdminSettleRent(rr, settleReq(t, admin, activeLease, `{"resolution":"close","driver_refund_cents":0,"note":"audit p0 guard test"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("zero close after payout = %d (%s), want 200", rr.Code, rr.Body.String())
+	}
+
+	// (4) The ledger-mismatch alarm: a settlement recomputing a DIFFERENT
+	// kept amount against the existing row raises a ticket instead of a
+	// silent idempotent no-op.
+	e.payoutH.SettleRentalPayout(ctx, activeLease, owner, 12345, models.PayoutSourceAdminSettlement, nil)
+	var mismatchTickets int
+	e.db.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM support_tickets
+		WHERE lease_request_id=$1 AND subject LIKE '%mismatch%' AND status NOT IN ('resolved','closed')`, activeLease).Scan(&mismatchTickets)
+	if mismatchTickets != 1 {
+		t.Fatalf("ledger mismatch tickets = %d, want 1", mismatchTickets)
 	}
 }

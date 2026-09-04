@@ -611,6 +611,18 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("driver_refund_cents must be non-negative"))
 			return
 		}
+		// M4: same one-charge-one-direction rule as the settle close arm —
+		// an owner payout already on the ledger means a driver refund now
+		// pays out more than was collected.
+		if *body.DriverRefundCents > 0 && h.payoutH != nil {
+			if ret, rerr := h.repo.GetByID(r.Context(), id); rerr == nil && ret != nil {
+				if existing, lerr := h.payoutH.LedgerRow(r.Context(), ret.LeaseRequestID); lerr == nil && existing != nil {
+					httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_AFTER_PAYOUT",
+						fmt.Sprintf("the payout ledger already has a row for this rent (status %q) — resolve with driver_refund_cents 0 and record any manual repayment in the note", existing.Status)))
+					return
+				}
+			}
+		}
 		if _, uerr := h.repo.UpdateRefundAmount(r.Context(), id, *body.DriverRefundCents); uerr != nil {
 			if apiErr := models.GetAPIError(uerr); apiErr != nil {
 				httputil.WriteError(w, http.StatusConflict, apiErr)
@@ -753,14 +765,26 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 		httputil.WriteError(w, http.StatusNotFound, models.ErrLeaseRequestNotFound)
 		return
 	}
-	var paidCents int64
-	if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID); perr == nil && payment != nil {
-		paidCents = payment.Amount
+	// M4: settlement moves (or holds) money the platform must actually
+	// hold. payments.amount is written at intent CREATION — before any
+	// charge — so amount alone proves nothing; the charge must have
+	// SUCCEEDED. This gate is shared by all three resolutions.
+	payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID)
+	if perr != nil {
+		h.logger.Error("admin settle: load payment", "error", perr, "lease_request_id", leaseID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
 	}
-	if paidCents <= 0 {
+	if payment == nil || payment.Amount <= 0 {
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_PAYMENT", "this rent has no recorded payment — nothing to settle"))
 		return
 	}
+	if payment.Status != models.PaymentStatusSucceeded {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYMENT_NOT_SETTLED",
+			fmt.Sprintf("the charge for this rent is %q, not succeeded — there is no money to settle", payment.Status)))
+		return
+	}
+	paidCents := payment.Amount
 
 	switch resolution {
 	case "withhold":
@@ -799,6 +823,24 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 				return
 			}
 		}
+		// M4: payout_only pays the owner their share of the FULL paid
+		// amount, so the rental must be a real, finished one — a lease
+		// that never reached paid has no money here, and a mid-term
+		// payout double-spends the moment an early return refunds the
+		// driver from the same charge.
+		if lr.Status != models.LeaseStatusPaid {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETTLE_NOT_ALLOWED",
+				fmt.Sprintf("payout_only applies to a paid rental — this rent is %q", lr.Status)))
+			return
+		}
+		nowPO := time.Now().UTC()
+		rentalOver := lr.VehicleReturnedAt != nil ||
+			(lr.RentalEndsAt != nil && !nowPO.Before(*lr.RentalEndsAt))
+		if !rentalOver {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETTLE_NOT_ALLOWED",
+				"payout_only applies after the rental term ends or the car is returned — paying out mid-term double-spends if the driver later returns early"))
+			return
+		}
 		h.payoutH.SettleRentalPayout(r.Context(), leaseID, lr.OwnerID, paidCents, models.PayoutSourceAdminSettlement, &note)
 		row, gerr := h.payoutH.LedgerRow(r.Context(), leaseID)
 		if gerr != nil || row == nil {
@@ -822,6 +864,18 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 		refundCents = *body.DriverRefundCents
 		if refundCents < 0 || refundCents > paidCents {
 			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("driver_refund_cents must be between 0 and the paid amount"))
+			return
+		}
+	}
+	// M4: one charge cannot fund both an owner payout and a driver refund.
+	// If the ledger already has a row for this lease (payout_only ran, or
+	// the owner's share is queued/withheld), a refund now would pay out
+	// more than was collected — the ON CONFLICT DO NOTHING in the ledger
+	// would silently keep the full-amount row afterwards.
+	if refundCents > 0 {
+		if existing, lerr := h.payoutH.LedgerRow(r.Context(), leaseID); lerr == nil && existing != nil {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_AFTER_PAYOUT",
+				fmt.Sprintf("the payout ledger already has a row for this rent (status %q) — a driver refund now would pay out more than was collected; close with driver_refund_cents 0 and record any manual repayment in the note", existing.Status)))
 			return
 		}
 	}

@@ -124,6 +124,7 @@ type LeaseRequest struct {
 	// only by the term-scanner queries and the active-rental reads, so do
 	// not rely on them being set on a lease loaded via GetByID.
 	RentalEndsAt          *time.Time `json:"rental_ends_at,omitempty"`
+	VehicleReturnedAt     *time.Time `json:"vehicle_returned_at,omitempty"`
 	TermEndingNotifiedAt  *time.Time `json:"-"`
 	OverdueNotifiedAt     *time.Time `json:"-"`
 	OverdueEscalatedAt    *time.Time `json:"-"`

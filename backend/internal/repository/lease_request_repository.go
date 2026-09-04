@@ -128,7 +128,8 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
 		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
-		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at,
+		       rental_ends_at, vehicle_returned_at
 		FROM lease_requests WHERE id = $1
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
@@ -137,6 +138,7 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
 		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+		&lr.RentalEndsAt, &lr.VehicleReturnedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
