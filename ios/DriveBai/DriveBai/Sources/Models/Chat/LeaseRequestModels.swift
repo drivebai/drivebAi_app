@@ -35,10 +35,14 @@ enum LeaseRequestStatus: String, Codable {
     }
 
     /// Whether the owner can accept/decline
-    var ownerCanRespond: Bool { self == .requested }
+    /// The owner may decline at `requested` and — item 4 — while the
+    /// driver's payment window is open (`payment_pending`): the server
+    /// neutralizes the PaymentIntent first and 409s if the payment just
+    /// completed, so this can never drop a paid rental.
+    var ownerCanRespond: Bool { self == .requested || self == .paymentPending }
 
-    /// Whether the driver can cancel
-    var driverCanCancel: Bool { self == .requested }
+    /// Whether the driver can cancel — same payment_pending exit as above.
+    var driverCanCancel: Bool { self == .requested || self == .paymentPending }
 }
 
 // MARK: - Payment Summary Status

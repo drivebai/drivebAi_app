@@ -603,6 +603,21 @@ struct LeaseRequestCardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
+        } else if isOwner && leaseRequest.status == .paymentPending {
+            // Item 4: while the driver's payment window is open the owner
+            // may take the car back — decline only (the request is already
+            // accepted; re-accepting or re-pricing makes no sense here).
+            // The server neutralizes the PaymentIntent first and 409s if
+            // the payment just completed.
+            Button(action: onDecline) {
+                Text("Decline — release my car")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color(.systemGray5))
+                    .foregroundColor(.primary)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
         } else if isOwner && leaseRequest.status.ownerCanRespond {
             // Owner: adjust price + accept/decline
             Button(action: onAdjustPrice) {
@@ -722,6 +737,19 @@ struct LeaseRequestCardView: View {
             // existing owner-side countdown branch above still wants the
             // card while the lease is paid-but-not-picked-up.
             ownerReturnSection
+        } else if leaseRequest.status == .expired {
+            // Terminal (item 4): the payment window (or the request itself)
+            // lapsed — the badge alone read as a dead end with no story.
+            HStack(spacing: 6) {
+                Image(systemName: "clock.badge.xmark")
+                Text(isDriver
+                    ? "Request expired — no payment was made. Send a new request anytime."
+                    : "Request expired without payment — your car is available to others again.")
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .foregroundColor(.secondary)
         } else if leaseRequest.status == .expiredRefunded {
             // Terminal: deadline missed, payment refunded, car back on market.
             HStack(spacing: 6) {
@@ -759,6 +787,20 @@ struct LeaseRequestCardView: View {
                 .background(Color.driveBaiPrimary)
                 .foregroundColor(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            // Item 4: a driver mid-payment-window may also walk away —
+            // without this, the Pay branch shadowed the cancel exit and a
+            // never-paid request held the owner's car until the 24h sweep.
+            if leaseRequest.status == .paymentPending {
+                Button(action: onCancel) {
+                    Text("Cancel Request")
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemGray5))
+                        .foregroundColor(.red)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
             }
         } else if isDriver && leaseRequest.status.driverCanCancel {
             // Driver can cancel
