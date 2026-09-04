@@ -70,6 +70,40 @@ func (r *UserRepository) ListAccountDeletionBlockers(ctx context.Context, userID
 		return nil, err
 	}
 
+	// Open payment windows (M3c): a payment_pending lease may have a
+	// confirmable — or already-confirmed-but-unreported — PaymentIntent
+	// behind it. Deletion used to cancel these with a best-effort Stripe
+	// call and no succeeded-check, which could tombstone an account around
+	// a captured charge. Both parties have a one-tap in-app exit, so this
+	// is a blocker, not an auto-resolve.
+	pprows, err := r.db.Pool.Query(ctx, `
+		SELECT c.title, lr.driver_id = $1 AS is_driver
+		FROM lease_requests lr
+		JOIN cars c ON c.id = lr.listing_id
+		WHERE (lr.driver_id = $1 OR lr.owner_id = $1)
+		  AND lr.status = 'payment_pending'`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list deletion blockers (payment windows): %w", err)
+	}
+	defer pprows.Close()
+	for pprows.Next() {
+		var title string
+		var isDriver bool
+		if err := pprows.Scan(&title, &isDriver); err != nil {
+			return nil, err
+		}
+		b := models.AccountDeletionBlocker{Kind: "payment_in_flight", CarTitle: title}
+		if isDriver {
+			b.Detail = fmt.Sprintf("Your payment for %s is still open. Cancel the request (or finish paying and complete the rental) first.", title)
+		} else {
+			b.Detail = fmt.Sprintf("A driver's payment for %s is in progress. Decline the request to release it first.", title)
+		}
+		out = append(out, b)
+	}
+	if err := pprows.Err(); err != nil {
+		return nil, err
+	}
+
 	// In-flight purchases — authorized or captured money on either side.
 	// Same status set the availability guards use (one definition).
 	prows, err := r.db.Pool.Query(ctx, `
@@ -223,4 +257,36 @@ func (r *DocumentRepository) DeleteAllForUser(ctx context.Context, userID uuid.U
 		paths = append(paths, p)
 	}
 	return paths, rows.Err()
+}
+
+// ListOpenLeasePaymentIntents returns the Stripe intent IDs attached to the
+// user's still-open lease requests (M3c). The deletion handler must prove
+// each one neutralized BEFORE CancelOpenLeasesForUser kills the rows — a
+// cancel-after-the-fact left a window where a captured charge survived its
+// lease. payment_pending is a hard blocker upstream, but the crash window
+// between intent creation and the payment_pending transition can leave an
+// intent on an 'accepted' row, so the predicate covers all open statuses.
+func (r *LeaseRequestRepository) ListOpenLeasePaymentIntents(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT p.payment_intent_id
+		FROM payments p
+		JOIN lease_requests lr ON lr.id = p.lease_request_id
+		WHERE (lr.driver_id = $1 OR lr.owner_id = $1)
+		  AND lr.status IN ('requested', 'accepted', 'payment_pending')
+		  AND p.payment_intent_id IS NOT NULL
+		  AND p.status NOT IN ('canceled', 'refunded', 'refund_unrecoverable')
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

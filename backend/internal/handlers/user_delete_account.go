@@ -140,9 +140,37 @@ func (h *UserHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-resolve open lease requests (no captured money by definition
-	// here). Counterparties are notified; dangling Stripe intents cancelled
-	// best-effort so a webhook can never resurrect a cancelled lease.
+	// M3c: prove every open-lease PaymentIntent neutralized BEFORE the
+	// leases are killed. The old order — kill first, cancel best-effort
+	// after, with no succeeded-check — could tombstone the account around a
+	// charge that had already captured. payment_pending is a hard blocker
+	// above; this covers the crash window that leaves an intent on an
+	// 'accepted' row.
+	if deps.stripe != nil {
+		intents, ierr := deps.leaseRepo.ListOpenLeasePaymentIntents(r.Context(), userID)
+		if ierr != nil {
+			h.logger.Error("account deletion: list open payment intents", "error", ierr, "user_id", userID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		for _, intentID := range intents {
+			switch neutralizePaymentIntentSvc(deps.stripe, intentID) {
+			case piMoneyMoved:
+				httputil.WriteError(w, http.StatusConflict, &models.APIError{
+					Code:    models.ErrCodeDeletionBlocked,
+					Message: "A payment on one of your requests just completed. Refresh, then finish or return that rental — after that you can delete your account.",
+				})
+				return
+			case piUnknown:
+				httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("PAYMENT_STATE_UNKNOWN",
+					"Couldn't verify an open payment's state — try again in a moment"))
+				return
+			}
+		}
+	}
+
+	// Auto-resolve open lease requests (no captured money — proven above).
+	// Counterparties are notified.
 	closed, err := deps.leaseRepo.CancelOpenLeasesForUser(r.Context(), userID)
 	if err != nil {
 		h.logger.Error("account deletion: cancel open leases", "error", err, "user_id", userID)
@@ -150,11 +178,6 @@ func (h *UserHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, c := range closed {
-		if c.PaymentIntentID != nil && deps.stripe != nil {
-			if cerr := deps.stripe.CancelPaymentIntent(*c.PaymentIntentID); cerr != nil {
-				h.logger.Warn("account deletion: cancel stripe intent", "error", cerr, "lease_request_id", c.ID)
-			}
-		}
 		counterparty := c.OwnerID
 		if !c.WasDriver {
 			counterparty = c.DriverID

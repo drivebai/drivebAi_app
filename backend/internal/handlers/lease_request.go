@@ -398,16 +398,24 @@ func (h *LeaseRequestHandler) handleLeaseAction(w http.ResponseWriter, r *http.R
 	// UPDATE stays the final serializer.
 	if action == "decline" || action == "cancel" {
 		if lr, gerr := h.leaseRepo.GetByID(r.Context(), leaseID); gerr == nil && lr != nil && lr.Status == models.LeaseStatusPaymentPending {
-			if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
-				if cerr := h.stripe.CancelPaymentIntent(*payment.PaymentIntentID); cerr != nil {
-					es := cerr.Error()
-					if strings.Contains(es, "succeeded") || strings.Contains(es, "processing") {
-						httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYMENT_IN_FLIGHT",
-							"The payment just completed — refresh to see the paid rental"))
-						return
-					}
-					// already-canceled and similar are benign; log and move on.
-					h.logger.Warn("lease action: stale PI cancel", "error", cerr, "lease_request_id", leaseID)
+			payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID)
+			if perr != nil {
+				// Can't see the payment → can't prove no money moved →
+				// must not kill the lease (M3d closed the old fall-through).
+				h.logger.Error("lease action: payment lookup", "error", perr, "lease_request_id", leaseID)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+			if payment != nil && payment.PaymentIntentID != nil {
+				switch h.neutralizePaymentIntent(*payment.PaymentIntentID) {
+				case piMoneyMoved:
+					httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYMENT_IN_FLIGHT",
+						"The payment just completed — refresh to see the paid rental"))
+					return
+				case piUnknown:
+					httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("PAYMENT_STATE_UNKNOWN",
+						"Couldn't verify the payment's state — try again in a moment"))
+					return
 				}
 			}
 		}
@@ -580,30 +588,69 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		return
 	}
 
+	// The stored intent's own status decides whether it may be re-served
+	// (H2: the old unconditional fast path re-served dead client_secrets
+	// forever — succeeded ones with a lost webhook, canceled ones after a
+	// partial decline).
+	var replacePayment *models.Payment
 	if existingPayment != nil && existingPayment.PaymentIntentID != nil && existingPayment.ClientSecret != nil {
-		// Already have a PaymentIntent with stored client_secret — return it
-		customerID := ""
-		ephemeralKeySecret := ""
-		if existingPayment.StripeCustomerID != nil {
-			customerID = *existingPayment.StripeCustomerID
-			ek, ekErr := h.stripe.CreateEphemeralKey(customerID)
-			if ekErr == nil {
-				ephemeralKeySecret = ek.Secret
+		switch existingPayment.Status {
+		case models.PaymentStatusSucceeded, models.PaymentStatusRefunded, models.PaymentStatusRefundUnrecoverable:
+			// The charge already landed — adopt it (lease → paid, or the
+			// orphan pipeline if the lease died) instead of handing the
+			// driver a sheet that can only error.
+			h.adoptSucceededPayment(r.Context(), existingPayment)
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("ALREADY_PAID",
+				"This payment already completed — refresh to see the result"))
+			return
+		case models.PaymentStatusProcessing:
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYMENT_IN_FLIGHT",
+				"Your payment is still processing — refresh in a moment"))
+			return
+		case models.PaymentStatusCanceled:
+			// Dead intent (price-change cancel, partial decline, sweep). Fall
+			// through to mint a replacement on the same payment row.
+			replacePayment = existingPayment
+		default:
+			// requires_payment_method / _confirmation — the normal retry.
+			customerID := ""
+			ephemeralKeySecret := ""
+			if existingPayment.StripeCustomerID != nil {
+				customerID = *existingPayment.StripeCustomerID
+				ek, ekErr := h.stripe.CreateEphemeralKey(customerID)
+				if ekErr == nil {
+					ephemeralKeySecret = ek.Secret
+				}
 			}
+
+			h.logger.Info("returning existing payment intent", "lease_request_id", leaseID, "payment_intent_id", *existingPayment.PaymentIntentID)
+
+			httputil.WriteJSON(w, http.StatusOK, models.PaymentIntentResponse{
+				PaymentIntentClientSecret: *existingPayment.ClientSecret,
+				PaymentIntentID:           *existingPayment.PaymentIntentID,
+				PublishableKey:            h.stripe.PublishableKey(),
+				CustomerID:                customerID,
+				EphemeralKeySecret:        ephemeralKeySecret,
+				Amount:                    existingPayment.Amount,
+				Currency:                  existingPayment.Currency,
+			})
+			return
 		}
+	}
 
-		h.logger.Info("returning existing payment intent", "lease_request_id", leaseID, "payment_intent_id", *existingPayment.PaymentIntentID)
-
-		httputil.WriteJSON(w, http.StatusOK, models.PaymentIntentResponse{
-			PaymentIntentClientSecret: *existingPayment.ClientSecret,
-			PaymentIntentID:           *existingPayment.PaymentIntentID,
-			PublishableKey:            h.stripe.PublishableKey(),
-			CustomerID:                customerID,
-			EphemeralKeySecret:        ephemeralKeySecret,
-			Amount:                    existingPayment.Amount,
-			Currency:                  existingPayment.Currency,
-		})
-		return
+	// Claim the payment window BEFORE any Stripe call. This status-scoped
+	// transition is the serializer against the accept-expiry sweep (M3a):
+	// whoever moves the row first wins, and a lease the sweep already
+	// expired can never mint a live PaymentSheet. The old order — create
+	// the PI first, then Warn-and-continue when this transition matched
+	// zero rows — handed drivers a working sheet for a dead lease.
+	if lr.Status == models.LeaseStatusAccepted {
+		if _, err := h.leaseRepo.SetPaymentPending(r.Context(), leaseID); err != nil {
+			h.logger.Warn("payment intent refused: lease no longer payable", "error", err, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError(models.ErrCodeInvalidLeaseAction,
+				"This request just expired — refresh the chat"))
+			return
+		}
 	}
 
 	// Compute amount
@@ -634,8 +681,16 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Create PaymentIntent (idempotency key = lease request ID)
-	pi, err := h.stripe.CreatePaymentIntent(totalCents, lr.Currency, customer.ID, platformFeeCents, leaseID.String())
+	// Create PaymentIntent. Idempotency key = lease request ID for the first
+	// intent; a REPLACEMENT (dead canceled intent being swapped out) must
+	// use a different key — Stripe's idempotency cache would otherwise hand
+	// back the very canceled intent we're replacing. Keyed on the
+	// predecessor so replays of the same replacement still dedupe.
+	piIdemKey := leaseID.String()
+	if replacePayment != nil && replacePayment.PaymentIntentID != nil {
+		piIdemKey = fmt.Sprintf("lease-%s-after-%s", leaseID, *replacePayment.PaymentIntentID)
+	}
+	pi, err := h.stripe.CreatePaymentIntent(totalCents, lr.Currency, customer.ID, platformFeeCents, piIdemKey)
 	if err != nil {
 		h.logger.Error("stripe create payment intent", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.NewAPIError("STRIPE_ERROR", "Failed to create payment"))
@@ -650,36 +705,46 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		"customer_id", customer.ID,
 	)
 
-	// Save payment record (including client_secret for retry)
-	payment := &models.Payment{
-		LeaseRequestID:    leaseID,
-		Provider:          "stripe",
-		StripeCustomerID:  &customer.ID,
-		PaymentIntentID:   &pi.ID,
-		ClientSecret:      &pi.ClientSecret,
-		Amount:            totalCents,
-		Currency:          lr.Currency,
-		PlatformFeeAmount: platformFeeCents,
-		Status:            models.PaymentStatusRequiresPaymentMethod,
-	}
-
-	_, err = h.leaseRepo.CreatePayment(r.Context(), payment)
-	if err != nil {
-		// If duplicate, that's OK — idempotent
-		if apiErr := models.GetAPIError(err); apiErr != nil && apiErr.Code == models.ErrCodePaymentAlreadyExists {
-			h.logger.Info("payment already exists, returning existing", "lease_request_id", leaseID)
-		} else {
-			h.logger.Error("save payment record", "error", err)
+	if replacePayment != nil {
+		// Swap the dead intent for the fresh one on the same row. Status-
+		// scoped to 'canceled': if a webhook somehow succeeded the old
+		// intent in the meantime, the swap refuses and the driver's next
+		// tap lands in the adopt branch above.
+		swapped, serr := h.leaseRepo.ReplacePaymentIntent(r.Context(), replacePayment.ID, pi.ID, pi.ClientSecret)
+		if serr != nil {
+			h.logger.Error("replace payment intent", "error", serr, "lease_request_id", leaseID)
 			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 			return
 		}
-	}
+		if !swapped {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYMENT_IN_FLIGHT",
+				"The payment state just changed — refresh and try again"))
+			return
+		}
+	} else {
+		// Save payment record (including client_secret for retry)
+		payment := &models.Payment{
+			LeaseRequestID:    leaseID,
+			Provider:          "stripe",
+			StripeCustomerID:  &customer.ID,
+			PaymentIntentID:   &pi.ID,
+			ClientSecret:      &pi.ClientSecret,
+			Amount:            totalCents,
+			Currency:          lr.Currency,
+			PlatformFeeAmount: platformFeeCents,
+			Status:            models.PaymentStatusRequiresPaymentMethod,
+		}
 
-	// Transition lease request to payment_pending
-	if lr.Status == models.LeaseStatusAccepted {
-		_, err = h.leaseRepo.SetPaymentPending(r.Context(), leaseID)
+		_, err = h.leaseRepo.CreatePayment(r.Context(), payment)
 		if err != nil {
-			h.logger.Warn("failed to set payment_pending", "error", err)
+			// If duplicate, that's OK — idempotent
+			if apiErr := models.GetAPIError(err); apiErr != nil && apiErr.Code == models.ErrCodePaymentAlreadyExists {
+				h.logger.Info("payment already exists, returning existing", "lease_request_id", leaseID)
+			} else {
+				h.logger.Error("save payment record", "error", err)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
 		}
 	}
 
@@ -876,7 +941,13 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 
 	switch eventType {
 	case "payment_intent.succeeded":
-		h.handlePaymentSucceeded(r, intentID)
+		// A success signal we failed to persist must NOT be ACKed — a 200
+		// here told Stripe "done" and the retry never came (H2). 500 makes
+		// Stripe redeliver with backoff for days.
+		if !h.handlePaymentSucceeded(r, intentID) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	case "payment_intent.payment_failed":
 		h.handlePaymentFailed(r, intentID)
 	case "payment_intent.canceled":
@@ -886,46 +957,68 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID string) {
+// handlePaymentSucceeded returns false only for failures a Stripe redelivery
+// can fix (DB errors mid-processing); the webhook then answers 500. Benign
+// and terminally-triaged outcomes return true.
+func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID string) bool {
 	payment, err := h.leaseRepo.GetPaymentByIntentID(r.Context(), intentID)
 	if err != nil {
 		// Not found = PI was not created by us; ignore silently
 		if apiErr := models.GetAPIError(err); apiErr != nil && apiErr.Code == models.ErrCodePaymentNotFound {
 			h.logger.Info("webhook: ignoring unknown payment_intent", "intent_id", intentID)
-		} else {
-			h.logger.Error("webhook: get payment by intent", "event", "succeeded", "intent_id", intentID, "error", err)
+			return true
 		}
-		return
+		h.logger.Error("webhook: get payment by intent", "event", "succeeded", "intent_id", intentID, "error", err)
+		return false // 500 → Stripe redelivers (H2: never ACK a signal we failed to read)
 	}
 
-	// Idempotency: if already succeeded, skip
-	if payment.Status == models.PaymentStatusSucceeded {
-		h.logger.Info("webhook: payment already succeeded (idempotent skip)", "intent_id", intentID, "payment_id", payment.ID)
-		return
+	// Idempotency: if already succeeded (or already reconciled), skip
+	switch payment.Status {
+	case models.PaymentStatusSucceeded, models.PaymentStatusRefunded, models.PaymentStatusRefundUnrecoverable:
+		h.logger.Info("webhook: payment already recorded (idempotent skip)", "intent_id", intentID, "payment_id", payment.ID, "status", payment.Status)
+		return true
 	}
 
 	// Update payment status
 	if err := h.leaseRepo.UpdatePaymentStatus(r.Context(), payment.ID, models.PaymentStatusSucceeded); err != nil {
 		h.logger.Error("webhook: update payment status", "event", "succeeded", "payment_id", payment.ID, "error", err)
-		return
+		return false
 	}
+	payment.Status = models.PaymentStatusSucceeded
 
 	// Transition lease request to paid (accepts both accepted and payment_pending)
 	lr, err := h.leaseRepo.SetPaid(r.Context(), payment.LeaseRequestID)
 	if err != nil {
-		// If already in a terminal state (paid/declined/cancelled), log as idempotent
 		if apiErr := models.GetAPIError(err); apiErr != nil && apiErr.Code == models.ErrCodeInvalidLeaseAction {
-			h.logger.Info("webhook: lease already in terminal state (idempotent skip)", "lease_request_id", payment.LeaseRequestID, "intent_id", intentID)
-			// Still broadcast in case the client missed the first one
-			lr, _ = h.leaseRepo.GetByID(r.Context(), payment.LeaseRequestID)
-		} else {
-			h.logger.Error("webhook: set lease paid", "lease_request_id", payment.LeaseRequestID, "error", err)
-			return
+			// The lease moved on without us. "Already paid" is the benign
+			// idempotent case; a TERMINAL lease means we just captured
+			// money for a dead request — the M3 bug was treating both as
+			// "skip". Triage exactly like the adopt path.
+			cur, gerr := h.leaseRepo.GetByID(r.Context(), payment.LeaseRequestID)
+			if gerr != nil || cur == nil {
+				h.logger.Error("webhook: reload lease after set-paid refusal", "error", gerr, "lease_request_id", payment.LeaseRequestID)
+				return false
+			}
+			switch cur.Status {
+			case models.LeaseStatusPaid:
+				h.logger.Info("webhook: lease already paid (idempotent skip)", "lease_request_id", cur.ID, "intent_id", intentID)
+				// Still broadcast in case the client missed the first one —
+				// but no notifications/handover re-fire (they already did).
+				h.broadcastLeaseUpdate(r.Context(), cur)
+				return true
+			case models.LeaseStatusExpired, models.LeaseStatusCancelled, models.LeaseStatusDeclined:
+				h.logger.Warn("webhook: charge captured for a terminal lease — refunding",
+					"lease_request_id", cur.ID, "status", cur.Status, "intent_id", intentID)
+				h.refundOrphanedPayment(r.Context(), cur, payment)
+				return true // reconciliation owns it from here; don't re-deliver
+			default:
+				h.logger.Error("webhook: charge captured for lease in unexpected state",
+					"lease_request_id", cur.ID, "status", cur.Status, "intent_id", intentID)
+				return true // orphan sweep's lister decides; nothing a retry fixes
+			}
 		}
-	}
-
-	if lr == nil {
-		return
+		h.logger.Error("webhook: set lease paid", "lease_request_id", payment.LeaseRequestID, "error", err)
+		return false
 	}
 
 	h.logger.Info("payment succeeded", "lease_request_id", lr.ID, "payment_id", payment.ID, "intent_id", intentID)
@@ -968,19 +1061,24 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 	// and must not sit in other drivers' Today lists until their TTL
 	// lazily expires. Idempotent (a webhook retry matches zero rows).
 	h.declineSiblingsOfPaidLease(r.Context(), lr)
+	return true
 }
 
 // ensureKeyHandover creates the key-handover task for a freshly paid lease
 // (idempotent on lease_request_id) and broadcasts it so both parties' Today
 // tabs pick it up. Pickup location is snapshotted from the car listing.
 func (h *LeaseRequestHandler) ensureKeyHandover(r *http.Request, lr *models.LeaseRequest) {
+	h.ensureKeyHandoverCtx(r.Context(), lr)
+}
+
+func (h *LeaseRequestHandler) ensureKeyHandoverCtx(ctx context.Context, lr *models.LeaseRequest) {
 	if h.keyHandoverRepo == nil {
 		return
 	}
 
 	var lat, lng *float64
 	var area *string
-	if car, err := h.carRepo.GetByID(r.Context(), lr.ListingID); err == nil {
+	if car, err := h.carRepo.GetByID(ctx, lr.ListingID); err == nil {
 		if car.Latitude.Valid {
 			v := car.Latitude.Float64
 			lat = &v
@@ -995,7 +1093,7 @@ func (h *LeaseRequestHandler) ensureKeyHandover(r *http.Request, lr *models.Leas
 		}
 	}
 
-	kh, err := h.keyHandoverRepo.CreateForLease(r.Context(), lr, lat, lng, area)
+	kh, err := h.keyHandoverRepo.CreateForLease(ctx, lr, lat, lng, area)
 	if err != nil {
 		h.logger.Error("create key handover", "error", err, "lease_request_id", lr.ID)
 		return
@@ -1123,6 +1221,7 @@ func (h *LeaseRequestHandler) StartPickupExpiryScanner(ctx context.Context, inte
 			h.runExpirySweep(ctx)
 			h.runPaymentPendingSweep(ctx)
 			h.runAcceptExpirySweep(ctx)
+			h.runOrphanedPaymentSweep(ctx)
 		}
 	}
 }
@@ -1165,16 +1264,24 @@ func (h *LeaseRequestHandler) runAcceptExpirySweep(ctx context.Context) {
 	for i := range candidates {
 		lr := &candidates[i]
 		// A stale PI should not exist at 'accepted' (it's created on the
-		// payment_pending transition), but a crash window can leave one —
-		// same neutralize-first dance, same back-off on a winning payment.
-		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
-			if cerr := h.stripe.CancelPaymentIntent(*payment.PaymentIntentID); cerr != nil {
-				es := cerr.Error()
-				if strings.Contains(es, "succeeded") || strings.Contains(es, "processing") {
-					h.logger.Info("accept-expiry sweep: payment in flight, skipping", "lease_request_id", lr.ID)
-					continue
-				}
-				h.logger.Warn("accept-expiry sweep: PI cancel", "error", cerr, "lease_request_id", lr.ID)
+		// payment_pending transition), but a crash window can leave one.
+		// The claim proceeds ONLY on a proven-neutralized intent: a winning
+		// payment is adopted, an unverifiable one defers to the next tick
+		// (the old Warn-and-continue fall-through was M3b).
+		payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID)
+		if perr != nil {
+			h.logger.Error("accept-expiry sweep: payment lookup", "error", perr, "lease_request_id", lr.ID)
+			continue
+		}
+		if payment != nil && payment.PaymentIntentID != nil {
+			switch h.neutralizePaymentIntent(*payment.PaymentIntentID) {
+			case piMoneyMoved:
+				h.logger.Info("accept-expiry sweep: payment won — adopting", "lease_request_id", lr.ID)
+				h.adoptSucceededPayment(ctx, payment)
+				continue
+			case piUnknown:
+				h.logger.Warn("accept-expiry sweep: intent state unknown, deferring", "lease_request_id", lr.ID)
+				continue
 			}
 		}
 		claimed, cerr := h.leaseRepo.ClaimAcceptExpiry(ctx, lr.ID)
@@ -1218,16 +1325,25 @@ func (h *LeaseRequestHandler) runPaymentPendingSweep(ctx context.Context) {
 	}
 	for i := range candidates {
 		lr := &candidates[i]
-		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
-			if cerr := h.stripe.CancelPaymentIntent(*payment.PaymentIntentID); cerr != nil {
-				es := cerr.Error()
-				if strings.Contains(es, "succeeded") || strings.Contains(es, "processing") {
-					// The payment won at the wire — leave the lease for
-					// the webhook's SetPaid.
-					h.logger.Info("payment-pending sweep: payment in flight, skipping", "lease_request_id", lr.ID)
-					continue
-				}
-				h.logger.Warn("payment-pending sweep: PI cancel", "error", cerr, "lease_request_id", lr.ID)
+		payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID)
+		if perr != nil {
+			// Can't see the payment → can't prove no money moved → the row
+			// waits for the next tick (the old skip-the-neutralize-and-
+			// claim-anyway path was M3b).
+			h.logger.Error("payment-pending sweep: payment lookup", "error", perr, "lease_request_id", lr.ID)
+			continue
+		}
+		if payment != nil && payment.PaymentIntentID != nil {
+			switch h.neutralizePaymentIntent(*payment.PaymentIntentID) {
+			case piMoneyMoved:
+				// The payment won at the wire. Don't just leave it for a
+				// webhook that may never come (H2) — adopt it now.
+				h.logger.Info("payment-pending sweep: payment won — adopting", "lease_request_id", lr.ID)
+				h.adoptSucceededPayment(ctx, payment)
+				continue
+			case piUnknown:
+				h.logger.Warn("payment-pending sweep: intent state unknown, deferring", "lease_request_id", lr.ID)
+				continue
 			}
 		}
 		claimed, cerr := h.leaseRepo.ClaimPaymentExpiry(ctx, lr.ID)
@@ -1355,11 +1471,19 @@ func (h *LeaseRequestHandler) retryStuckRefund(ctx context.Context, lr *models.L
 //     production logs.
 func (h *LeaseRequestHandler) issueAndFinalizeRefund(ctx context.Context, lr *models.LeaseRequest, phase string) {
 	payment, err := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID)
-	if err != nil || payment == nil || payment.PaymentIntentID == nil {
+	if err != nil {
+		// Transient DB error — stay 'pending'/'failed' so the sweep retries.
 		h.logger.Error("expiry: payment lookup failed", "phase", phase, "error", err, "lease_request_id", lr.ID)
 		if ferr := h.leaseRepo.FinalizeRefund(ctx, lr.ID, "", models.RefundStatusFailed); ferr != nil {
-			h.logger.Error("expiry: finalize refund (no PI)", "phase", phase, "error", ferr, "lease_request_id", lr.ID)
+			h.logger.Error("expiry: finalize refund (lookup failed)", "phase", phase, "error", ferr, "lease_request_id", lr.ID)
 		}
+		return
+	}
+	if payment == nil || payment.PaymentIntentID == nil {
+		// PERMANENT: there is nothing to refund against, and no retry will
+		// change that. The old path marked 'failed' and the sweep replayed
+		// the same dead end every ~60s forever with no ticket (H7).
+		h.markLeaseRefundUnrecoverable(ctx, lr, lr.TotalAmountCents(), "no payment intent recorded for this lease")
 		return
 	}
 
@@ -1367,6 +1491,13 @@ func (h *LeaseRequestHandler) issueAndFinalizeRefund(ctx context.Context, lr *mo
 	// amountCents=0 → full refund (pickup expiry reverses the entire payment).
 	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer", 0)
 	if err != nil {
+		if strings.Contains(err.Error(), "resource_missing") {
+			// PERMANENT: the intent no longer exists at Stripe — the exact
+			// failure the vehicle-return side already parks as
+			// 'unrecoverable' (000051). Same exit here.
+			h.markLeaseRefundUnrecoverable(ctx, lr, payment.Amount, "payment intent no longer exists at Stripe: "+err.Error())
+			return
+		}
 		h.logger.Error("expiry: refund retry failed",
 			"phase", phase,
 			"error", err,
@@ -1395,6 +1526,17 @@ func (h *LeaseRequestHandler) issueAndFinalizeRefund(ctx context.Context, lr *mo
 		"refund_id", refund.ID,
 		"stripe_status", refund.Status,
 		"persisted_status", status)
+
+	// H7: the "your money is back" message fires only now, on the actual
+	// refund — notifyExpiry at claim time promises it, never asserts it.
+	if status == models.RefundStatusSucceeded {
+		chatID := lr.ChatID
+		leaseID := lr.ID
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+			"Refund issued",
+			fmt.Sprintf("Your refund of $%.2f is on its way back to your card.", float64(payment.Amount)/100),
+			&chatID, &leaseID)
+	}
 
 	// Re-broadcast with the now-populated refund fields.
 	if updated, err := h.leaseRepo.GetByID(ctx, lr.ID); err == nil && updated != nil {
@@ -1436,13 +1578,16 @@ func (h *LeaseRequestHandler) notifyExpiry(ctx context.Context, lr *models.Lease
 	chatID := lr.ChatID
 	lrID := lr.ID
 
+	// H7: promised, not asserted — the refund hasn't been issued yet at
+	// claim time. The "Refund issued" notice fires from
+	// issueAndFinalizeRefund once Stripe actually accepts it.
 	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
 		"Pickup deadline missed",
-		fmt.Sprintf("You didn't confirm pickup of %s in time. Your payment has been refunded to your card.", carTitle),
+		fmt.Sprintf("You didn't confirm pickup of %s in time. The rental was cancelled — your payment is being refunded to your card, and we'll confirm as soon as it's done.", carTitle),
 		&chatID, &lrID)
 	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
 		"Pickup deadline missed",
-		fmt.Sprintf("%s didn't pick up %s in time. The rental was cancelled, the payment refunded, and your listing is back on the market.", driverName, carTitle),
+		fmt.Sprintf("%s didn't pick up %s in time. The rental was cancelled, the driver's payment is being refunded, and your listing is back on the market.", driverName, carTitle),
 		&chatID, &lrID)
 }
 

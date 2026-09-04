@@ -1832,3 +1832,118 @@ func scanFullLeaseLocked(ctx context.Context, tx pgx.Tx, id uuid.UUID) (*models.
 	}
 	return &lr, nil
 }
+
+// --- Audit P0 batch (M3/H7): orphaned-payment reconciliation ---
+
+// OrphanedPayment is a succeeded charge whose lease went terminal without
+// the money ever being refunded — the state M3 exists to make impossible.
+type OrphanedPayment struct {
+	Payment     models.Payment
+	LeaseStatus models.LeaseRequestStatus
+	DriverID    uuid.UUID
+	OwnerID     uuid.UUID
+	ChatID      uuid.UUID
+}
+
+// ListOrphanedSucceededPayments returns payments still marked 'succeeded'
+// whose lease is in a terminal, never-rented state. 'paid' (active or
+// finished rental) and 'expired_refunded' (refund tracked on the lease row
+// itself) are legitimate homes for a succeeded payment and are excluded.
+// The staleness cutoff keeps the sweep off rows an inline handler is still
+// working on.
+func (r *LeaseRequestRepository) ListOrphanedSucceededPayments(ctx context.Context, staleBefore time.Time, limit int) ([]OrphanedPayment, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT p.id, p.lease_request_id, p.provider, p.stripe_customer_id, p.payment_intent_id, p.payment_intent_client_secret,
+		       p.amount, p.currency, p.platform_fee_amount, p.status, p.created_at, p.updated_at,
+		       lr.status, lr.driver_id, lr.owner_id, lr.chat_id
+		FROM payments p
+		JOIN lease_requests lr ON lr.id = p.lease_request_id
+		WHERE p.status = 'succeeded'
+		  AND lr.status IN ('expired', 'cancelled', 'declined')
+		  AND p.updated_at <= $1
+		ORDER BY p.updated_at ASC
+		LIMIT $2
+	`, staleBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OrphanedPayment
+	for rows.Next() {
+		var o OrphanedPayment
+		p := &o.Payment
+		if err := rows.Scan(
+			&p.ID, &p.LeaseRequestID, &p.Provider, &p.StripeCustomerID, &p.PaymentIntentID, &p.ClientSecret,
+			&p.Amount, &p.Currency, &p.PlatformFeeAmount, &p.Status, &p.CreatedAt, &p.UpdatedAt,
+			&o.LeaseStatus, &o.DriverID, &o.OwnerID, &o.ChatID,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// MarkPaymentRefunded records the orphan-refund outcome, claimed-once: only
+// the caller that flips succeeded→refunded owns the driver notification.
+func (r *LeaseRequestRepository) MarkPaymentRefunded(ctx context.Context, paymentID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE payments SET status = 'refunded', updated_at = NOW()
+		WHERE id = $1 AND status = 'succeeded'
+	`, paymentID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkPaymentRefundUnrecoverable parks an orphaned payment whose automatic
+// refund can never succeed (PI gone at Stripe). Claimed-once for the same
+// reason as above — exactly one ticket, exactly one notification.
+func (r *LeaseRequestRepository) MarkPaymentRefundUnrecoverable(ctx context.Context, paymentID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE payments SET status = 'refund_unrecoverable', updated_at = NOW()
+		WHERE id = $1 AND status = 'succeeded'
+	`, paymentID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkLeaseRefundUnrecoverable is H7's port of the vehicle-return
+// 'unrecoverable' state to the pickup-expiry refund path: a permanent
+// failure leaves the retry sweep (whose predicate is pending/failed/NULL)
+// and hands the row to a support ticket. Claimed-once via the status scope.
+func (r *LeaseRequestRepository) MarkLeaseRefundUnrecoverable(ctx context.Context, leaseID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET refund_status = 'unrecoverable', updated_at = NOW()
+		WHERE id = $1 AND status = 'expired_refunded' AND refund_id IS NULL
+		  AND (refund_status IS NULL OR refund_status IN ('pending', 'failed'))
+	`, leaseID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ReplacePaymentIntent swaps a cancelled PaymentIntent for a freshly minted
+// one on the same payment row (H2: the stored-client_secret fast path used
+// to re-serve a dead intent forever). Status-scoped to 'canceled' so a
+// racing webhook that already succeeded the old intent can never be
+// clobbered.
+func (r *LeaseRequestRepository) ReplacePaymentIntent(ctx context.Context, paymentID uuid.UUID, newIntentID, newClientSecret string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE payments
+		SET payment_intent_id = $2, payment_intent_client_secret = $3,
+		    status = 'requires_payment_method', updated_at = NOW()
+		WHERE id = $1 AND status = 'canceled'
+	`, paymentID, newIntentID, newClientSecret)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}

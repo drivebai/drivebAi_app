@@ -50,7 +50,12 @@ type RefundStatus string
 const (
 	RefundStatusPending   RefundStatus = "pending"   // Stripe call about to be made
 	RefundStatusSucceeded RefundStatus = "succeeded" // Stripe Refund created and accepted
-	RefundStatusFailed    RefundStatus = "failed"    // Stripe rejected the refund; needs human intervention
+	RefundStatusFailed    RefundStatus = "failed"    // transient failure; the stuck-refund sweep retries
+	// RefundStatusUnrecoverable is a PERMANENT refund failure (the
+	// PaymentIntent no longer exists at Stripe, or no intent was ever
+	// recorded). The sweep excludes it; a support ticket owns the manual
+	// exit. Mirror of the vehicle-return 'unrecoverable' state (000051).
+	RefundStatusUnrecoverable RefundStatus = "unrecoverable"
 )
 
 // PaymentStatus mirrors Stripe PaymentIntent statuses
@@ -63,6 +68,13 @@ const (
 	PaymentStatusSucceeded             PaymentStatus = "succeeded"
 	PaymentStatusCanceled              PaymentStatus = "canceled"
 	PaymentStatusFailed                PaymentStatus = "failed"
+	// The two below are OURS, not Stripe's (added in 000052): terminal
+	// outcomes for a charge captured against a lease that had already gone
+	// terminal. 'refunded' = we returned the money in full; the
+	// unrecoverable variant = the automatic refund can never succeed and a
+	// support ticket owns the manual exit.
+	PaymentStatusRefunded            PaymentStatus = "refunded"
+	PaymentStatusRefundUnrecoverable PaymentStatus = "refund_unrecoverable"
 )
 
 // LeaseRequest represents a driver's request to lease a car listing
