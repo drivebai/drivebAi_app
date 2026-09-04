@@ -203,6 +203,7 @@ export interface AdminRent {
     | 'succeeded'
     | 'failed'
     | 'not_applicable'
+    | 'unrecoverable'
     | null
   return_refund_id?: string | null
   return_refunded_at?: string | null

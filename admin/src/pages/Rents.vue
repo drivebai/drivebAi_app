@@ -75,7 +75,8 @@ function hasReturn(r: AdminRent): boolean {
 function returnLabel(r: AdminRent): string {
   switch (r.return_status) {
     case 'driver_initiated': return 'Pending owner'
-    case 'owner_confirmed':  return 'Refund pending'
+    case 'owner_confirmed':
+      return r.return_refund_status === 'unrecoverable' ? 'Refund impossible — settle' : 'Refund pending'
     case 'disputed':         return 'Disputed'
     case 'completed':        return refundFailed(r) ? 'Refund failed' : 'Completed'
     case 'cancelled':        return 'Cancelled'
@@ -86,7 +87,7 @@ function returnLabel(r: AdminRent): string {
 // "Manual" review (red) is anything where money is owed but Stripe is stuck
 // or the owner is contesting. Greens are only true success states.
 function refundFailed(r: AdminRent): boolean {
-  return r.return_refund_status === 'failed'
+  return r.return_refund_status === 'failed' || r.return_refund_status === 'unrecoverable'
 }
 
 function returnTone(r: AdminRent): 'success' | 'danger' | 'warning' | 'neutral' {
