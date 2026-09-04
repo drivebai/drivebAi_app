@@ -938,18 +938,22 @@ func (r *ChatRepository) GetUserProfileDetail(ctx context.Context, requesterID, 
 	resp.Role = role
 	resp.MemberSince = models.RFC3339Time(memberSince)
 
+	// PII gate: self, or a counterparty in an existing chat. Computed once
+	// for BOTH gated fields — the license URL (B2 fix) and, since the
+	// audit's H1, the phone number: /listings hands any authenticated user
+	// every owner's UUID, so an ungated phone here meant the whole
+	// platform's phone book was one loop away. Coordination between
+	// matched parties (who share a chat by construction) is unaffected.
+	allowed := requesterID == userID
+	if !allowed && requesterID != uuid.Nil {
+		share, _ := r.UsersShareChat(ctx, requesterID, userID)
+		allowed = share
+	}
+	if !allowed {
+		resp.Phone = nil
+	}
+
 	if role == models.RoleDriver {
-		// PII gate (B2 fix): only return the driver license URL when the
-		// requester is either the driver themselves or a counterparty in
-		// an existing chat with them. Anyone else gets the profile minus
-		// the license field — they can still see the driver's name,
-		// avatar, and stats; they just can't harvest licenses by walking
-		// user UUIDs.
-		allowed := requesterID == userID
-		if !allowed && requesterID != uuid.Nil {
-			share, _ := r.UsersShareChat(ctx, requesterID, userID)
-			allowed = share
-		}
 		if allowed {
 			var licURL *string
 			_ = r.db.Pool.QueryRow(ctx, `

@@ -430,3 +430,36 @@ func TestAuditP0_SettleGuards(t *testing.T) {
 		t.Fatalf("ledger mismatch tickets = %d, want 1", mismatchTickets)
 	}
 }
+
+// H1: the phone number is gated exactly like the license URL — self and
+// chat counterparties see it, a stranger with a harvested UUID does not.
+func TestAuditP0_ProfilePhoneGate(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "p0_owner_ph@example.com")
+	driver := e.seedUser(t, "driver", "p0_driver_ph@example.com")
+	stranger := e.seedUser(t, "driver", "p0_stranger_ph@example.com")
+	e.seedLicense(t, driver)
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE users SET phone='+15550001111' WHERE id=$1`, owner); err != nil {
+		t.Fatalf("set phone: %v", err)
+	}
+	seedAcceptedLease(t, e, owner, driver) // creates the driver↔owner chat
+
+	chatRepo := repository.NewChatRepository(e.db)
+
+	if p, err := chatRepo.GetUserProfileDetail(ctx, stranger, owner); err != nil {
+		t.Fatalf("stranger view: %v", err)
+	} else if p.Phone != nil {
+		t.Fatalf("stranger sees phone %q — the H1 harvest is still open", *p.Phone)
+	}
+	if p, err := chatRepo.GetUserProfileDetail(ctx, driver, owner); err != nil {
+		t.Fatalf("counterparty view: %v", err)
+	} else if p.Phone == nil {
+		t.Fatal("chat counterparty no longer sees the phone — coordination broken")
+	}
+	if p, err := chatRepo.GetUserProfileDetail(ctx, owner, owner); err != nil {
+		t.Fatalf("self view: %v", err)
+	} else if p.Phone == nil {
+		t.Fatal("self no longer sees own phone")
+	}
+}
