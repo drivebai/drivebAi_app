@@ -345,7 +345,8 @@ func (r *LeaseRequestRepository) AcceptLeaseRequest(ctx context.Context, id, own
 
 	// 1. Transition lease status to 'accepted'.
 	err = tx.QueryRow(ctx, `
-		UPDATE lease_requests SET status = $2, updated_at = $3
+		UPDATE lease_requests SET status = $2, updated_at = $3,
+		       accepted_at = COALESCE(accepted_at, $3)
 		WHERE id = $1
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
@@ -1556,6 +1557,107 @@ func (r *LeaseRequestRepository) ClaimPaymentExpiry(ctx context.Context, id uuid
 		UPDATE lease_requests
 		SET status = 'expired', updated_at = NOW()
 		WHERE id = $1 AND status = 'payment_pending'
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at`, id)
+	var lr models.LeaseRequest
+	err := row.Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrInvalidLeaseAction
+		}
+		return nil, err
+	}
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return &lr, nil
+}
+
+// ClaimAcceptExpiryWarnings claims accepted leases due their 24h-before
+// warning — claimed-once via the flag column, house pattern.
+func (r *LeaseRequestRepository) ClaimAcceptExpiryWarnings(ctx context.Context, acceptedBefore time.Time, limit int) ([]models.LeaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		UPDATE lease_requests lr
+		SET accept_expiry_warned_at = NOW(), updated_at = NOW()
+		FROM (
+			SELECT id FROM lease_requests
+			WHERE status = 'accepted'
+			  AND accepted_at IS NOT NULL
+			  AND accepted_at <= $1
+			  AND accept_expiry_warned_at IS NULL
+			ORDER BY accepted_at ASC
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		) picked
+		WHERE lr.id = picked.id
+		RETURNING lr.id, lr.chat_id, lr.listing_id, lr.owner_id, lr.driver_id, lr.status, lr.weekly_price, lr.offered_weekly_price, lr.offered_price_updated_at, lr.currency, lr.weeks, lr.message, lr.expires_at, lr.created_at, lr.updated_at,
+		          lr.price_change_pending, lr.previous_offered_weekly_price, lr.price_change_acted_at`, acceptedBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim accept-expiry warnings: %w", err)
+	}
+	defer rows.Close()
+	var out []models.LeaseRequest
+	for rows.Next() {
+		var lr models.LeaseRequest
+		if err := rows.Scan(
+			&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+			&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+			&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, rows.Err()
+}
+
+// ListAcceptExpired returns accepted leases past the 72h TTL.
+func (r *LeaseRequestRepository) ListAcceptExpired(ctx context.Context, acceptedBefore time.Time, limit int) ([]models.LeaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
+		FROM lease_requests
+		WHERE status = 'accepted' AND accepted_at IS NOT NULL AND accepted_at <= $1
+		ORDER BY accepted_at ASC
+		LIMIT $2`, acceptedBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list accept expired: %w", err)
+	}
+	defer rows.Close()
+	var out []models.LeaseRequest
+	for rows.Next() {
+		var lr models.LeaseRequest
+		if err := rows.Scan(
+			&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+			&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+			&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, rows.Err()
+}
+
+// ClaimAcceptExpiry expires one accepted lease — the status-scoped UPDATE
+// is the serializer (a driver whose CreatePaymentIntent moved the row to
+// payment_pending first makes this match zero rows). Releases the car.
+func (r *LeaseRequestRepository) ClaimAcceptExpiry(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET status = 'expired', updated_at = NOW()
+		WHERE id = $1 AND status = 'accepted'
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          price_change_pending, previous_offered_weekly_price, price_change_acted_at`, id)
 	var lr models.LeaseRequest

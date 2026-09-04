@@ -1122,7 +1122,84 @@ func (h *LeaseRequestHandler) StartPickupExpiryScanner(ctx context.Context, inte
 		case <-ticker.C:
 			h.runExpirySweep(ctx)
 			h.runPaymentPendingSweep(ctx)
+			h.runAcceptExpirySweep(ctx)
 		}
+	}
+}
+
+// runAcceptExpirySweep enforces the accepted-lease TTL (client decision,
+// Sep 4): warn both parties 24h before expiry (claimed-once), then expire
+// at 72h and release the car. Same shape as runPaymentPendingSweep; the
+// status-scoped claim is the race serializer against a driver who starts
+// paying at the last minute.
+func (h *LeaseRequestHandler) runAcceptExpirySweep(ctx context.Context) {
+	now := time.Now().UTC()
+
+	// Phase 1: the 24h warning.
+	warnCutoff := now.Add(-(models.LeaseAcceptTTL - models.LeaseAcceptWarnBefore))
+	warned, err := h.leaseRepo.ClaimAcceptExpiryWarnings(ctx, warnCutoff, 50)
+	if err != nil {
+		h.logger.Error("accept-expiry sweep: claim warnings", "error", err)
+	}
+	for i := range warned {
+		lr := &warned[i]
+		leaseRef := lr.ID
+		chatRef := lr.ChatID
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypeLeaseRequest,
+			"Complete your payment within 24 hours",
+			"Your accepted rental request expires in about 24 hours if it isn't paid. Pay now to lock it in, or cancel to release the car.",
+			&chatRef, &leaseRef)
+		go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
+			"Awaiting payment — 24 hours left",
+			"The driver hasn't paid yet. If they don't pay within about 24 hours, the request expires and your car opens up to others automatically.",
+			&chatRef, &leaseRef)
+	}
+
+	// Phase 2: expiry at the full TTL.
+	expireCutoff := now.Add(-models.LeaseAcceptTTL)
+	candidates, err := h.leaseRepo.ListAcceptExpired(ctx, expireCutoff, 50)
+	if err != nil {
+		h.logger.Error("accept-expiry sweep: list", "error", err)
+		return
+	}
+	for i := range candidates {
+		lr := &candidates[i]
+		// A stale PI should not exist at 'accepted' (it's created on the
+		// payment_pending transition), but a crash window can leave one —
+		// same neutralize-first dance, same back-off on a winning payment.
+		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
+			if cerr := h.stripe.CancelPaymentIntent(*payment.PaymentIntentID); cerr != nil {
+				es := cerr.Error()
+				if strings.Contains(es, "succeeded") || strings.Contains(es, "processing") {
+					h.logger.Info("accept-expiry sweep: payment in flight, skipping", "lease_request_id", lr.ID)
+					continue
+				}
+				h.logger.Warn("accept-expiry sweep: PI cancel", "error", cerr, "lease_request_id", lr.ID)
+			}
+		}
+		claimed, cerr := h.leaseRepo.ClaimAcceptExpiry(ctx, lr.ID)
+		if cerr != nil {
+			continue // state moved (payment started / explicit exit) — correct
+		}
+		h.logger.Info("accept-expiry sweep: lease expired, car released",
+			"lease_request_id", claimed.ID, "car_id", claimed.ListingID)
+
+		resp := h.buildLeaseRequestResponseCtx(ctx, claimed, nil)
+		h.wsHub.Broadcast(&ws.Event{
+			Type:          "lease_request_updated",
+			Payload:       resp,
+			TargetUserIDs: []uuid.UUID{claimed.DriverID, claimed.OwnerID},
+		})
+		leaseRef := claimed.ID
+		chatRef := claimed.ChatID
+		go h.notifHandler.Notify(claimed.DriverID, models.NotificationTypeLeaseRequest,
+			"Request expired",
+			"Your accepted request wasn't paid within 72 hours, so it expired. The car may still be available — you can send a new request anytime.",
+			&chatRef, &leaseRef)
+		go h.notifHandler.Notify(claimed.OwnerID, models.NotificationTypeLeaseRequest,
+			"Request expired — car released",
+			"An accepted request went unpaid for 72 hours, so it expired and your car is available to others again.",
+			&chatRef, &leaseRef)
 	}
 }
 

@@ -32,3 +32,16 @@ ALTER TABLE lease_requests
 -- rather than never.
 UPDATE lease_requests SET payment_pending_at = updated_at
 WHERE status = 'payment_pending' AND payment_pending_at IS NULL;
+
+-- Accepted-lease TTL (client decision, Sep 4): 72 hours from acceptance,
+-- both parties warned 24 hours before expiry. Same idiom as
+-- payment_pending_at above; accept_expiry_warned_at is the claimed-once
+-- warning flag.
+ALTER TABLE lease_requests
+    ADD COLUMN accepted_at TIMESTAMPTZ,
+    ADD COLUMN accept_expiry_warned_at TIMESTAMPTZ;
+
+-- Backfill in-flight accepted rows: updated_at is the closest available
+-- proxy for when acceptance happened; their 72h clock starts from there.
+UPDATE lease_requests SET accepted_at = updated_at
+WHERE status = 'accepted' AND accepted_at IS NULL;

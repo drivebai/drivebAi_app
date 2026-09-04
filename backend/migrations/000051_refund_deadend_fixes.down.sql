@@ -1,3 +1,7 @@
+ALTER TABLE lease_requests
+    DROP COLUMN IF EXISTS accepted_at,
+    DROP COLUMN IF EXISTS accept_expiry_warned_at;
+
 ALTER TABLE lease_requests DROP COLUMN IF EXISTS payment_pending_at;
 
 -- Any 'unrecoverable' rows must be re-labelled before the narrower CHECK

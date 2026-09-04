@@ -160,6 +160,16 @@ const RentalOverdueEscalateAfter = 72 * time.Hour
 // an abandoned payment at roughly one day past acceptance.
 const LeasePaymentPendingTTL = 24 * time.Hour
 
+// LeaseAcceptTTL (client decision, Sep 4): an accepted lease that is never
+// paid expires 72 hours after acceptance, releasing the car — long enough
+// for a multi-day chat negotiation, short enough that an owner's car
+// isn't held for a week by a driver who went quiet.
+const LeaseAcceptTTL = 72 * time.Hour
+
+// LeaseAcceptWarnBefore: both parties are warned this long before the
+// accepted lease expires (i.e. at accepted_at + 48h).
+const LeaseAcceptWarnBefore = 24 * time.Hour
+
 // ComputeRentalTermState buckets `now` against the term end, clamping the
 // degenerate orderings the same way ComputeReturnRefund does: a zero end
 // time (term never stamped) reports active — the scanner keys on the column

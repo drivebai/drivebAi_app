@@ -227,3 +227,82 @@ func leaseActionReq(t *testing.T, userID, leaseID uuid.UUID) *http.Request {
 	t.Helper()
 	return returnReq(t, userID, leaseID, `{}`)
 }
+
+// Accepted-lease TTL (client decision, Sep 4): warn once at 48h, expire at
+// 72h releasing the car, and never touch a lease whose payment started.
+func TestDeadEnd_AcceptExpiryTTL(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "de_owner_a@example.com")
+	driver := e.seedUser(t, "driver", "de_driver_a@example.com")
+	e.seedLicense(t, driver)
+
+	mkAccepted := func(ageHours int) (uuid.UUID, uuid.UUID) {
+		car := e.seedCar(t, owner, "available", true, false)
+		rr := httptest.NewRecorder()
+		e.leaseH.CreateLeaseRequest(rr, createLeaseReq(t, driver, car))
+		var created struct {
+			LeaseRequest struct {
+				ID uuid.UUID `json:"id"`
+			} `json:"lease_request"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		id := created.LeaseRequest.ID
+		if _, err := e.leaseRepo.AcceptLeaseRequest(ctx, id, owner); err != nil {
+			t.Fatalf("accept: %v", err)
+		}
+		if ageHours > 0 {
+			if _, err := e.db.Pool.Exec(ctx,
+				`UPDATE lease_requests SET accepted_at = NOW() - ($2::int || ' hours')::interval WHERE id=$1`,
+				id, ageHours); err != nil {
+				t.Fatalf("age: %v", err)
+			}
+		}
+		return id, car
+	}
+
+	// 49h old: warned exactly once, NOT expired.
+	l1, c1 := mkAccepted(49)
+	e.leaseH.runAcceptExpirySweep(ctx)
+	var warned1 *time.Time
+	e.db.Pool.QueryRow(ctx, `SELECT accept_expiry_warned_at FROM lease_requests WHERE id=$1`, l1).Scan(&warned1)
+	if warned1 == nil {
+		t.Fatal("49h lease not warned")
+	}
+	var st string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM lease_requests WHERE id=$1`, l1).Scan(&st)
+	if st != "accepted" {
+		t.Fatalf("49h lease = %s, want still accepted", st)
+	}
+	e.leaseH.runAcceptExpirySweep(ctx)
+	var warned2 *time.Time
+	e.db.Pool.QueryRow(ctx, `SELECT accept_expiry_warned_at FROM lease_requests WHERE id=$1`, l1).Scan(&warned2)
+	if warned2 == nil || !warned2.Equal(*warned1) {
+		t.Error("warning re-claimed on second tick — parties would be spammed")
+	}
+	_ = c1
+
+	// 73h old: expired, car released.
+	l2, c2 := mkAccepted(73)
+	e.leaseH.runAcceptExpirySweep(ctx)
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM lease_requests WHERE id=$1`, l2).Scan(&st)
+	if st != "expired" {
+		t.Fatalf("73h lease = %s, want expired", st)
+	}
+	var reserved *string
+	e.db.Pool.QueryRow(ctx, `SELECT reserved_by_lease_request_id::text FROM cars WHERE id=$1`, c2).Scan(&reserved)
+	if reserved != nil {
+		t.Error("expired accepted lease still holds the reservation")
+	}
+
+	// Race: payment started (payment_pending) → claim refuses.
+	l3, _ := mkAccepted(73)
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE lease_requests SET status='payment_pending' WHERE id=$1`, l3); err != nil {
+		t.Fatalf("force: %v", err)
+	}
+	if _, err := e.leaseRepo.ClaimAcceptExpiry(ctx, l3); err == nil {
+		t.Error("accept-expiry claimed a lease whose payment started")
+	}
+}
