@@ -2401,9 +2401,10 @@ func (h *PurchaseRequestHandler) runOfferExpiry(ctx context.Context) {
 func (h *PurchaseRequestHandler) runAcceptExpiry(ctx context.Context) {
 	now := time.Now().UTC()
 
-	// Phase 1: the 24h warning.
+	// Phase 1: the 24h warning. Rows already past the full TTL go straight
+	// to phase 2 (no contradictory warn+expire in one tick).
 	warnCutoff := now.Add(-(models.PurchaseAcceptTTL - models.PurchaseAcceptWarnBefore))
-	warned, err := h.repo.ClaimPurchaseAcceptWarnings(ctx, warnCutoff, 50)
+	warned, err := h.repo.ClaimPurchaseAcceptWarnings(ctx, warnCutoff, now.Add(-models.PurchaseAcceptTTL), 50)
 	if err != nil {
 		h.logger.Error("purchase accept-expiry: claim warnings", "error", err)
 	}
@@ -2426,23 +2427,48 @@ func (h *PurchaseRequestHandler) runAcceptExpiry(ctx context.Context) {
 	}
 	for i := range candidates {
 		p := &candidates[i]
-		// bos_signed can carry a pre-authorization PaymentIntent. The claim
-		// proceeds ONLY on a proven-neutralized intent — an authorized or
-		// captured one (requires_capture/succeeded) means the payment
-		// pipeline owns this row and the auth-TTL governs it instead.
+		// bos_signed can carry a PaymentIntent — possibly an AUTHORIZED one
+		// whose amount_capturable_updated webhook was lost. RETRIEVE FIRST:
+		// Stripe's cancel SUCCEEDS on a requires_capture intent (it
+		// releases the hold), so cancel-then-classify would silently void
+		// a sale the buyer already authorized (review R5).
 		if p.PaymentIntentID != nil && h.stripe != nil {
-			switch neutralizePaymentIntentSvc(h.stripe, *p.PaymentIntentID) {
-			case piMoneyMoved:
-				h.logger.Info("purchase accept-expiry: payment in flight, skipping", "purchase_id", p.ID)
+			pi, rerr := h.stripe.RetrievePaymentIntent(*p.PaymentIntentID)
+			if rerr != nil {
+				h.logger.Warn("purchase accept-expiry: retrieve failed, deferring", "error", rerr, "purchase_id", p.ID)
 				continue
-			case piUnknown:
-				h.logger.Warn("purchase accept-expiry: intent state unknown, deferring", "purchase_id", p.ID)
+			}
+			switch pi.Status {
+			case "requires_capture":
+				// The buyer authorized; only the webhook got lost. Adopt
+				// through the exact path the webhook takes (idempotent,
+				// prior-status-guarded notifications) — the row then moves
+				// to payment_authorized and the 7-day auth TTL owns it.
+				h.logger.Info("purchase accept-expiry: adopting lost authorization", "purchase_id", p.ID)
+				h.HandleStripeEvent(ctx, "payment_intent.amount_capturable_updated", *p.PaymentIntentID)
 				continue
+			case "succeeded", "processing":
+				h.logger.Info("purchase accept-expiry: payment in flight, skipping", "purchase_id", p.ID, "stripe_status", pi.Status)
+				continue
+			case "canceled":
+				// Dead intent — safe to expire the row.
+			default:
+				// Live pre-authorization intent: only a CONFIRMED cancel
+				// may precede the claim.
+				if cerr := h.stripe.CancelPaymentIntent(*p.PaymentIntentID); cerr != nil {
+					h.logger.Warn("purchase accept-expiry: cancel failed, deferring", "error", cerr, "purchase_id", p.ID)
+					continue
+				}
 			}
 		}
 		expired, cerr := h.repo.ClaimPurchaseAcceptExpiry(ctx, p.ID)
 		if cerr != nil {
-			continue // state moved (payment authorized / buyer cancelled) — correct
+			if !errors.Is(cerr, models.ErrInvalidPurchaseAction) {
+				// A lost race reads as ErrInvalidPurchaseAction; anything
+				// else is a real DB error and must be visible (review LOW).
+				h.logger.Error("purchase accept-expiry: claim", "error", cerr, "purchase_id", p.ID)
+			}
+			continue
 		}
 		h.logger.Info("purchase accept-expiry: sale expired, car unblocked",
 			"purchase_id", expired.ID, "car_id", expired.CarID)

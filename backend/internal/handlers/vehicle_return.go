@@ -613,14 +613,25 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 		}
 		// M4: same one-charge-one-direction rule as the settle close arm —
 		// an owner payout already on the ledger means a driver refund now
-		// pays out more than was collected.
+		// pays out more than was collected. Fails CLOSED on any lookup
+		// error (review R2).
 		if *body.DriverRefundCents > 0 && h.payoutH != nil {
-			if ret, rerr := h.repo.GetByID(r.Context(), id); rerr == nil && ret != nil {
-				if existing, lerr := h.payoutH.LedgerRow(r.Context(), ret.LeaseRequestID); lerr == nil && existing != nil {
-					httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_AFTER_PAYOUT",
-						fmt.Sprintf("the payout ledger already has a row for this rent (status %q) — resolve with driver_refund_cents 0 and record any manual repayment in the note", existing.Status)))
-					return
-				}
+			ret, rerr := h.repo.GetByID(r.Context(), id)
+			if rerr != nil || ret == nil {
+				h.logger.Error("admin resolve: load return for ledger guard", "error", rerr, "id", id)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+			existing, lerr := h.payoutH.LedgerRow(r.Context(), ret.LeaseRequestID)
+			if lerr != nil {
+				h.logger.Error("admin resolve: refund ledger guard read", "error", lerr, "id", id)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+			if existing != nil {
+				httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_AFTER_PAYOUT",
+					fmt.Sprintf("the payout ledger already has a row for this rent (status %q) — resolve with driver_refund_cents 0 and record any manual repayment in the note", existing.Status)))
+				return
 			}
 		}
 		if _, uerr := h.repo.UpdateRefundAmount(r.Context(), id, *body.DriverRefundCents); uerr != nil {
@@ -802,7 +813,15 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 		return
 
 	case "payout_only":
-		if existing, gerr := h.payoutH.LedgerRow(r.Context(), leaseID); gerr == nil && existing != nil {
+		existing, gerr := h.payoutH.LedgerRow(r.Context(), leaseID)
+		if gerr != nil {
+			// Money guards fail CLOSED (review R2): an unreadable ledger is
+			// not an absent ledger.
+			h.logger.Error("admin settle: ledger read", "error", gerr, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if existing != nil {
 			switch existing.Status {
 			case models.PayoutPaid:
 				httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYOUT_STATE", "owner already paid for this rent"))
@@ -873,7 +892,16 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 	// more than was collected — the ON CONFLICT DO NOTHING in the ledger
 	// would silently keep the full-amount row afterwards.
 	if refundCents > 0 {
-		if existing, lerr := h.payoutH.LedgerRow(r.Context(), leaseID); lerr == nil && existing != nil {
+		existing, lerr := h.payoutH.LedgerRow(r.Context(), leaseID)
+		if lerr != nil {
+			// Fail CLOSED (review R2): refusing a refund on a transient
+			// read error is recoverable; issuing one against an unseen
+			// payout row is the double-spend itself.
+			h.logger.Error("admin settle: refund ledger guard read", "error", lerr, "lease_request_id", leaseID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if existing != nil {
 			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_AFTER_PAYOUT",
 				fmt.Sprintf("the payout ledger already has a row for this rent (status %q) — a driver refund now would pay out more than was collected; close with driver_refund_cents 0 and record any manual repayment in the note", existing.Status)))
 			return

@@ -84,8 +84,40 @@ func (h *LeaseRequestHandler) neutralizePaymentIntent(intentID string) piOutcome
 // a lease our DB never flipped — the webhook was lost, or a sweep's cancel
 // bounced off a winning payment. Mirrors the webhook's success path; if the
 // lease meanwhile reached a terminal state, falls through to the refund half.
+//
+// Adoption trusts exactly two sources: a LOCAL status of succeeded (Stripe
+// told us via webhook/sync) or a fresh RetrievePaymentIntent saying
+// "succeeded". A cancel refusal alone is NOT proof of success —
+// 'processing' also refuses cancellation and can still FAIL, and adopting
+// it would mint a paid lease with zero captured money whose later
+// payment_failed webhook gets idempotently skipped (review R1).
 func (h *LeaseRequestHandler) adoptSucceededPayment(ctx context.Context, payment *models.Payment) {
-	if payment.Status != models.PaymentStatusSucceeded {
+	switch payment.Status {
+	case models.PaymentStatusRefunded, models.PaymentStatusRefundUnrecoverable:
+		// Terminal reconciliation states are never resurrected (review R3):
+		// the claimed-once flags behind them must stay claimed.
+		h.logger.Info("adopt payment: already reconciled, skipping", "payment_id", payment.ID, "status", payment.Status)
+		return
+	case models.PaymentStatusSucceeded:
+		// Local truth — proceed.
+	default:
+		if h.stripe == nil || payment.PaymentIntentID == nil {
+			h.logger.Warn("adopt payment: cannot verify intent, deferring", "payment_id", payment.ID)
+			return
+		}
+		pi, rerr := h.stripe.RetrievePaymentIntent(*payment.PaymentIntentID)
+		if rerr != nil {
+			h.logger.Warn("adopt payment: retrieve failed, deferring", "error", rerr, "payment_id", payment.ID)
+			return
+		}
+		if pi.Status != "succeeded" {
+			// processing / requires_capture / anything non-final: the money
+			// is not provably ours yet. Defer — the webhook or a later tick
+			// resolves it either way (a failed intent cancels cleanly on
+			// the next sweep pass).
+			h.logger.Info("adopt payment: intent not final, deferring", "payment_id", payment.ID, "stripe_status", pi.Status)
+			return
+		}
 		if err := h.leaseRepo.UpdatePaymentStatus(ctx, payment.ID, models.PaymentStatusSucceeded); err != nil {
 			h.logger.Error("adopt payment: update status", "error", err, "payment_id", payment.ID)
 			return

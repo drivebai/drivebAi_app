@@ -2033,7 +2033,10 @@ const purchaseAcceptTTLStatuses = `('accepted', 'bos_pending_seller', 'bos_pendi
 
 // ClaimPurchaseAcceptWarnings claims (once) the 24h-before-expiry warning
 // for post-accept purchases whose clock started before `acceptedBefore`.
-func (r *PurchaseRequestRepository) ClaimPurchaseAcceptWarnings(ctx context.Context, acceptedBefore time.Time, limit int) ([]models.PurchaseRequest, error) {
+// Rows already past `expiredBefore` (the full TTL) are skipped — warning a
+// row the same tick will expire would send "24 hours left" and "expired"
+// back to back (review LOW: pre-aged rows after a scanner outage/backfill).
+func (r *PurchaseRequestRepository) ClaimPurchaseAcceptWarnings(ctx context.Context, acceptedBefore, expiredBefore time.Time, limit int) ([]models.PurchaseRequest, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -2045,13 +2048,14 @@ func (r *PurchaseRequestRepository) ClaimPurchaseAcceptWarnings(ctx context.Cont
 			WHERE status IN `+purchaseAcceptTTLStatuses+`
 			  AND accepted_at IS NOT NULL
 			  AND accepted_at <= $1
+			  AND accepted_at > $3
 			  AND accept_expiry_warned_at IS NULL
 			ORDER BY accepted_at ASC
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
 		) picked
 		WHERE pr.id = picked.pid
-		RETURNING `+purchaseRequestColumns, acceptedBefore, limit)
+		RETURNING `+purchaseRequestColumns, acceptedBefore, limit, expiredBefore)
 	if err != nil {
 		return nil, fmt.Errorf("claim purchase accept warnings: %w", err)
 	}

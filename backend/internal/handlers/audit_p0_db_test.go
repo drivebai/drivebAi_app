@@ -522,7 +522,7 @@ func TestAuditP0_PurchaseAcceptTTL(t *testing.T) {
 	}
 
 	// 49h: warning claims exactly once; not yet expired.
-	warned, err := purchaseRepo.ClaimPurchaseAcceptWarnings(ctx, time.Now().UTC().Add(-48*time.Hour), 50)
+	warned, err := purchaseRepo.ClaimPurchaseAcceptWarnings(ctx, time.Now().UTC().Add(-48*time.Hour), time.Now().UTC().Add(-72*time.Hour), 50)
 	if err != nil {
 		t.Fatalf("claim warnings: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestAuditP0_PurchaseAcceptTTL(t *testing.T) {
 	if !found {
 		t.Fatal("49h-old accepted purchase not warned")
 	}
-	warned, _ = purchaseRepo.ClaimPurchaseAcceptWarnings(ctx, time.Now().UTC().Add(-48*time.Hour), 50)
+	warned, _ = purchaseRepo.ClaimPurchaseAcceptWarnings(ctx, time.Now().UTC().Add(-48*time.Hour), time.Now().UTC().Add(-72*time.Hour), 50)
 	for i := range warned {
 		if warned[i].ID == prID {
 			t.Fatal("warning claimed twice — both parties would be spammed")
@@ -573,5 +573,117 @@ func TestAuditP0_PurchaseAcceptTTL(t *testing.T) {
 	}
 	if _, err := purchaseRepo.ClaimPurchaseAcceptExpiry(ctx, prID); err == nil {
 		t.Fatal("accept-expiry claimed a payment_authorized purchase — the auth TTL owns those")
+	}
+}
+
+// Review R1/R3: adoption trusts only proven-succeeded charges. A local
+// 'processing' payment defers (never minted paid); a terminal 'refunded'
+// payment is never resurrected.
+func TestAuditP0_AdoptTrustsOnlySucceeded(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "p0_owner_r1@example.com")
+	driver := e.seedUser(t, "driver", "p0_driver_r1@example.com")
+	e.seedLicense(t, driver)
+
+	// processing → defer: lease must NOT become paid, payment must NOT be
+	// promoted (env has nil Stripe, so any verification attempt defers —
+	// exactly the fail-safe the fix demands).
+	leaseA, _ := seedAcceptedLease(t, e, owner, driver)
+	if _, err := e.leaseRepo.SetPaymentPending(ctx, leaseA); err != nil {
+		t.Fatalf("to payment_pending: %v", err)
+	}
+	intent := "pi_test_processing_" + leaseA.String()[:8]
+	payA := seedPaymentAt(t, e, leaseA, 20000, "processing", &intent)
+	payment, _ := e.leaseRepo.GetPaymentByLeaseRequestID(ctx, leaseA)
+	e.leaseH.adoptSucceededPayment(ctx, payment)
+	lr, _ := e.leaseRepo.GetByID(ctx, leaseA)
+	if lr.Status != models.LeaseStatusPaymentPending {
+		t.Fatalf("processing charge adopted: lease = %s, want payment_pending", lr.Status)
+	}
+	var st string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM payments WHERE id=$1`, payA).Scan(&st)
+	if st != "processing" {
+		t.Fatalf("processing payment promoted to %q", st)
+	}
+
+	// refunded → never resurrected.
+	leaseB, _ := seedAcceptedLease(t, e, owner, driver)
+	e.cleanupLedger(t, leaseB)
+	payB := seedPaymentAt(t, e, leaseB, 20000, "succeeded", nil)
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE lease_requests SET status='cancelled' WHERE id=$1`, leaseB); err != nil {
+		t.Fatalf("force cancel: %v", err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE payments SET status='refunded' WHERE id=$1`, payB); err != nil {
+		t.Fatalf("force refunded: %v", err)
+	}
+	pb, _ := e.leaseRepo.GetPaymentByLeaseRequestID(ctx, leaseB)
+	e.leaseH.adoptSucceededPayment(ctx, pb)
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM payments WHERE id=$1`, payB).Scan(&st)
+	if st != "refunded" {
+		t.Fatalf("terminal refunded payment resurrected to %q", st)
+	}
+}
+
+// Review LOW (webhook heal): a redelivered success whose earlier delivery
+// persisted the payment but failed SetPaid completes the lease transition
+// instead of ACKing at the idempotent skip.
+func TestAuditP0_WebhookRedeliveryHeals(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "p0_owner_wh@example.com")
+	driver := e.seedUser(t, "driver", "p0_driver_wh@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := seedAcceptedLease(t, e, owner, driver)
+	if _, err := e.leaseRepo.SetPaymentPending(ctx, leaseID); err != nil {
+		t.Fatalf("to payment_pending: %v", err)
+	}
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM key_handovers WHERE lease_request_id = $1`, leaseID)
+	})
+	intent := "pi_test_redeliver_" + leaseID.String()[:8]
+	seedPaymentAt(t, e, leaseID, 20000, "succeeded", &intent) // earlier delivery persisted this, then crashed pre-SetPaid
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stripe/webhook", nil)
+	if ok := e.leaseH.handlePaymentSucceeded(req, intent); !ok {
+		t.Fatal("redelivery returned not-ok")
+	}
+	lr, _ := e.leaseRepo.GetByID(ctx, leaseID)
+	if lr.Status != models.LeaseStatusPaid {
+		t.Fatalf("redelivery did not heal: lease = %s, want paid", lr.Status)
+	}
+}
+
+// Review R4: a Stripe failure after the payment-window claim reverts the
+// lease to accepted (Pay button intact) — but never once a payment row
+// exists.
+func TestAuditP0_RevertPaymentWindow(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "p0_owner_rv@example.com")
+	driver := e.seedUser(t, "driver", "p0_driver_rv@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := seedAcceptedLease(t, e, owner, driver)
+	if _, err := e.leaseRepo.SetPaymentPending(ctx, leaseID); err != nil {
+		t.Fatalf("claim window: %v", err)
+	}
+
+	reverted, err := e.leaseRepo.RevertPaymentWindow(ctx, leaseID)
+	if err != nil || !reverted {
+		t.Fatalf("revert = %v/%v, want true", reverted, err)
+	}
+	lr, _ := e.leaseRepo.GetByID(ctx, leaseID)
+	if lr.Status != models.LeaseStatusAccepted {
+		t.Fatalf("lease = %s, want accepted", lr.Status)
+	}
+
+	// With a payment row present the revert must refuse.
+	if _, err := e.leaseRepo.SetPaymentPending(ctx, leaseID); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	seedPaymentAt(t, e, leaseID, 20000, "requires_payment_method", nil)
+	reverted, _ = e.leaseRepo.RevertPaymentWindow(ctx, leaseID)
+	if reverted {
+		t.Fatal("revert demoted a window with a live payment row")
 	}
 }

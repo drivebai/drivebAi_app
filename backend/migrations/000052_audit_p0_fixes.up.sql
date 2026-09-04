@@ -34,6 +34,10 @@ WHERE status IN ('accepted', 'bos_pending_seller', 'bos_pending_buyer', 'bos_sig
 -- a fresh customer).
 ALTER TABLE users ADD COLUMN stripe_customer_id TEXT;
 
+-- The NOT EXISTS guard refuses to cement a binding the email-search bug
+-- already contaminated: a customer id that also appears on a DELETED
+-- user's payments is exactly the inherited-cards case — leave it NULL so
+-- customerForUser mints a clean customer instead.
 UPDATE users u SET stripe_customer_id = p.scid
 FROM (
     SELECT DISTINCT ON (lr.driver_id) lr.driver_id, pm.stripe_customer_id AS scid
@@ -44,4 +48,20 @@ FROM (
 ) p
 WHERE u.id = p.driver_id
   AND u.stripe_customer_id IS NULL
-  AND u.deleted_at IS NULL;
+  AND u.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM payments pm2
+      JOIN lease_requests lr2 ON lr2.id = pm2.lease_request_id
+      JOIN users du ON du.id = lr2.driver_id
+      WHERE pm2.stripe_customer_id = p.scid
+        AND du.id <> p.driver_id
+        AND du.deleted_at IS NOT NULL
+  );
+
+-- The orphaned-payment sweep (M3 backstop) runs every scanner tick with
+-- predicate status='succeeded'; give it a partial index so it never
+-- degrades into a per-minute seq scan as payments grow.
+CREATE INDEX idx_payments_succeeded_updated
+    ON payments(updated_at)
+    WHERE status = 'succeeded';

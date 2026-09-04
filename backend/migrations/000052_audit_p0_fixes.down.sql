@@ -17,3 +17,5 @@ ALTER TABLE purchase_requests
     DROP COLUMN IF EXISTS accept_expiry_warned_at;
 
 ALTER TABLE users DROP COLUMN IF EXISTS stripe_customer_id;
+
+DROP INDEX IF EXISTS idx_payments_succeeded_updated;

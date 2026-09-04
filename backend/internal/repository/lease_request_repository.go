@@ -1936,14 +1936,36 @@ func (r *LeaseRequestRepository) MarkLeaseRefundUnrecoverable(ctx context.Contex
 // one on the same payment row (H2: the stored-client_secret fast path used
 // to re-serve a dead intent forever). Status-scoped to 'canceled' so a
 // racing webhook that already succeeded the old intent can never be
-// clobbered.
-func (r *LeaseRequestRepository) ReplacePaymentIntent(ctx context.Context, paymentID uuid.UUID, newIntentID, newClientSecret string) (bool, error) {
+// clobbered. amount/platform_fee are refreshed to the replacement intent's
+// values — a swap across a price change must never leave payments.amount
+// describing a charge that no longer exists (review: settlements read
+// payment.Amount as paidCents).
+func (r *LeaseRequestRepository) ReplacePaymentIntent(ctx context.Context, paymentID uuid.UUID, newIntentID, newClientSecret string, amountCents, platformFeeCents int64) (bool, error) {
 	tag, err := r.db.Pool.Exec(ctx, `
 		UPDATE payments
 		SET payment_intent_id = $2, payment_intent_client_secret = $3,
+		    amount = $4, platform_fee_amount = $5,
 		    status = 'requires_payment_method', updated_at = NOW()
 		WHERE id = $1 AND status = 'canceled'
-	`, paymentID, newIntentID, newClientSecret)
+	`, paymentID, newIntentID, newClientSecret, amountCents, platformFeeCents)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// RevertPaymentWindow undoes a freshly-claimed payment window when the
+// Stripe leg of CreatePaymentIntent fails before any live intent exists
+// (review R4): without it the lease sat at payment_pending with no payment
+// row — a state iOS renders without a Pay button — until the 24h sweep.
+// Guarded on "no payments row" so it can never demote a window whose
+// intent was actually minted.
+func (r *LeaseRequestRepository) RevertPaymentWindow(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET status = 'accepted', updated_at = NOW()
+		WHERE id = $1 AND status = 'payment_pending'
+		  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.lease_request_id = $1)
+	`, id)
 	if err != nil {
 		return false, err
 	}
