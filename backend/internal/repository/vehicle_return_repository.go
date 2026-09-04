@@ -487,6 +487,41 @@ func (r *VehicleReturnRepository) ResolveDispute(ctx context.Context, id uuid.UU
 	return v, nil
 }
 
+// MarkRefundUnrecoverable flips a refund to the PERMANENT failure state
+// (item 3). Claimed-once via the WHERE: exactly one caller wins, so the
+// ticket + notifications fire exactly once. Returns the updated row to
+// the winner; nil, nil when someone else already claimed it.
+func (r *VehicleReturnRepository) MarkRefundUnrecoverable(ctx context.Context, id uuid.UUID, reason string) (*models.VehicleReturn, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE vehicle_returns
+		SET refund_status = 'unrecoverable', refund_failure_reason = $2, updated_at = NOW()
+		WHERE id = $1 AND status = 'owner_confirmed' AND refund_status IN ('pending', 'failed')
+		RETURNING `+vehicleReturnColumns, id, reason)
+	v, err := scanVehicleReturn(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("mark refund unrecoverable: %w", err)
+	}
+	return v, nil
+}
+
+// ClaimRefundDelayNotice claims the one-time "Refund delayed" driver
+// notice (item 2). Claimed-once, house pattern: the UPDATE's WHERE is the
+// claim — a second caller matches zero rows and stays silent. The flag
+// resets on ReviveCancelled so a NEW refund episode may notify once again.
+func (r *VehicleReturnRepository) ClaimRefundDelayNotice(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE vehicle_returns
+		SET refund_delay_notified_at = NOW(), updated_at = updated_at
+		WHERE id = $1 AND refund_delay_notified_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // UpdateRefundAmount overrides the snapshotted driver refund on a return
 // that has NOT started refunding — the admin's lever on contested rows
 // (client fix batch, item 1: a "did not return" dispute must be closable
@@ -497,8 +532,10 @@ func (r *VehicleReturnRepository) UpdateRefundAmount(ctx context.Context, id uui
 		UPDATE vehicle_returns
 		SET refund_amount_cents = $2, updated_at = NOW()
 		WHERE id = $1
-		  AND status IN ('driver_initiated', 'disputed')
-		  AND refund_id IS NULL
+		  AND (
+		        (status IN ('driver_initiated', 'disputed') AND refund_id IS NULL)
+		     OR (status = 'owner_confirmed' AND refund_status = 'unrecoverable')
+		  )
 		  AND $2 >= 0 AND $2 <= paid_amount_cents
 		RETURNING `+vehicleReturnColumns, id, refundCents)
 	v, err := scanVehicleReturn(row)
@@ -535,6 +572,7 @@ func (r *VehicleReturnRepository) ReviveCancelled(ctx context.Context, id, drive
 		    owner_reminder_sent_at = NULL,
 		    refund_status = NULL,
 		    refund_failure_reason = NULL,
+		    refund_delay_notified_at = NULL,
 		    updated_at = NOW()
 		WHERE id = $1 AND driver_id = $2 AND status = 'cancelled'
 		RETURNING `+vehicleReturnColumns, id, driverID, returnedAt, usedDays, refundAmountCents, paidAmountCents)

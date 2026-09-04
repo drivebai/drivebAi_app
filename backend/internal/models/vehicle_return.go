@@ -40,6 +40,12 @@ const (
 	VehicleReturnRefundSucceeded     VehicleReturnRefundStatus = "succeeded"
 	VehicleReturnRefundFailed        VehicleReturnRefundStatus = "failed"
 	VehicleReturnRefundNotApplicable VehicleReturnRefundStatus = "not_applicable"
+	// VehicleReturnRefundUnrecoverable: the refund can NEVER succeed
+	// automatically (Stripe resource_missing — the PaymentIntent no longer
+	// exists). Distinct from 'failed' (transient): the retry sweep skips
+	// it, a support ticket surfaces it, and the admin settle endpoint is
+	// the product exit (item 3 — the Aug 28 SQL rescue, productized).
+	VehicleReturnRefundUnrecoverable VehicleReturnRefundStatus = "unrecoverable"
 )
 
 // VehicleReturnDriverCancelWindow is how long the driver has to undo their

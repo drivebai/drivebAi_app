@@ -150,6 +150,16 @@ const RentalTermEndingSoonWindow = 24 * time.Hour
 // the same-day "running late" case to resolve itself via the return flow.
 const RentalOverdueEscalateAfter = 72 * time.Hour
 
+// LeasePaymentPendingTTL (item 4): how long a lease may sit at
+// payment_pending before the sweep expires it and releases the car. The
+// clock starts when the driver first opens the pay sheet (the only
+// updated_at bump in that state). 24 hours: mirrors the request's own
+// expires_at TTL, is orders of magnitude above any PaymentSheet session
+// (a driver who walks away and returns in ten minutes — or that evening —
+// is untouched), and caps how long an owner's car can be held hostage by
+// an abandoned payment at roughly one day past acceptance.
+const LeasePaymentPendingTTL = 24 * time.Hour
+
 // ComputeRentalTermState buckets `now` against the term end, clamping the
 // degenerate orderings the same way ComputeReturnRefund does: a zero end
 // time (term never stamped) reports active — the scanner keys on the column

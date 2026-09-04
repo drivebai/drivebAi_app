@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -408,7 +409,9 @@ func (r *LeaseRequestRepository) AcceptLeaseRequest(ctx context.Context, id, own
 // — today's flow only allows decline from 'requested' so the car was never
 // reserved by this lease, but future flexibility may allow decline-after-accept).
 func (r *LeaseRequestRepository) DeclineLeaseRequest(ctx context.Context, id, ownerID uuid.UUID) (*models.LeaseRequest, error) {
-	lr, err := r.updateStatus(ctx, id, ownerID, models.LeaseStatusRequested, models.LeaseStatusDeclined, "owner")
+	lr, err := r.updateStatusFromAny(ctx, id, ownerID,
+		[]models.LeaseRequestStatus{models.LeaseStatusRequested, models.LeaseStatusPaymentPending},
+		models.LeaseStatusDeclined, "owner")
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +421,9 @@ func (r *LeaseRequestRepository) DeclineLeaseRequest(ctx context.Context, id, ow
 
 // CancelLeaseRequest transitions a lease request from requested → cancelled (driver only).
 func (r *LeaseRequestRepository) CancelLeaseRequest(ctx context.Context, id, driverID uuid.UUID) (*models.LeaseRequest, error) {
-	lr, err := r.updateStatus(ctx, id, driverID, models.LeaseStatusRequested, models.LeaseStatusCancelled, "driver")
+	lr, err := r.updateStatusFromAny(ctx, id, driverID,
+		[]models.LeaseRequestStatus{models.LeaseStatusRequested, models.LeaseStatusPaymentPending},
+		models.LeaseStatusCancelled, "driver")
 	if err != nil {
 		return nil, err
 	}
@@ -465,7 +470,8 @@ func (r *LeaseRequestRepository) unreserveCarIfHeldBy(ctx context.Context, lease
 func (r *LeaseRequestRepository) SetPaymentPending(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
 	var lr models.LeaseRequest
 	err := r.db.Pool.QueryRow(ctx, `
-		UPDATE lease_requests SET status = $2, updated_at = NOW()
+		UPDATE lease_requests SET status = $2, updated_at = NOW(),
+		       payment_pending_at = COALESCE(payment_pending_at, NOW())
 		WHERE id = $1 AND status = 'accepted'
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
@@ -517,6 +523,15 @@ func (r *LeaseRequestRepository) SetPaid(ctx context.Context, id uuid.UUID) (*mo
 
 // updateStatus is a generic state transition helper.
 func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID uuid.UUID, fromStatus, toStatus models.LeaseRequestStatus, role string) (*models.LeaseRequest, error) {
+	return r.updateStatusFromAny(ctx, id, actorID, []models.LeaseRequestStatus{fromStatus}, toStatus, role)
+}
+
+// updateStatusFromAny is updateStatus with a SET of allowed source states —
+// the payment_pending exits (item 4) let decline/cancel act on both
+// 'requested' and 'payment_pending'. The FOR UPDATE lock plus the
+// membership check remain the race serializer: a webhook that flipped the
+// row to 'paid' first makes this return ErrInvalidLeaseAction.
+func (r *LeaseRequestRepository) updateStatusFromAny(ctx context.Context, id, actorID uuid.UUID, fromStatuses []models.LeaseRequestStatus, toStatus models.LeaseRequestStatus, role string) (*models.LeaseRequest, error) {
 	tx, err := r.db.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -555,7 +570,14 @@ func (r *LeaseRequestRepository) updateStatus(ctx context.Context, id, actorID u
 	}
 
 	// Validate status transition
-	if lr.Status != fromStatus {
+	allowed := false
+	for _, fs := range fromStatuses {
+		if lr.Status == fs {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
 		return nil, models.ErrInvalidLeaseAction
 	}
 
@@ -1485,6 +1507,70 @@ func (r *LeaseRequestRepository) ClaimForExpiry(ctx context.Context, id uuid.UUI
 	// committed regardless of this side-effect; doing it now keeps discovery
 	// in sync even if the subsequent FinalizeRefund call fails (we still
 	// don't want other drivers blocked by a deadline-busted reservation).
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return &lr, nil
+}
+
+// ListPaymentPendingExpired returns payment_pending leases whose window
+// (item 4) opened more than the TTL ago. The clock is the EXPLICIT
+// payment_pending_at stamp (COALESCE-guarded in SetPaymentPending — the
+// house auth-TTL idiom): updated_at is unusable because a table trigger
+// overwrites it on every write.
+func (r *LeaseRequestRepository) ListPaymentPendingExpired(ctx context.Context, olderThan time.Time, limit int) ([]models.LeaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at
+		FROM lease_requests
+		WHERE status = 'payment_pending' AND payment_pending_at IS NOT NULL AND payment_pending_at <= $1
+		ORDER BY updated_at ASC
+		LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list payment-pending expired: %w", err)
+	}
+	defer rows.Close()
+	var out []models.LeaseRequest
+	for rows.Next() {
+		var lr models.LeaseRequest
+		if err := rows.Scan(
+			&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+			&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+			&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, rows.Err()
+}
+
+// ClaimPaymentExpiry is the payment-window sweep's serializer (item 4,
+// mirroring ClaimForExpiry's shape): the status-scoped UPDATE is the claim —
+// a payment webhook that flipped the row to 'paid' first makes this match
+// zero rows and the sweep backs off. Releases the car after the claim.
+func (r *LeaseRequestRepository) ClaimPaymentExpiry(ctx context.Context, id uuid.UUID) (*models.LeaseRequest, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET status = 'expired', updated_at = NOW()
+		WHERE id = $1 AND status = 'payment_pending'
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at`, id)
+	var lr models.LeaseRequest
+	err := row.Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrInvalidLeaseAction
+		}
+		return nil, err
+	}
 	r.unreserveCarIfHeldBy(ctx, lr.ID)
 	return &lr, nil
 }

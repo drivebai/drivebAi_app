@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -386,6 +387,30 @@ func (h *LeaseRequestHandler) handleLeaseAction(w http.ResponseWriter, r *http.R
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
 		return
+	}
+
+	// payment_pending exits (item 4): before declining/cancelling a lease
+	// whose payment window is open, neutralize the PaymentIntent. Stripe
+	// refuses to cancel a succeeded/processing intent — that refusal IS
+	// the race signal: the payment won, back off and let the webhook flip
+	// the lease to paid. A successfully cancelled intent can never be
+	// confirmed, so proceeding is then safe; the repo's status-scoped
+	// UPDATE stays the final serializer.
+	if action == "decline" || action == "cancel" {
+		if lr, gerr := h.leaseRepo.GetByID(r.Context(), leaseID); gerr == nil && lr != nil && lr.Status == models.LeaseStatusPaymentPending {
+			if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(r.Context(), leaseID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
+				if cerr := h.stripe.CancelPaymentIntent(*payment.PaymentIntentID); cerr != nil {
+					es := cerr.Error()
+					if strings.Contains(es, "succeeded") || strings.Contains(es, "processing") {
+						httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYMENT_IN_FLIGHT",
+							"The payment just completed — refresh to see the paid rental"))
+						return
+					}
+					// already-canceled and similar are benign; log and move on.
+					h.logger.Warn("lease action: stale PI cancel", "error", cerr, "lease_request_id", leaseID)
+				}
+			}
+		}
 	}
 
 	var updated *models.LeaseRequest
@@ -1096,7 +1121,63 @@ func (h *LeaseRequestHandler) StartPickupExpiryScanner(ctx context.Context, inte
 			return
 		case <-ticker.C:
 			h.runExpirySweep(ctx)
+			h.runPaymentPendingSweep(ctx)
 		}
+	}
+}
+
+// runPaymentPendingSweep expires leases whose payment window (item 4:
+// LeasePaymentPendingTTL from the payment_pending_at stamp) lapsed without a
+// successful charge, releasing the car's reservation. Race-safe by the
+// house pattern: neutralize the PI first (a succeeded/processing intent
+// refuses cancellation → skip, the webhook wins), then the status-scoped
+// ClaimPaymentExpiry UPDATE is the serializer.
+func (h *LeaseRequestHandler) runPaymentPendingSweep(ctx context.Context) {
+	cutoff := time.Now().UTC().Add(-models.LeasePaymentPendingTTL)
+	candidates, err := h.leaseRepo.ListPaymentPendingExpired(ctx, cutoff, 50)
+	if err != nil {
+		h.logger.Error("payment-pending sweep: list", "error", err)
+		return
+	}
+	for i := range candidates {
+		lr := &candidates[i]
+		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
+			if cerr := h.stripe.CancelPaymentIntent(*payment.PaymentIntentID); cerr != nil {
+				es := cerr.Error()
+				if strings.Contains(es, "succeeded") || strings.Contains(es, "processing") {
+					// The payment won at the wire — leave the lease for
+					// the webhook's SetPaid.
+					h.logger.Info("payment-pending sweep: payment in flight, skipping", "lease_request_id", lr.ID)
+					continue
+				}
+				h.logger.Warn("payment-pending sweep: PI cancel", "error", cerr, "lease_request_id", lr.ID)
+			}
+		}
+		claimed, cerr := h.leaseRepo.ClaimPaymentExpiry(ctx, lr.ID)
+		if cerr != nil {
+			// Zero rows = someone else moved the state (webhook or an
+			// explicit exit) — correct outcome, not an error.
+			continue
+		}
+		h.logger.Info("payment-pending sweep: lease expired, car released",
+			"lease_request_id", claimed.ID, "car_id", claimed.ListingID)
+
+		resp := h.buildLeaseRequestResponseCtx(ctx, claimed, nil)
+		h.wsHub.Broadcast(&ws.Event{
+			Type:          "lease_request_updated",
+			Payload:       resp,
+			TargetUserIDs: []uuid.UUID{claimed.DriverID, claimed.OwnerID},
+		})
+		leaseRef := claimed.ID
+		chatRef := claimed.ChatID
+		go h.notifHandler.Notify(claimed.DriverID, models.NotificationTypeLeaseRequest,
+			"Request expired",
+			"The payment window for your rental request closed, so the request expired. The car may still be available — you can send a new request anytime.",
+			&chatRef, &leaseRef)
+		go h.notifHandler.Notify(claimed.OwnerID, models.NotificationTypeLeaseRequest,
+			"Request expired — car released",
+			"A driver's payment window closed without payment, so their request expired and your car is available to others again.",
+			&chatRef, &leaseRef)
 	}
 }
 

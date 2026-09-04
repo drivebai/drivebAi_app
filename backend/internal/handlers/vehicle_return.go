@@ -886,20 +886,49 @@ func (h *VehicleReturnHandler) AdminSettleRent(w http.ResponseWriter, r *http.Re
 				return
 			}
 		}
+	case target.Status == models.VehicleReturnOwnerConfirmed &&
+		target.RefundStatus != nil && *target.RefundStatus == models.VehicleReturnRefundUnrecoverable:
+		// The product exit for a PERMANENTLY failed refund (item 3): no
+		// Stripe money can move on a dead PaymentIntent, so the only
+		// closable driver refund is $0 — any manual arrangement lives in
+		// the required note. The row is already owner_confirmed, so no
+		// dispute resolution applies; force the amount and finalize.
+		if body.DriverRefundCents != nil && *body.DriverRefundCents != 0 {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_UNRECOVERABLE",
+				"this refund can never be processed by Stripe — close with driver_refund_cents 0 and record any manual repayment in the note"))
+			return
+		}
+		if _, uerr := h.repo.UpdateRefundAmount(r.Context(), target.ID, 0); uerr != nil {
+			if apiErr := models.GetAPIError(uerr); apiErr != nil {
+				httputil.WriteError(w, http.StatusConflict, apiErr)
+				return
+			}
+			h.logger.Error("admin settle: zero unrecoverable refund", "error", uerr, "return_id", target.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
 	default:
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETTLE_NOT_ALLOWED", "this rent's return is already settling — the refund scanner will complete it"))
 		return
 	}
 
-	resolved, err := h.repo.ResolveDispute(r.Context(), target.ID, "accept", note)
-	if err != nil {
-		if apiErr := models.GetAPIError(err); apiErr != nil {
-			httputil.WriteError(w, http.StatusConflict, apiErr)
+	// owner_confirmed rows (the unrecoverable arm) skip dispute resolution —
+	// they were already confirmed; only the finalize step remains.
+	resolved := target
+	if target.Status != models.VehicleReturnOwnerConfirmed {
+		var rerr error
+		resolved, rerr = h.repo.ResolveDispute(r.Context(), target.ID, "accept", note)
+		if rerr != nil {
+			if apiErr := models.GetAPIError(rerr); apiErr != nil {
+				httputil.WriteError(w, http.StatusConflict, apiErr)
+				return
+			}
+			h.logger.Error("admin settle: resolve", "error", rerr, "return_id", target.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 			return
 		}
-		h.logger.Error("admin settle: resolve", "error", err, "return_id", target.ID)
-		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
-		return
+	} else if reloaded, gerr2 := h.repo.GetByID(r.Context(), target.ID); gerr2 == nil {
+		resolved = reloaded // pick up the zeroed refund before finalizing
 	}
 	if h.ticketRepo != nil {
 		if terr := h.ticketRepo.ResolveForVehicleReturn(r.Context(), resolved.ID); terr != nil {
@@ -962,17 +991,33 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 	}
 
 	payment, err := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, v.LeaseRequestID)
-	if err != nil || payment == nil || payment.PaymentIntentID == nil {
-		h.logger.Error("vehicle return: missing payment intent",
+	if err != nil {
+		// Transient (DB) — the sweep retries.
+		h.logger.Error("vehicle return: payment lookup failed",
 			"error", err, "id", v.ID, "lease_request_id", v.LeaseRequestID)
-		_ = h.repo.MarkRefundFailed(ctx, v.ID, "payment intent unavailable")
+		_ = h.repo.MarkRefundFailed(ctx, v.ID, "payment lookup failed")
 		h.notifyRefundDelay(ctx, v)
+		return nil
+	}
+	if payment == nil || payment.PaymentIntentID == nil {
+		// PERMANENT (item 3): no PaymentIntent was ever recorded for this
+		// lease — no automated refund can ever succeed. Stop retrying and
+		// surface the admin decision instead of hammering forever.
+		h.markRefundUnrecoverable(ctx, v, "no payment intent recorded for this lease")
 		return nil
 	}
 
 	idemKey := fmt.Sprintf("vehicle-return-refund-%s", v.ID.String())
 	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer", v.RefundAmountCents)
 	if err != nil {
+		if strings.Contains(err.Error(), "resource_missing") {
+			// PERMANENT (item 3): the PaymentIntent does not exist at
+			// Stripe (demonstrated live in the Aug 28 cleanup — a
+			// test-era PI from a different account). Retrying forever
+			// changes nothing; park as unrecoverable and surface it.
+			h.markRefundUnrecoverable(ctx, v, "stripe: payment intent does not exist (resource_missing)")
+			return nil
+		}
 		h.logger.Error("vehicle return: stripe refund failed",
 			"error", err, "id", v.ID, "intent_id", *payment.PaymentIntentID, "amount_cents", v.RefundAmountCents)
 		_ = h.repo.MarkRefundFailed(ctx, v.ID, err.Error())
@@ -1019,6 +1064,46 @@ func (h *VehicleReturnHandler) issueRefund(ctx context.Context, v *models.Vehicl
 	return completed
 }
 
+// markRefundUnrecoverable parks a refund in the PERMANENT failure state
+// (item 3): exactly one caller wins the claimed-once flip, opens ONE
+// support ticket, and tells both parties honestly. The retry sweep
+// excludes 'unrecoverable', and the admin settle endpoint is the product
+// exit (close with a forced $0 — no Stripe money can move on a dead PI).
+func (h *VehicleReturnHandler) markRefundUnrecoverable(ctx context.Context, v *models.VehicleReturn, reason string) {
+	claimed, err := h.repo.MarkRefundUnrecoverable(ctx, v.ID, reason)
+	if err != nil {
+		h.logger.Error("vehicle return: mark unrecoverable", "error", err, "id", v.ID)
+		return
+	}
+	if claimed == nil {
+		return // another worker won, or the state already moved
+	}
+	h.logger.Error("vehicle return: refund UNRECOVERABLE — admin exit required",
+		"id", v.ID, "lease_request_id", v.LeaseRequestID, "reason", reason)
+
+	leaseRef := claimed.LeaseRequestID
+	if h.ticketRepo != nil {
+		subject := "Refund cannot be processed automatically"
+		desc := fmt.Sprintf(
+			"A driver refund of %s is permanently unprocessable: %s.\n\nThe return is parked at owner_confirmed/unrecoverable. Resolve via Admin → Rents → Settle → close (driver refund is forced to $0 — arrange any manual repayment off-platform and record it in the note).\n\nLease request: %s",
+			formatMoney(claimed.RefundAmountCents), reason, claimed.LeaseRequestID)
+		if _, terr := h.ticketRepo.CreateSystemTicket(ctx, claimed.DriverID, models.TicketCategoryPayments, subject, desc, &leaseRef, &claimed.ID); terr != nil {
+			h.logger.Error("vehicle return: unrecoverable ticket failed", "error", terr, "return_id", claimed.ID)
+		}
+	}
+
+	resp := h.buildResponseCtx(ctx, claimed, claimed.OwnerID)
+	chatID := resp.ChatID
+	go h.notifHandler.Notify(claimed.DriverID, models.NotificationTypePayment,
+		"We're on your refund",
+		fmt.Sprintf("Your refund for %s couldn't be processed automatically — our team has it and will resolve it directly with you.", carTitleOr(resp.CarTitle)),
+		chatID, &leaseRef)
+	go h.notifHandler.Notify(claimed.OwnerID, models.NotificationTypeLeaseRequest,
+		"Return with support",
+		fmt.Sprintf("The return of %s hit a payment-processing issue on our side. Support is resolving it — nothing is needed from you.", carTitleOr(resp.CarTitle)),
+		chatID, &leaseRef)
+}
+
 // settleOwnerPayout hands what the driver's payment left after the refund
 // to the payout engine. kept = paid − refund; both completion paths land
 // here, so every clean return produces exactly one ledger row (the engine
@@ -1052,6 +1137,17 @@ func (h *VehicleReturnHandler) settleOwnerPayout(ctx context.Context, completed 
 // iOS collapses them via apns-collapse-id=payment:{leaseID}.
 func (h *VehicleReturnHandler) notifyRefundDelay(ctx context.Context, v *models.VehicleReturn) {
 	if v == nil || h.notifHandler == nil {
+		return
+	}
+	// Claimed-once (item 2): the stuck-refund scanner re-fails every ~2
+	// minutes, and each failure used to push a fresh "Refund delayed" at
+	// the driver. One episode, one notice.
+	claimed, err := h.repo.ClaimRefundDelayNotice(ctx, v.ID)
+	if err != nil {
+		h.logger.Error("vehicle return: claim refund-delay notice", "error", err, "id", v.ID)
+		return
+	}
+	if !claimed {
 		return
 	}
 	carTitle := "your rental"
