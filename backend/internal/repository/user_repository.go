@@ -371,3 +371,26 @@ func (r *UserRepository) SetActiveProfile(ctx context.Context, userID uuid.UUID,
 	}
 	return nil
 }
+
+// --- Audit H6: durable user→Stripe-customer binding ---
+
+// GetStripeCustomerID returns the customer bound to this user, nil when none.
+func (r *UserRepository) GetStripeCustomerID(ctx context.Context, userID uuid.UUID) (*string, error) {
+	var cid *string
+	err := r.db.Pool.QueryRow(ctx, `SELECT stripe_customer_id FROM users WHERE id = $1`, userID).Scan(&cid)
+	if err != nil {
+		return nil, err
+	}
+	return cid, nil
+}
+
+// SetStripeCustomerID binds (or re-binds) the user's Stripe customer. A
+// plain overwrite is safe here: both sides of any race belong to the SAME
+// user — the invariant H6 protects is that the binding never crosses users,
+// which the WHERE id enforces and email search used to break.
+func (r *UserRepository) SetStripeCustomerID(ctx context.Context, userID uuid.UUID, customerID string) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE users SET stripe_customer_id = $2, updated_at = NOW() WHERE id = $1
+	`, userID, customerID)
+	return err
+}

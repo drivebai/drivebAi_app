@@ -1423,9 +1423,9 @@ func (h *PurchaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *h
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
-	customer, err := h.stripe.FindOrCreateCustomer(buyer.Email, buyer.FullName())
+	customer, err := customerForUser(r.Context(), h.stripe, h.userRepo, buyer, h.logger)
 	if err != nil {
-		h.logger.Error("purchase: find/create customer", "error", err)
+		h.logger.Error("purchase: resolve customer", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.NewAPIError("STRIPE_ERROR", "Failed to create payment customer"))
 		return
 	}

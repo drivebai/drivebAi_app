@@ -665,10 +665,10 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Find or create Stripe customer
-	customer, err := h.stripe.FindOrCreateCustomer(user.Email, user.FullName())
+	// Resolve the user's bound Stripe customer (H6 — never by email).
+	customer, err := customerForUser(r.Context(), h.stripe, h.userRepo, user, h.logger)
 	if err != nil {
-		h.logger.Error("stripe find/create customer", "error", err)
+		h.logger.Error("stripe resolve customer", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.NewAPIError("STRIPE_ERROR", "Failed to create payment customer"))
 		return
 	}

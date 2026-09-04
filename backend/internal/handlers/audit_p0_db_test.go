@@ -463,3 +463,32 @@ func TestAuditP0_ProfilePhoneGate(t *testing.T) {
 		t.Fatal("self no longer sees own phone")
 	}
 }
+
+// H6: the customer binding round-trips and re-binds; nothing resolves by
+// email anymore (compile-time: FindOrCreateCustomer no longer exists).
+func TestAuditP0_StripeCustomerBinding(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	driver := e.seedUser(t, "driver", "p0_driver_h6@example.com")
+	userRepo := repository.NewUserRepository(e.db)
+
+	cid, err := userRepo.GetStripeCustomerID(ctx, driver)
+	if err != nil || cid != nil {
+		t.Fatalf("fresh user binding = %v/%v, want nil/nil", cid, err)
+	}
+	if err := userRepo.SetStripeCustomerID(ctx, driver, "cus_test_one"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	cid, _ = userRepo.GetStripeCustomerID(ctx, driver)
+	if cid == nil || *cid != "cus_test_one" {
+		t.Fatalf("binding = %v, want cus_test_one", cid)
+	}
+	// Re-bind (dead-customer replacement) overwrites.
+	if err := userRepo.SetStripeCustomerID(ctx, driver, "cus_test_two"); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	cid, _ = userRepo.GetStripeCustomerID(ctx, driver)
+	if cid == nil || *cid != "cus_test_two" {
+		t.Fatalf("rebinding = %v, want cus_test_two", cid)
+	}
+}

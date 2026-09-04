@@ -67,29 +67,43 @@ type PaymentIntent struct {
 
 // --- Customer ---
 
-// FindOrCreateCustomer finds a Stripe customer by email, or creates one.
-func (s *Service) FindOrCreateCustomer(email, name string) (*Customer, error) {
-	// Search for existing customer
-	params := url.Values{}
-	params.Set("query", fmt.Sprintf("email:'%s'", email))
-	params.Set("limit", "1")
-
-	body, err := s.apiGet("/v1/customers/search?" + params.Encode())
+// GetCustomer retrieves a customer by ID. Returns (nil, nil) when the
+// customer no longer exists — deleted at Stripe or never created — so
+// callers can mint a replacement.
+//
+// There is deliberately NO lookup by email anywhere in this service: email
+// search is how a re-registered address inherited a previous (deleted)
+// user's saved cards in PaymentSheet (audit H6). The durable binding is
+// users.stripe_customer_id.
+func (s *Service) GetCustomer(customerID string) (*Customer, error) {
+	body, err := s.apiGet("/v1/customers/" + url.PathEscape(customerID))
 	if err != nil {
-		s.logger.Warn("stripe customer search failed, creating new", "error", err)
-	} else {
-		var result struct {
-			Data []Customer `json:"data"`
+		if strings.Contains(err.Error(), "resource_missing") {
+			return nil, nil
 		}
-		if json.Unmarshal(body, &result) == nil && len(result.Data) > 0 {
-			return &result.Data[0], nil
-		}
+		return nil, fmt.Errorf("get customer: %w", err)
 	}
+	var cust struct {
+		Customer
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.Unmarshal(body, &cust); err != nil {
+		return nil, fmt.Errorf("decode customer: %w", err)
+	}
+	if cust.Deleted {
+		return nil, nil
+	}
+	return &cust.Customer, nil
+}
 
-	// Create new customer
-	params = url.Values{}
+// CreateCustomer creates a fresh customer stamped with our user ID in
+// metadata, so every Stripe-side customer is attributable to exactly one
+// account row.
+func (s *Service) CreateCustomer(email, name, userID string) (*Customer, error) {
+	params := url.Values{}
 	params.Set("email", email)
 	params.Set("name", name)
+	params.Set("metadata[user_id]", userID)
 
 	respBody, err := s.apiPost("/v1/customers", params)
 	if err != nil {
