@@ -191,6 +191,7 @@ func main() {
 	// login-OTP mailer, its own single-purpose table.
 	contactChangeHandler := handlers.NewContactChangeHandler(userRepo, contactChangeRepo, otpEmailSvc, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
+	carHandler.SetSalesDisabled(cfg.DisableCarSales)
 	carHandler.SetReviewRepository(reviewRepo)
 	// Coordinate-displacement key for anonymous listing responses. Derived
 	// from the JWT secret (always set, prod-validated) rather than a new env
@@ -270,6 +271,7 @@ func main() {
 	// machine.
 	purchaseRepo := repository.NewPurchaseRequestRepository(db)
 	purchaseHandler := handlers.NewPurchaseRequestHandler(purchaseRepo, carRepo, userRepo, chatRepo, leaseRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, uploadDir, logger)
+	purchaseHandler.SetSalesDisabled(cfg.DisableCarSales)
 	leaseHandler.SetPurchaseHandler(purchaseHandler)
 	todayHandler.SetPurchaseRepository(purchaseRepo)
 

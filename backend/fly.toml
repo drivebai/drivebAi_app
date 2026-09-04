@@ -17,6 +17,10 @@ primary_region = 'ewr'
   PICKUP_DEADLINE_MINUTES = "120"
   PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS = "60"
   REQUIRE_PRIVATE_UPLOAD_SIGNATURES = "true"
+  # Car sales OFF until seller payouts exist (audit M1, client decision
+  # Sep 4): buyers' money captures but no code path pays the seller.
+  # Rentals unaffected. Flip to "false" only with the seller-payout batch.
+  DISABLE_CAR_SALES = "true"
   UPLOAD_URL_TTL = "1h"
   # iOS bundle ID — public, not secret. Lives here so the APNs send loop has
   # a topic to claim without needing a separate fly secrets set step.

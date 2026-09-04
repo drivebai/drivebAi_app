@@ -77,6 +77,15 @@ type Config struct {
 	// Set AUTO_APPROVE_CARS=true in dev/staging; must be false (default) in production.
 	AutoApproveCars bool
 
+	// Kill switch for the car-SALE flow (audit M1): sales can take a
+	// buyer's money but no code path pays the seller yet, so production
+	// runs with DISABLE_CAR_SALES=true until seller payouts exist. Effect:
+	// new purchase offers are refused (503 SALES_PAUSED) and discovery
+	// reports is_for_sale=false so the Buy CTA never renders. Owner-facing
+	// views keep the stored truth; existing in-flight purchases (none in
+	// prod at flag time) are untouched. Rentals are unaffected.
+	DisableCarSales bool
+
 	// CORS allowed origins, comma-separated. In production this must be a
 	// concrete list (e.g. https://drivebai-admin-team.fly.dev). Default of
 	// "*" is fine for development (iOS clients don't care about CORS); the
@@ -133,6 +142,7 @@ func Load() (*Config, error) {
 
 		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
 		AutoApproveCars:    getEnv("AUTO_APPROVE_CARS", "false") == "true",
+		DisableCarSales:    getEnv("DISABLE_CAR_SALES", "false") == "true",
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),

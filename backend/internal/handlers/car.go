@@ -33,6 +33,9 @@ type CarHandler struct {
 	urlSigner          *PrivateURLSigner
 	minWeeklyRentPrice float64
 	autoApproveCars    bool
+	// salesDisabled masks is_for_sale on discovery surfaces while the
+	// car-sale flow is switched off (no seller payout path yet — audit M1).
+	salesDisabled bool
 	// reviewRepo feeds real owner rating aggregates into car responses.
 	// Wired via SetReviewRepository; nil in tests → "no ratings yet".
 	reviewRepo *repository.ReviewRepository
@@ -43,6 +46,10 @@ type CarHandler struct {
 
 // SetReviewRepository wires the ratings store used to populate
 // Owner.Rating/ReviewCount on car responses.
+// SetSalesDisabled wires the DISABLE_CAR_SALES kill switch (audit M1):
+// discovery stops advertising Buy while sellers cannot be paid.
+func (h *CarHandler) SetSalesDisabled(disabled bool) { h.salesDisabled = disabled }
+
 func (h *CarHandler) SetReviewRepository(r *repository.ReviewRepository) {
 	h.reviewRepo = r
 }
@@ -1527,6 +1534,12 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 	for _, car := range cars {
 		photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
 		owner, _ := h.userRepo.GetByID(ctx, car.OwnerID)
+		if h.salesDisabled {
+			// Sales kill switch (audit M1): discovery never advertises Buy
+			// while sellers cannot be paid. The stored value is untouched —
+			// owners still see their own listing's truth.
+			car.IsForSale = false
+		}
 		responses = append(responses, car.ToResponse(photos, nil, owner, false))
 		// First name straight from the users column — never split the joined
 		// display name (an empty first name would leak the surname).

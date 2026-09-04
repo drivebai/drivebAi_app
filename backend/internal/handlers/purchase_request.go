@@ -42,7 +42,14 @@ type PurchaseRequestHandler struct {
 	urlSigner    *PrivateURLSigner
 	uploadDir    string
 	logger       *slog.Logger
+	// salesDisabled refuses new purchase offers while the sale flow is
+	// switched off (no seller payout path yet — audit M1).
+	salesDisabled bool
 }
+
+// SetSalesDisabled wires the DISABLE_CAR_SALES kill switch (house setter
+// pattern).
+func (h *PurchaseRequestHandler) SetSalesDisabled(disabled bool) { h.salesDisabled = disabled }
 
 func NewPurchaseRequestHandler(
 	repo *repository.PurchaseRequestRepository,
@@ -470,6 +477,14 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 	carID, err := uuid.Parse(chi.URLParam(r, "carId"))
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid car id"))
+		return
+	}
+	// Sales kill switch (audit M1): a purchase can capture a buyer's money
+	// but no code path pays the seller yet. Refuse at the front door until
+	// seller payouts exist. Rentals are unaffected.
+	if h.salesDisabled {
+		httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("SALES_PAUSED",
+			"Buying isn't available right now — rentals are unaffected. Check back soon."))
 		return
 	}
 	var body models.CreatePurchaseRequestBody
