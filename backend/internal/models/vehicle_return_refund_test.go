@@ -48,8 +48,9 @@ func TestComputeReturnRefund(t *testing.T) {
 			rentalWeeks:     1,
 			pickup:          now,
 			returnedAt:      now.Add(7 * 24 * time.Hour),
-			wantUsedDays:    7,
-			wantRefundCents: 4, // 10000 - 1428*7 = 4 (cent crumb)
+			wantUsedDays:      7,
+			wantRefundCents:   0, // full term consumed — the 4-cent division crumb stays with the term (Sep 7 fix)
+			wantNotApplicable: true,
 		},
 		// Returned 8 days into a 7-day rental → capped at 7, refund == crumb.
 		{
@@ -58,8 +59,9 @@ func TestComputeReturnRefund(t *testing.T) {
 			rentalWeeks:     1,
 			pickup:          now,
 			returnedAt:      now.Add(8 * 24 * time.Hour),
-			wantUsedDays:    7,
-			wantRefundCents: 4,
+			wantUsedDays:      7,
+			wantRefundCents:   0, // capped at full term → exactly zero (Sep 7 fix)
+			wantNotApplicable: true,
 		},
 		// Spec example #3: 5 days into a 2-week lease.
 		{
@@ -88,8 +90,9 @@ func TestComputeReturnRefund(t *testing.T) {
 			rentalWeeks:     2,
 			pickup:          now,
 			returnedAt:      now.Add(16 * 24 * time.Hour),
-			wantUsedDays:    14, // capped
-			wantRefundCents: 8,  // 20000 - (20000/14=1428)*14 = 8
+			wantUsedDays:      14, // capped
+			wantRefundCents:   0,  // full term consumed → exactly zero (Sep 7 fix)
+			wantNotApplicable: true,
 		},
 		// Promo / $0 lease — Stripe skipped, marked not_applicable.
 		{
@@ -188,5 +191,34 @@ func TestComputeReturnRefund_SubCentMarksNotApplicable(t *testing.T) {
 	}
 	if !got.NotApplicable {
 		t.Errorf("expected not_applicable=true for zero refund")
+	}
+}
+
+// The live-rental defect (Sep 6): full-term use refunded $0.06 — the
+// integer-division remainder of $150.00 over 7 days. Full-term must be
+// exactly zero; the boundaries around it must keep the pro-rata behavior.
+func TestComputeReturnRefund_FullTermBoundary(t *testing.T) {
+	pickup := time.Date(2026, 8, 30, 15, 49, 0, 0, time.UTC)
+	const paid = int64(15000) // $150.00 over 1 week — 15000/7 leaves remainder 6
+
+	cases := []struct {
+		name       string
+		returnedAt time.Time
+		wantRefund int64
+		wantNA     bool
+	}{
+		{"full term exactly", pickup.Add(7 * 24 * time.Hour), 0, true},
+		{"past the end (the live rental)", pickup.Add(7*24*time.Hour + 23*time.Minute), 0, true},
+		{"one hour short — 7th day begun, charged fully", pickup.Add(7*24*time.Hour - time.Hour), 0, true},
+		{"one day short — 6 used, 1 day back", pickup.Add(6 * 24 * time.Hour), 15000 - 2142*6, false},
+	}
+	for _, tc := range cases {
+		got := ComputeReturnRefund(paid, 1, pickup, tc.returnedAt)
+		if got.RefundAmountCents != tc.wantRefund {
+			t.Errorf("%s: refund = %d, want %d", tc.name, got.RefundAmountCents, tc.wantRefund)
+		}
+		if got.NotApplicable != tc.wantNA {
+			t.Errorf("%s: notApplicable = %v, want %v", tc.name, got.NotApplicable, tc.wantNA)
+		}
 	}
 }

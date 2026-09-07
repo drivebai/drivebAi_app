@@ -185,6 +185,20 @@ func ComputeReturnRefund(paidAmountCents int64, rentalWeeks int, pickupConfirmed
 	}
 
 	perDayCents := paidAmountCents / int64(totalPaidDays)
+
+	// Full term consumed → refund is exactly zero. Without this, the
+	// floored per-day rate leaks the integer-division remainder
+	// (paid mod totalPaidDays) back to the driver — $0.06 on the first
+	// live rental. The remainder belongs to the term that was used.
+	if usedDays >= totalPaidDays {
+		return RefundComputation{
+			UsedDays:          usedDays,
+			PerDayCents:       perDayCents,
+			RefundAmountCents: 0,
+			NotApplicable:     true,
+		}
+	}
+
 	refundCents := paidAmountCents - perDayCents*int64(usedDays)
 	if refundCents < 0 {
 		refundCents = 0
