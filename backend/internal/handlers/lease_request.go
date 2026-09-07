@@ -1049,6 +1049,23 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		// kind="arrears" (batch 4): a post-return debt settled on-session.
+		// Deliberately NOT handleCyclePaid — its occupancy guard auto-
+		// refunds charges landing after a return, which is exactly wrong
+		// for arrears. Failures ACK (the driver just retries in the app).
+		if kind, _ := md["kind"].(string); kind == "arrears" {
+			if eventType == "payment_intent.succeeded" {
+				cycleIDStr, _ := md["billing_cycle_id"].(string)
+				if cycleID, perr := uuid.Parse(cycleIDStr); perr == nil {
+					if !h.handleArrearsPaid(r.Context(), cycleID, intentID) {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 	}
 
 	// Route by PI metadata: purchase intents carry metadata.kind="purchase"

@@ -693,3 +693,38 @@ func (r *BillingRepository) ListOpenCyclesOnReturnedLeases(ctx context.Context, 
 	}
 	return out, rows.Err()
 }
+
+// ArrearsPaidClaim settles a post-return debt: arrears_due → paid,
+// claimed-once, deliberately OVERWRITING stripe_payment_intent_id with the
+// on-session arrears intent — the original (neutralized/failed) intent has
+// no further meaning, and dispute resolution must find the cycle by the
+// charge that actually holds money (batch 4).
+func (r *BillingRepository) ArrearsPaidClaim(ctx context.Context, id uuid.UUID, intentID string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles
+		SET status = 'paid', stripe_payment_intent_id = NULLIF($2, ''), updated_at = NOW()
+		WHERE id = $1 AND status = 'arrears_due'
+	`, id, intentID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// UpdateConsentPaymentMethod swaps the mandate's card after a VERIFIED
+// SetupIntent (batch 4 card update). Only a live, activated consent may be
+// re-carded — an unactivated consent has no mandate to update, and a
+// revoked one must go through a fresh booking.
+func (r *BillingRepository) UpdateConsentPaymentMethod(ctx context.Context, leaseID uuid.UUID, pmID, brand, last4, fingerprint string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_billing_consents
+		SET stripe_payment_method_id = $2, card_brand = NULLIF($3, ''),
+		    card_last4 = NULLIF($4, ''), card_fingerprint = NULLIF($5, '')
+		WHERE lease_request_id = $1 AND revoked_at IS NULL AND activated_at IS NOT NULL
+		  AND $2 <> ''
+	`, leaseID, pmID, brand, last4, fingerprint)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}

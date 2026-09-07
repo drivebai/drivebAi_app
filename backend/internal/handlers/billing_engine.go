@@ -490,6 +490,15 @@ func (h *LeaseRequestHandler) handleCyclePaid(ctx context.Context, cycleID uuid.
 			// keeps its used-days debt for on-session collection.
 			return h.refundLateChargeOnSettledCycle(ctx, existing, intentID)
 		case models.CyclePaid:
+			// Identity check first (batch-4 review): a paid cycle whose
+			// recorded intent DIFFERS from this event's is a duplicate
+			// charge — e.g. the original cycle intent succeeding late after
+			// an arrears settlement overwrote the stamp. Refund it; only a
+			// true redelivery of the recorded intent repairs the accrual.
+			if intentID != "" && existing.StripePaymentIntentID != nil &&
+				*existing.StripePaymentIntentID != "" && intentID != *existing.StripePaymentIntentID {
+				return h.refundLateChargeOnSettledCycle(ctx, existing, intentID)
+			}
 			// fall through to the accrual repair below
 		default:
 			// A claimable status read back after a nil claim = a concurrent
@@ -984,19 +993,34 @@ func (h *LeaseRequestHandler) billingPostReturnRefundPhase(ctx context.Context, 
 // Returns false (webhook 500 → redelivery) until both the refund and its
 // cycle stamp are durable.
 func (h *LeaseRequestHandler) refundLateChargeOnSettledCycle(ctx context.Context, c *models.BillingCycle, intentID string) bool {
-	if c.RefundID != nil {
-		return true // already recorded (replay)
+	stored := ""
+	if c.StripePaymentIntentID != nil {
+		stored = *c.StripePaymentIntentID
 	}
 	intent := intentID
-	if intent == "" && c.StripePaymentIntentID != nil {
-		intent = *c.StripePaymentIntentID
+	if intent == "" {
+		intent = stored
+	}
+	// The row-level refund record only proves the FIRST charge was
+	// returned. A SECOND, distinct intent landing on the same cycle (a
+	// stale arrears sheet confirmed after the debt settled; the original
+	// cycle intent succeeding after an arrears overwrite) must get its own
+	// refund — replaying `return true` off refund_id would silently keep
+	// it (batch-4 review). Per-intent stable key makes each charge's
+	// refund replay-safe independently. This benign-replay ACK needs no
+	// Stripe, so it precedes the availability guard.
+	if c.RefundID != nil && (intentID == "" || intentID == stored) {
+		return true // recorded replay of the same charge — benign
 	}
 	if h.stripe == nil || intent == "" {
 		h.logger.Error("late charge on settled cycle: cannot refund (no stripe/intent)", "cycle_id", c.ID)
 		return false
 	}
-	refund, rerr := h.stripe.CreateRefund(intent, "cycle-refund-"+c.ID.String(), "requested_by_customer", 0)
+	refund, rerr := h.stripe.CreateRefund(intent, "cycle-late-refund-"+intent, "requested_by_customer", 0)
 	if rerr != nil {
+		if strings.Contains(rerr.Error(), "already been refunded") {
+			return true // fully returned earlier under another path's key
+		}
 		h.logger.Error("late charge on settled cycle: refund failed — redelivery retries", "error", rerr, "cycle_id", c.ID)
 		return false
 	}
@@ -1004,9 +1028,14 @@ func (h *LeaseRequestHandler) refundLateChargeOnSettledCycle(ctx context.Context
 		h.logger.Error("late charge on settled cycle: refund unhealthy", "cycle_id", c.ID, "stripe_status", refund.Status)
 		return false
 	}
-	if _, serr := h.billingRepo.RecordLateChargeRefund(ctx, c.ID, refund.ID, refund.Amount); serr != nil {
-		h.logger.Error("late charge on settled cycle: record", "error", serr, "cycle_id", c.ID)
-		return false
+	// Record the first refund on the row (claimed-once, written-off
+	// statuses only); later duplicates keep their Stripe trail + the warn
+	// log below as the audit record.
+	if c.RefundID == nil {
+		if _, serr := h.billingRepo.RecordLateChargeRefund(ctx, c.ID, refund.ID, refund.Amount); serr != nil {
+			h.logger.Error("late charge on settled cycle: record", "error", serr, "cycle_id", c.ID)
+			return false
+		}
 	}
 	h.logger.Warn("late charge on written-off cycle refunded",
 		"cycle_id", c.ID, "cycle_status", c.Status, "refund_id", refund.ID, "amount_cents", refund.Amount)

@@ -288,6 +288,10 @@ func seedRollingLease(t *testing.T, e *payoutEnv, tag string, daysAgo, paidThrou
 	t.Cleanup(func() {
 		e.db.Pool.Exec(ctx, `DELETE FROM key_handovers WHERE lease_request_id = $1`, leaseID)
 		e.db.Pool.Exec(ctx, `DELETE FROM vehicle_returns WHERE lease_request_id = $1`, leaseID)
+		// owner_payouts FK-RESTRICTs billing_cycles — payouts go first, or
+		// the cycle (and then the lease) delete silently fails and leftover
+		// rolling leases crowd the bootstrap lister's LIMIT across runs.
+		e.db.Pool.Exec(ctx, `DELETE FROM owner_payouts WHERE lease_request_id = $1`, leaseID)
 		e.db.Pool.Exec(ctx, `DELETE FROM billing_cycles WHERE lease_request_id = $1`, leaseID)
 		e.db.Pool.Exec(ctx, `DELETE FROM lease_billing_consents WHERE lease_request_id = $1`, leaseID)
 	})

@@ -506,6 +506,13 @@ func main() {
 			r.Post("/lease-requests/{id}/decline-price", leaseHandler.DeclinePriceChange)
 			r.Post("/lease-requests/{id}/stop-renewal", leaseHandler.StopRenewal)
 			r.Post("/lease-requests/{id}/terminate-renewal", leaseHandler.TerminateRenewal)
+
+			// Rolling billing surface (batch 4): status card, on-session
+			// Pay-now recovery, card update (the consent_revoked exit).
+			r.Get("/lease-requests/{id}/billing", leaseHandler.GetBillingStatus)
+			r.Post("/lease-requests/{id}/billing/pay-now", leaseHandler.PayNow)
+			r.Post("/lease-requests/{id}/billing/card-update", leaseHandler.CardUpdateStart)
+			r.Post("/lease-requests/{id}/billing/card-update/complete", leaseHandler.CardUpdateComplete)
 			r.Post("/lease-requests/{id}/pickup-confirm", leaseHandler.ConfirmPickup)
 			r.Post("/lease-requests/{id}/pickup-deadline/extend", leaseHandler.ExtendPickupDeadline)
 

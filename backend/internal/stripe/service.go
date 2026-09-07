@@ -608,3 +608,110 @@ func (s *Service) FindPaymentIntentByCycle(cycleID string) (*PaymentIntent, erro
 	}
 	return &result.Data[0], nil
 }
+
+// --- Setup intents (rolling card update, batch 4) ---
+
+// SetupIntent is the card-update vehicle: it saves a new payment method
+// under the network stored-credential framework without charging.
+type SetupIntent struct {
+	ID            string `json:"id"`
+	ClientSecret  string `json:"client_secret"`
+	Status        string `json:"status"`
+	PaymentMethod string `json:"payment_method"`
+	CustomerID    string `json:"customer"`
+}
+
+// CreateSetupIntent mints an off-session-usage SetupIntent for the
+// customer. Metadata carries kind + lease id so the completion check can
+// verify the SI belongs to the lease it claims to.
+func (s *Service) CreateSetupIntent(customerID string, metadata map[string]string, idempotencyKey string) (*SetupIntent, error) {
+	params := url.Values{}
+	params.Set("customer", customerID)
+	params.Set("usage", "off_session")
+	params.Set("automatic_payment_methods[enabled]", "true")
+	params.Set("automatic_payment_methods[allow_redirects]", "never")
+	for k, v := range metadata {
+		params.Set("metadata["+k+"]", v)
+	}
+	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/setup_intents", strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create setup intent: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("stripe setup intent error %d: %s", resp.StatusCode, string(body))
+	}
+	var si SetupIntent
+	if err := json.Unmarshal(body, &si); err != nil {
+		return nil, fmt.Errorf("decode setup intent: %w", err)
+	}
+	return &si, nil
+}
+
+// RetrieveSetupIntent reads a SetupIntent's true state — the fail-closed
+// verification for the card-update completion (never trust the client's
+// claim that setup succeeded). expand[]=payment_method inlines the card
+// details so the consent row can record brand/last4/fingerprint.
+func (s *Service) RetrieveSetupIntent(id string) (*SetupIntent, *PaymentMethodCard, error) {
+	// metadata is inlined by default and is NOT an expandable property —
+	// expand[]=metadata would 400 on every call (batch-4 review HIGH:
+	// the card-update exit was dead on arrival). Only payment_method needs
+	// expanding, for brand/last4/fingerprint.
+	req, err := http.NewRequest("GET", "https://api.stripe.com/v1/setup_intents/"+id+"?expand[]=payment_method", nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("retrieve setup intent: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("stripe setup intent error %d: %s", resp.StatusCode, string(body))
+	}
+	var raw struct {
+		ID            string `json:"id"`
+		ClientSecret  string `json:"client_secret"`
+		Status        string `json:"status"`
+		CustomerID    string `json:"customer"`
+		Metadata      map[string]string `json:"metadata"`
+		PaymentMethod struct {
+			ID   string `json:"id"`
+			Card struct {
+				Brand       string `json:"brand"`
+				Last4       string `json:"last4"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"card"`
+		} `json:"payment_method"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, nil, fmt.Errorf("decode setup intent: %w", err)
+	}
+	si := &SetupIntent{ID: raw.ID, ClientSecret: raw.ClientSecret, Status: raw.Status,
+		PaymentMethod: raw.PaymentMethod.ID, CustomerID: raw.CustomerID}
+	card := &PaymentMethodCard{PaymentMethodID: raw.PaymentMethod.ID, Brand: raw.PaymentMethod.Card.Brand,
+		Last4: raw.PaymentMethod.Card.Last4, Fingerprint: raw.PaymentMethod.Card.Fingerprint,
+		Metadata: raw.Metadata}
+	return si, card, nil
+}
+
+// PaymentMethodCard is the card summary the consent row records.
+type PaymentMethodCard struct {
+	PaymentMethodID string
+	Brand           string
+	Last4           string
+	Fingerprint     string
+	Metadata        map[string]string
+}
