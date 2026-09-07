@@ -186,7 +186,12 @@ struct VehicleReturnCard: View {
         case .completed where vehicleReturn.hasRefund,
              .ownerConfirmed where vehicleReturn.refundStatus == .succeeded:
             primaryLine = "\(refundAmount) refunded"
-            detailLine = "Sent to your original payment method"
+            // Role-correct destination: the driver's card was showing on the
+            // owner's Today verbatim ("your original payment method") after
+            // the first live return.
+            detailLine = vehicleReturn.isDriver
+                ? "Sent to your original payment method"
+                : "Sent to the driver's payment method"
             icon = "checkmark.seal.fill"
             tone = .green
         case .ownerConfirmed:

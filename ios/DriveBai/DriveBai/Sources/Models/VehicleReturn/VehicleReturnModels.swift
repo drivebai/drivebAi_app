@@ -148,10 +148,12 @@ extension VehicleReturn {
             return "Processing refund"
         case (.disputed, _):
             return "Return disputed"
-        case (.completed, _):
+        case (.completed, .driver):
             return hasRefund
                 ? "Return complete — \(formattedRefundAmount) refunded"
                 : "Return complete"
+        case (.completed, .owner):
+            return "Return complete"
         case (.cancelled, _):
             return "Return cancelled"
         }
@@ -170,10 +172,14 @@ extension VehicleReturn {
                 return "\(counterpartyName) requested to return the car. A refund of \(formattedRefundAmount) for \(unusedDaysCount()) unused day\(unusedDaysCount() == 1 ? "" : "s") will be issued on confirm."
             }
             return "Full rental period used. No refund will be issued on confirm."
-        case (.ownerConfirmed, _):
+        case (.ownerConfirmed, .driver):
             return hasRefund
                 ? "Owner confirmed the return. Issuing your \(formattedRefundAmount) refund now."
                 : "Owner confirmed the return. No refund is due."
+        case (.ownerConfirmed, .owner):
+            return hasRefund
+                ? "You confirmed the return. The driver's \(formattedRefundAmount) refund is being issued."
+                : "You confirmed the return. Full rental period was used — no refund is due."
         case (.disputed, .driver):
             // Backed by a real support ticket since the lifecycle batch —
             // Dispute opens one server-side before this copy is shown.
@@ -183,10 +189,18 @@ extension VehicleReturn {
             return "A support case is open — our team will follow up within 24 hours."
         case (.disputed, .owner):
             return "A support case is open; our team will follow up within 24 hours. If this was a misunderstanding, you can withdraw the dispute by confirming the return."
-        case (.completed, _):
+        case (.completed, .driver):
             return hasRefund
                 ? "Refund posted to your original payment method."
                 : "Full rental period was used."
+        case (.completed, .owner):
+            // The owner never receives a refund — their money arrives as a
+            // payout. Point them at the surface that tracks it (which is
+            // accurate whatever the payout's state: pending, paid, or
+            // awaiting setup).
+            return hasRefund
+                ? "\(formattedRefundAmount) was refunded to the driver. Track your payout in Earnings & payouts."
+                : "Full rental period was used. Track your payout in Earnings & payouts."
         case (.cancelled, _):
             return "This return was cancelled."
         }

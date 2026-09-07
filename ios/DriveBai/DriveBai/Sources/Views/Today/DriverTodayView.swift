@@ -578,7 +578,12 @@ struct ActiveRentalCard: View {
                 // No refund promise: past the end, used days equal paid days
                 // and the computed refund is $0 — the true incentive is
                 // closing out the rental, and saying anything else would lie.
-                Text("The rental period has ended. Hand the car back and tap “Request to Return the Vehicle” to close out the rental.")
+                // The instruction must track the button: once a return is in
+                // flight the button below yields, so copy telling the user
+                // to tap it would point at nothing (the Sep 6 screenshot).
+                Text(hasOpenReturn
+                    ? "The rental period has ended. Your return request is in — waiting for the owner to confirm."
+                    : "The rental period has ended. Hand the car back and tap “Request to Return the Vehicle” to close out the rental.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -133,7 +133,22 @@ struct ActiveRental: Identifiable, Equatable {
         let day = formatter.string(from: rentalEndsAt)
         switch termState {
         case .overdue:
-            let days = max(1, -daysRemaining)
+            // Calendar days in the DEVICE's timezone, not the server's
+            // 24-hour buckets: the server's daysRemaining hits −1 the
+            // second the term lapses (ceil on absolute seconds), which
+            // displayed "overdue by 1 day" 23 minutes past due. On the due
+            // date itself this is 0 → "due back today"; it becomes
+            // "overdue by 1 day" only on the next calendar day the user's
+            // own clock sees.
+            let cal = Calendar.current
+            let days = cal.dateComponents(
+                [.day],
+                from: cal.startOfDay(for: rentalEndsAt),
+                to: cal.startOfDay(for: Date())
+            ).day ?? 0
+            if days <= 0 {
+                return "Was due \(day) · due back today"
+            }
             return "Was due \(day) · overdue by \(days) day\(days == 1 ? "" : "s")"
         case .endingSoon, .active:
             if daysRemaining <= 1 {
