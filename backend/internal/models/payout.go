@@ -30,6 +30,12 @@ const (
 	// dispute (partial Transfer Reversal against the connected account).
 	// Terminal; reversal columns record the trr_…, amount, and reason.
 	PayoutReversed OwnerPayoutStatus = "reversed"
+	// PayoutAccruing: a rolling cycle's charge landed; amounts provisional
+	// until the week is CONSUMED (arrears model) — a mid-week return
+	// rewrites them while no money has moved.
+	PayoutAccruing OwnerPayoutStatus = "accruing"
+	// PayoutVoided: cycle fully refunded before consumption. Terminal.
+	PayoutVoided OwnerPayoutStatus = "voided"
 )
 
 // OwnerPayoutSource records why the split exists.
@@ -38,6 +44,9 @@ type OwnerPayoutSource string
 const (
 	PayoutSourceReturnCompleted OwnerPayoutSource = "return_completed"
 	PayoutSourceAdminSettlement OwnerPayoutSource = "admin_settlement"
+	// PayoutSourceCycleConsumed: a rolling cycle's week completed (arrears
+	// promotion) — the normal weekly payout source.
+	PayoutSourceCycleConsumed OwnerPayoutSource = "cycle_consumed"
 )
 
 // UserPayoutStatus is the coarse connected-account state the app renders.
@@ -73,6 +82,10 @@ type OwnerPayout struct {
 	LastReminderAt   *time.Time        `json:"last_reminder_at,omitempty"`
 	EscalatedAt      *time.Time        `json:"escalated_at,omitempty"`
 	PaidAt           *time.Time        `json:"paid_at,omitempty"`
+	BillingCycleID   *uuid.UUID        `json:"billing_cycle_id,omitempty"`
+	PeriodStart      *time.Time        `json:"period_start,omitempty"`
+	PeriodEnd        *time.Time        `json:"period_end,omitempty"`
+	ConsumedAt       *time.Time        `json:"consumed_at,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 }

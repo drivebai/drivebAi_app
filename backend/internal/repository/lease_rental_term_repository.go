@@ -62,6 +62,10 @@ func (r *LeaseRequestRepository) claimTermPhase(ctx context.Context, flagColumn,
 			  AND pickup_confirmed_at IS NOT NULL
 			  AND vehicle_returned_at IS NULL
 			  AND rental_ends_at IS NOT NULL
+			  AND (billing_mode = 'fixed_term'
+			       OR renewal_stopped_at IS NOT NULL
+			       OR delinquent_since IS NOT NULL
+			       OR renewal_halted_reason IS NOT NULL)
 			  AND %[2]s
 			  AND %[1]s IS NULL
 			  AND NOT EXISTS (
@@ -133,6 +137,10 @@ func (r *LeaseRequestRepository) ListTermEscalationCandidates(ctx context.Contex
 		  AND lr.pickup_confirmed_at IS NOT NULL
 		  AND lr.vehicle_returned_at IS NULL
 		  AND lr.rental_ends_at IS NOT NULL
+		  AND (lr.billing_mode = 'fixed_term'
+		       OR lr.renewal_stopped_at IS NOT NULL
+		       OR lr.delinquent_since IS NOT NULL
+		       OR lr.renewal_halted_reason IS NOT NULL)
 		  AND lr.rental_ends_at <= $1::timestamptz - INTERVAL '%d hours'
 		  AND lr.overdue_escalated_at IS NULL
 		  AND NOT EXISTS (

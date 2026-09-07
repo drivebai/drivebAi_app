@@ -53,6 +53,10 @@ type LeaseRequestHandler struct {
 	disputeRepo           *repository.ChargeDisputeRepository
 	payoutRepo            *repository.PayoutRepository
 	returnRepoForDisputes *repository.VehicleReturnRepository
+	// Rolling-billing engine (batch 2) — wired via SetBillingDependencies.
+	billingRepo    *repository.BillingRepository
+	billingFeeBPS  int
+	rollingEnabled bool
 }
 
 // SetTicketRepository wires the support-ticket repo for the rental-term
@@ -205,6 +209,20 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		weeks = *body.Weeks
 	}
 
+	// Rolling mode (batch 2): explicit opt-in, flag-gated, weeks forced to
+	// 1 (the DB CHECK enforces it too). Anything else stays fixed_term —
+	// the fixed-term path is untouched by construction.
+	billingMode := models.BillingModeFixedTerm
+	if body.BillingMode != nil && *body.BillingMode == string(models.BillingModeRolling) {
+		if !h.rollingEnabled {
+			httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("ROLLING_DISABLED",
+				"Weekly rentals aren't available right now"))
+			return
+		}
+		billingMode = models.BillingModeRolling
+		weeks = 1
+	}
+
 	lr := &models.LeaseRequest{
 		ListingID:   listingID,
 		OwnerID:     car.OwnerID,
@@ -213,6 +231,7 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		Currency:    car.Currency,
 		Weeks:       weeks,
 		Message:     body.Message,
+		BillingMode: billingMode,
 	}
 
 	created, err := h.leaseRepo.CreateLeaseRequest(r.Context(), lr)
@@ -720,7 +739,32 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 	if replacePayment != nil && replacePayment.PaymentIntentID != nil {
 		piIdemKey = fmt.Sprintf("lease-%s-after-%s", leaseID, *replacePayment.PaymentIntentID)
 	}
-	pi, err := h.stripe.CreatePaymentIntent(totalCents, lr.Currency, customer.ID, platformFeeCents, piIdemKey)
+	// Rolling cycle 1 (batch 2): record consent BEFORE the intent exists,
+	// and save the card under the stored-credential framework. The consent
+	// row is the amount authority for every later off-session charge.
+	piOpts := stripeService.PaymentIntentOptions{}
+	if lr.BillingMode == models.BillingModeRolling {
+		if !h.rollingEnabled || h.billingRepo == nil {
+			revertWindow()
+			httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("ROLLING_DISABLED",
+				"Weekly rentals aren't available right now"))
+			return
+		}
+		if _, cerr := h.billingRepo.CreateConsent(r.Context(), &models.BillingConsent{
+			LeaseRequestID: leaseID,
+			DriverID:       lr.DriverID,
+			AmountCents:    totalCents,
+			TermsVersion:   models.TermsVersionRolling,
+			DisclosureText: models.RollingDriverDisclosure(totalCents, "the weekday your rental begins", "today"),
+		}); cerr != nil {
+			h.logger.Error("rolling consent: create", "error", cerr, "lease_request_id", leaseID)
+			revertWindow()
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		piOpts.SetupFutureUsage = "off_session"
+	}
+	pi, err := h.stripe.CreatePaymentIntentWithOptions(totalCents, lr.Currency, customer.ID, platformFeeCents, piIdemKey, piOpts)
 	if err != nil {
 		h.logger.Error("stripe create payment intent", "error", err)
 		revertWindow()
@@ -988,6 +1032,25 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Rolling cycle intents carry metadata.kind="cycle": success runs the
+	// atomic advance; failures are the sweep's job (it reads intent state
+	// on its own clock), so they ACK.
+	if md, ok := obj["metadata"].(map[string]interface{}); ok {
+		if kind, _ := md["kind"].(string); kind == "cycle" {
+			if eventType == "payment_intent.succeeded" {
+				cycleIDStr, _ := md["billing_cycle_id"].(string)
+				if cycleID, perr := uuid.Parse(cycleIDStr); perr == nil {
+					if !h.handleCyclePaid(r.Context(), cycleID, intentID) {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
 	// Route by PI metadata: purchase intents carry metadata.kind="purchase"
 	// so the purchase state machine handles amount_capturable_updated /
 	// succeeded / canceled without polluting the lease code paths.
@@ -1006,7 +1069,7 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 		// A success signal we failed to persist must NOT be ACKed — a 200
 		// here told Stripe "done" and the retry never came (H2). 500 makes
 		// Stripe redeliver with backoff for days.
-		if !h.handlePaymentSucceeded(r, intentID) {
+		if !h.handlePaymentSucceeded(r, intentID, obj) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -1022,7 +1085,7 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 // handlePaymentSucceeded returns false only for failures a Stripe redelivery
 // can fix (DB errors mid-processing); the webhook then answers 500. Benign
 // and terminally-triaged outcomes return true.
-func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID string) bool {
+func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID string, obj map[string]interface{}) bool {
 	payment, err := h.leaseRepo.GetPaymentByIntentID(r.Context(), intentID)
 	if err != nil {
 		// Not found = PI was not created by us; ignore silently
@@ -1090,6 +1153,21 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 	}
 
 	h.logger.Info("payment succeeded", "lease_request_id", lr.ID, "payment_id", payment.ID, "intent_id", intentID)
+
+	// Rolling cycle 1: activate the consent with the saved payment method
+	// (claimed-once; the renewal engine refuses to run without it).
+	if lr.BillingMode == models.BillingModeRolling && h.billingRepo != nil {
+		if pmID, _ := obj["payment_method"].(string); pmID != "" {
+			if activated, aerr := h.billingRepo.ActivateConsent(r.Context(), lr.ID, pmID, "", "", ""); aerr != nil {
+				h.logger.Error("rolling consent: activate", "error", aerr, "lease_request_id", lr.ID)
+				return false
+			} else if activated {
+				h.logger.Info("rolling consent activated", "lease_request_id", lr.ID)
+			}
+		} else {
+			h.logger.Error("rolling consent: succeeded event carries no payment_method", "lease_request_id", lr.ID)
+		}
+	}
 
 	// Broadcast update to both parties
 	resp := h.buildLeaseRequestResponse(r, lr, nil)
@@ -1290,6 +1368,7 @@ func (h *LeaseRequestHandler) StartPickupExpiryScanner(ctx context.Context, inte
 			h.runPaymentPendingSweep(ctx)
 			h.runAcceptExpirySweep(ctx)
 			h.runOrphanedPaymentSweep(ctx)
+			h.runBillingSweep(ctx)
 		}
 	}
 }

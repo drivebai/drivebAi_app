@@ -645,7 +645,7 @@ func TestAuditP0_WebhookRedeliveryHeals(t *testing.T) {
 	seedPaymentAt(t, e, leaseID, 20000, "succeeded", &intent) // earlier delivery persisted this, then crashed pre-SetPaid
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/stripe/webhook", nil)
-	if ok := e.leaseH.handlePaymentSucceeded(req, intent); !ok {
+	if ok := e.leaseH.handlePaymentSucceeded(req, intent, map[string]interface{}{}); !ok {
 		t.Fatal("redelivery returned not-ok")
 	}
 	lr, _ := e.leaseRepo.GetByID(ctx, leaseID)

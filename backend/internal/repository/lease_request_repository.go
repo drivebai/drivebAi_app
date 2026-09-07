@@ -70,13 +70,16 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 	lr.UpdatedAt = now
 	lr.ExpiresAt = now.Add(24 * time.Hour)
 
+	if lr.BillingMode == "" {
+		lr.BillingMode = models.BillingModeFixedTerm
+	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO lease_requests (id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+		INSERT INTO lease_requests (id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, billing_mode, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13, $12, $12)
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, lr.ID, lr.ChatID, lr.ListingID, lr.OwnerID, lr.DriverID, lr.Status,
-		lr.WeeklyPrice, lr.Currency, lr.Weeks, lr.Message, lr.ExpiresAt, now,
+		lr.WeeklyPrice, lr.Currency, lr.Weeks, lr.Message, lr.ExpiresAt, now, lr.BillingMode,
 	).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
@@ -129,7 +132,8 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
 		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
 		       price_change_pending, previous_offered_weekly_price, price_change_acted_at,
-		       rental_ends_at, vehicle_returned_at
+		       rental_ends_at, vehicle_returned_at,
+		       billing_mode, renewal_stopped_at, renewal_stopped_by, delinquent_since, renewal_halted_reason
 		FROM lease_requests WHERE id = $1
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
@@ -139,6 +143,7 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
 		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 		&lr.RentalEndsAt, &lr.VehicleReturnedAt,
+		&lr.BillingMode, &lr.RenewalStoppedAt, &lr.RenewalStoppedBy, &lr.DelinquentSince, &lr.RenewalHaltedReason,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -1966,6 +1971,141 @@ func (r *LeaseRequestRepository) RevertPaymentWindow(ctx context.Context, id uui
 		WHERE id = $1 AND status = 'payment_pending'
 		  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.lease_request_id = $1)
 	`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// --- Rolling billing (batch 2) ---
+
+// ListRollingDueForBilling: rolling leases whose paid-through lapses within
+// the charge lead — the mint trigger. Mirrors idx_lease_requests_rolling_due.
+func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, dueBefore time.Time, limit int) ([]models.LeaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		       pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		       price_change_pending, previous_offered_weekly_price, price_change_acted_at,
+		       rental_ends_at, vehicle_returned_at
+		FROM lease_requests
+		WHERE billing_mode = 'rolling'
+		  AND status = 'paid'
+		  AND pickup_confirmed_at IS NOT NULL
+		  AND vehicle_returned_at IS NULL
+		  AND renewal_stopped_at IS NULL
+		  AND delinquent_since IS NULL
+		  AND renewal_halted_reason IS NULL
+		  AND rental_ends_at <= $1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM vehicle_returns vr
+		      WHERE vr.lease_request_id = lease_requests.id
+		        AND vr.status IN ('driver_initiated', 'owner_confirmed', 'disputed'))
+		ORDER BY rental_ends_at ASC
+		LIMIT $2`, dueBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list rolling due: %w", err)
+	}
+	defer rows.Close()
+	var out []models.LeaseRequest
+	for rows.Next() {
+		var lr models.LeaseRequest
+		if err := rows.Scan(
+			&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+			&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+			&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+			&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+			&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+			&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+			&lr.RentalEndsAt, &lr.VehicleReturnedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, lr)
+	}
+	return out, rows.Err()
+}
+
+// ClaimRenewalNotice implements the recurring claimed-once trick: the
+// notice for THIS paid-through value fires once; the next advance re-arms
+// it automatically because rental_ends_at changes.
+func (r *LeaseRequestRepository) ClaimRenewalNotice(ctx context.Context, leaseID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET renewal_notified_for = rental_ends_at, updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling' AND status = 'paid'
+		  AND renewal_stopped_at IS NULL AND renewal_halted_reason IS NULL
+		  AND renewal_notified_for IS DISTINCT FROM rental_ends_at
+	`, leaseID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// StopRenewal (driver) / TerminateRenewal (owner): claimed-once stamps,
+// party-scoped, rolling+paid only.
+func (r *LeaseRequestRepository) StopRenewal(ctx context.Context, leaseID, driverID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET renewal_stopped_at = NOW(), renewal_stopped_by = 'driver', updated_at = NOW()
+		WHERE id = $1 AND driver_id = $2 AND status = 'paid'
+		  AND billing_mode = 'rolling' AND renewal_stopped_at IS NULL
+	`, leaseID, driverID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (r *LeaseRequestRepository) TerminateRenewal(ctx context.Context, leaseID, ownerID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET renewal_stopped_at = NOW(), renewal_stopped_by = 'owner', updated_at = NOW()
+		WHERE id = $1 AND owner_id = $2 AND status = 'paid'
+		  AND billing_mode = 'rolling' AND renewal_stopped_at IS NULL
+	`, leaseID, ownerID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MarkDelinquent stamps dunning exhaustion (claimed-once).
+func (r *LeaseRequestRepository) MarkDelinquent(ctx context.Context, leaseID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET delinquent_since = NOW(), updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling' AND status = 'paid' AND delinquent_since IS NULL
+	`, leaseID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// HaltRenewals parks renewals with a reason (delinquent / dispute /
+// consent_revoked / return_initiated); ClearRenewalHalt undoes exactly that
+// reason. Both claimed by their WHERE scopes.
+func (r *LeaseRequestRepository) HaltRenewals(ctx context.Context, leaseID uuid.UUID, reason string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET renewal_halted_reason = $2, updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling' AND renewal_halted_reason IS NULL
+	`, leaseID, reason)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (r *LeaseRequestRepository) ClearRenewalHalt(ctx context.Context, leaseID uuid.UUID, reason string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET renewal_halted_reason = NULL, updated_at = NOW()
+		WHERE id = $1 AND renewal_halted_reason = $2
+	`, leaseID, reason)
 	if err != nil {
 		return false, err
 	}

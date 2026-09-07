@@ -86,6 +86,11 @@ type Config struct {
 	// prod at flag time) are untouched. Rentals are unaffected.
 	DisableCarSales bool
 
+	// RollingRentalsEnabled gates the recurring-billing product (batch 2+):
+	// rolling lease creation and the billing engine. Default OFF; flips on
+	// only after the Stripe test-clock rehearsal passes (client rule).
+	RollingRentalsEnabled bool
+
 	// CORS allowed origins, comma-separated. In production this must be a
 	// concrete list (e.g. https://drivebai-admin-team.fly.dev). Default of
 	// "*" is fine for development (iOS clients don't care about CORS); the
@@ -143,6 +148,7 @@ func Load() (*Config, error) {
 		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
 		AutoApproveCars:    getEnv("AUTO_APPROVE_CARS", "false") == "true",
 		DisableCarSales:    getEnv("DISABLE_CAR_SALES", "false") == "true",
+		RollingRentalsEnabled: getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),

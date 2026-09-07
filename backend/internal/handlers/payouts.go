@@ -515,7 +515,12 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	// chargeback can target exactly this row (review CRITICAL: the column
 	// was never written before, making the clawback dead code).
 	sourceCharge := ""
-	if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
+	if row.BillingCycleID != nil {
+		// Rolling cycle rows carry their funding charge from accrual time.
+		if row.SourceChargeID != nil {
+			sourceCharge = *row.SourceChargeID
+		}
+	} else if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
 		if chargeID, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID); cerr == nil {
 			sourceCharge = chargeID
 		} else {
@@ -524,6 +529,11 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	}
 
 	transferGroup := "lease-" + row.LeaseRequestID.String()
+	if row.BillingCycleID != nil {
+		// Per-cycle group: FindTransferByGroup adoption stays exact for
+		// every cycle independently; legacy rows keep the lease-wide group.
+		transferGroup = "lease-" + row.LeaseRequestID.String() + "-cycle-" + row.BillingCycleID.String()
+	}
 	if existing, ferr := h.stripe.FindTransferByGroup(transferGroup); ferr == nil && existing != nil {
 		h.logger.Info("payout: adopting existing transfer", "payout_id", row.ID, "transfer_id", existing.ID)
 		if paid, merr := h.payoutRepo.MarkPaid(ctx, row.ID, existing.ID, *accountID, sourceCharge); merr == nil {

@@ -1,0 +1,520 @@
+package handlers
+
+// The rolling-billing engine (batch 2, design §4): mints one cycle per
+// lease-week at T−24h, charges it off-session under the ACTIVE CONSENT ROW
+// (the only source of amount + payment method), retries by re-confirming
+// the SAME PaymentIntent, and — on success — advances paid-through in ONE
+// transaction with the paid claim. Arrears payouts accrue at charge time
+// and promote when the week is consumed.
+//
+// Arrears cannot stack structurally: cycle N+1 is minted only at
+// (paid-through − 24h) and paid-through advances only when the current
+// cycle pays — at most ONE unpaid cycle exists per lease, ever.
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/drivebai/backend/internal/httputil"
+
+	"github.com/drivebai/backend/internal/models"
+	"github.com/drivebai/backend/internal/repository"
+	stripeService "github.com/drivebai/backend/internal/stripe"
+	"github.com/google/uuid"
+)
+
+// SetBillingDependencies wires the rolling engine (house setter pattern).
+func (h *LeaseRequestHandler) SetBillingDependencies(billingRepo *repository.BillingRepository, feeBPS int, rollingEnabled bool) {
+	h.billingRepo = billingRepo
+	h.billingFeeBPS = feeBPS
+	h.rollingEnabled = rollingEnabled
+}
+
+// runBillingSweep is the engine tick (rides the pickup-expiry scanner's
+// 60s ticker, after the lease sweeps).
+func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
+	if h.billingRepo == nil {
+		return
+	}
+	now := time.Now().UTC()
+	h.billingNoticePhase(ctx, now)
+	h.billingMintPhase(ctx, now)
+	h.billingRetryPhase(ctx, now)
+	h.billingNeedsActionPhase(ctx, now)
+	h.billingPromotePhase(ctx, now)
+}
+
+// Phase 1 — T−48h renewal notice (recurring claimed-once: stamped with the
+// CURRENT paid-through value; the next advance re-arms it automatically).
+func (h *LeaseRequestHandler) billingNoticePhase(ctx context.Context, now time.Time) {
+	due, err := h.leaseRepo.ListRollingDueForBilling(ctx, now.Add(models.BillingNoticeLead), 50)
+	if err != nil {
+		h.logger.Error("billing notice: list", "error", err)
+		return
+	}
+	for i := range due {
+		lr := &due[i]
+		claimed, cerr := h.leaseRepo.ClaimRenewalNotice(ctx, lr.ID)
+		if cerr != nil || !claimed {
+			continue
+		}
+		consent, _ := h.billingRepo.GetActiveConsent(ctx, lr.ID)
+		amount := int64(0)
+		if consent != nil {
+			amount = consent.AmountCents
+		}
+		chatID := lr.ChatID
+		leaseID := lr.ID
+		chargeAt := lr.RentalEndsAt.Add(-models.BillingChargeLead)
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+			"Your rental renews soon",
+			fmt.Sprintf("$%.2f will be charged to your saved card on %s. Return the car before then to stop.",
+				float64(amount)/100, chargeAt.Format("Mon, Jan 2 15:04 MST")),
+			&chatID, &leaseID)
+	}
+}
+
+// Phase 2 — T−24h: mint the next cycle and make the first charge attempt.
+func (h *LeaseRequestHandler) billingMintPhase(ctx context.Context, now time.Time) {
+	due, err := h.leaseRepo.ListRollingDueForBilling(ctx, now.Add(models.BillingChargeLead), 50)
+	if err != nil {
+		h.logger.Error("billing mint: list", "error", err)
+		return
+	}
+	for i := range due {
+		lr := &due[i]
+		consent, cerr := h.billingRepo.GetActiveConsent(ctx, lr.ID)
+		if cerr != nil {
+			h.logger.Error("billing mint: consent lookup", "error", cerr, "lease_request_id", lr.ID)
+			continue
+		}
+		if consent == nil || !consent.Active() {
+			// No chargeable consent: halt renewals with a reason that has
+			// a party exit (card update re-activates), notify both, and
+			// let paid-through lapse into the term scanner's machinery.
+			if halted, herr := h.leaseRepo.HaltRenewals(ctx, lr.ID, "consent_revoked"); herr == nil && halted {
+				chatID := lr.ChatID
+				leaseID := lr.ID
+				go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+					"Action needed to keep your rental",
+					"We can't charge your saved card anymore. Update your payment method to continue the rental — otherwise it ends when your paid time runs out.",
+					&chatID, &leaseID)
+				go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
+					"Rental billing paused",
+					"The driver's payment method needs updating. If they don't fix it, the rental ends when their paid time runs out — you'll be kept posted.",
+					&chatID, &leaseID)
+				h.logger.Warn("billing: renewals halted — no active consent", "lease_request_id", lr.ID)
+			}
+			continue
+		}
+
+		next, nerr := h.billingRepo.NextCycleNumber(ctx, lr.ID)
+		if nerr != nil {
+			h.logger.Error("billing mint: next cycle number", "error", nerr, "lease_request_id", lr.ID)
+			continue
+		}
+		periodStart := *lr.RentalEndsAt
+		cycle, merr := h.billingRepo.MintCycle(ctx, lr.ID, next, periodStart,
+			periodStart.Add(models.BillingCycleLength), consent.AmountCents, now)
+		if merr != nil || cycle == nil {
+			h.logger.Error("billing mint: mint", "error", merr, "lease_request_id", lr.ID)
+			continue
+		}
+		if cycle.Status == models.CycleScheduled {
+			h.attemptCycleCharge(ctx, lr, cycle, consent)
+		}
+	}
+}
+
+// Phase 3 — retries of due cycles (same PI, per-attempt confirm keys).
+func (h *LeaseRequestHandler) billingRetryPhase(ctx context.Context, now time.Time) {
+	due, err := h.billingRepo.ListDueCycles(ctx, now, 50)
+	if err != nil {
+		h.logger.Error("billing retry: list", "error", err)
+		return
+	}
+	for i := range due {
+		c := &due[i]
+		lr, gerr := h.leaseRepo.GetByID(ctx, c.LeaseRequestID)
+		if gerr != nil || lr == nil {
+			continue
+		}
+		// A return in flight or a halt pauses the ladder (predicate parity
+		// with the mint phase; the row waits, claimed rungs intact).
+		if lr.RenewalHaltedReason != nil || lr.VehicleReturnedAt != nil {
+			continue
+		}
+		consent, cerr := h.billingRepo.GetActiveConsent(ctx, c.LeaseRequestID)
+		if cerr != nil || consent == nil || !consent.Active() {
+			continue
+		}
+		h.attemptCycleCharge(ctx, lr, c, consent)
+	}
+}
+
+// attemptCycleCharge makes exactly one attempt: first attempt creates the
+// cycle's ONE intent (stable create key) confirmed off-session; retries
+// re-confirm it. Outcomes route to paid / needs_action / retry ladder.
+func (h *LeaseRequestHandler) attemptCycleCharge(ctx context.Context, lr *models.LeaseRequest, c *models.BillingCycle, consent *models.BillingConsent) {
+	if h.stripe == nil {
+		return
+	}
+	// The consent row is the ONLY amount authority (design §2).
+	if c.AmountCents != consent.AmountCents {
+		h.logger.Error("billing charge: cycle amount disagrees with consent — refusing",
+			"cycle_id", c.ID, "cycle_cents", c.AmountCents, "consent_cents", consent.AmountCents)
+		return
+	}
+
+	claimed, aerr := h.billingRepo.AttachIntent(ctx, c.ID, strOrEmpty(c.StripePaymentIntentID))
+	if aerr != nil || !claimed {
+		return // another worker owns this attempt
+	}
+	attempt := c.AttemptCount + 1
+
+	var piID, piStatus string
+	if c.StripePaymentIntentID == nil {
+		pi, err := h.stripe.CreatePaymentIntentWithOptions(c.AmountCents, lr.Currency, h.cycleCustomerID(ctx, lr),
+			h.stripe.PlatformFee(c.AmountCents), fmt.Sprintf("cycle-%s", c.ID),
+			stripePIOptions(consent, c, lr))
+		if err != nil {
+			h.recordCycleOutcomeError(ctx, lr, c, attempt, err)
+			return
+		}
+		piID, piStatus = pi.ID, pi.Status
+		if _, err := h.billingRepo.AttachIntent(ctx, c.ID, piID); err != nil {
+			h.logger.Error("billing charge: stamp intent", "error", err, "cycle_id", c.ID)
+		}
+	} else {
+		pi, err := h.stripe.ConfirmPaymentIntent(*c.StripePaymentIntentID, strOrEmpty(consent.StripePaymentMethodID),
+			fmt.Sprintf("cycle-%s-confirm-%d", c.ID, attempt))
+		if err != nil {
+			h.recordCycleOutcomeError(ctx, lr, c, attempt, err)
+			return
+		}
+		piID, piStatus = pi.ID, pi.Status
+	}
+
+	switch piStatus {
+	case "succeeded":
+		h.handleCyclePaid(ctx, c.ID, piID)
+	case "requires_action":
+		if ok, _ := h.billingRepo.MarkNeedsAction(ctx, c.ID); ok {
+			chatID := lr.ChatID
+			leaseID := lr.ID
+			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+				"Action needed to keep your rental",
+				"Your bank needs a quick verification for this week's rental payment. Open the app to approve it.",
+				&chatID, &leaseID)
+		}
+	case "processing":
+		// Not final: leave the row charging; the webhook decides.
+	default:
+		h.recordCycleOutcomeError(ctx, lr, c, attempt, fmt.Errorf("unexpected intent status %q", piStatus))
+	}
+}
+
+// cycleCustomerID resolves the driver's bound customer (H6 binding).
+func (h *LeaseRequestHandler) cycleCustomerID(ctx context.Context, lr *models.LeaseRequest) string {
+	if cid, err := h.userRepo.GetStripeCustomerID(ctx, lr.DriverID); err == nil && cid != nil {
+		return *cid
+	}
+	return ""
+}
+
+func stripePIOptions(consent *models.BillingConsent, c *models.BillingCycle, lr *models.LeaseRequest) stripeService.PaymentIntentOptions {
+	return stripeService.PaymentIntentOptions{
+		OffSessionConfirm: true,
+		PaymentMethod:     strOrEmpty(consent.StripePaymentMethodID),
+		Metadata: map[string]string{
+			"kind":             "cycle",
+			"billing_cycle_id": c.ID.String(),
+			"lease_request_id": lr.ID.String(),
+			"consent_id":       consent.ID.String(),
+		},
+	}
+}
+
+// hardDeclineCodes must never be retried (network rules).
+var hardDeclineCodes = map[string]bool{
+	"stolen_card": true, "lost_card": true, "pickup_card": true,
+	"fraudulent": true, "invalid_account": true, "merchant_blacklist": true,
+	"do_not_honor_forever": true,
+}
+
+// recordCycleOutcomeError classifies a failed attempt and walks the ladder:
+// attempts at T−24h, T0, +24h, +48h; delinquent stamped at the 3rd failure;
+// failed_final + halt at the 4th (or immediately on a hard decline).
+func (h *LeaseRequestHandler) recordCycleOutcomeError(ctx context.Context, lr *models.LeaseRequest, c *models.BillingCycle, attempt int, chargeErr error) {
+	es := chargeErr.Error()
+	declineCode := extractDeclineCode(es)
+
+	if strings.Contains(es, "authentication_required") {
+		if ok, _ := h.billingRepo.MarkNeedsAction(ctx, c.ID); ok {
+			chatID := lr.ChatID
+			leaseID := lr.ID
+			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+				"Action needed to keep your rental",
+				"Your bank needs a quick verification for this week's rental payment. Open the app to approve it.",
+				&chatID, &leaseID)
+		}
+		return
+	}
+
+	terminal := attempt >= models.BillingMaxAttempts || hardDeclineCodes[declineCode]
+	var nextAt *time.Time
+	if !terminal {
+		// Attempt 1 fired at T−24h; attempt 2 lands at T0 (period start);
+		// later ones space 24h apart.
+		var n time.Time
+		if attempt == 1 {
+			n = c.PeriodStart
+		} else {
+			n = time.Now().UTC().Add(models.BillingRetrySpacing)
+		}
+		nextAt = &n
+	}
+	updated, rerr := h.billingRepo.RecordFailure(ctx, c.ID, declineCode, nextAt, terminal)
+	if rerr != nil || updated == nil {
+		return
+	}
+	h.logger.Warn("billing charge failed", "cycle_id", c.ID, "attempt", attempt,
+		"decline_code", declineCode, "terminal", terminal, "lease_request_id", lr.ID)
+
+	chatID := lr.ChatID
+	leaseID := lr.ID
+	if claimed, _ := h.billingRepo.ClaimFailureNotice(ctx, c.ID); claimed {
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+			"Payment failed",
+			"This week's rental payment didn't go through. Update your card or retry in the app — your rental continues while we retry.",
+			&chatID, &leaseID)
+	}
+
+	// 3rd failure (T+24h): the lease is formally delinquent.
+	if attempt >= 3 {
+		if marked, _ := h.leaseRepo.MarkDelinquent(ctx, lr.ID); marked {
+			if claimed, _ := h.billingRepo.ClaimDelinquentNotice(ctx, c.ID); claimed {
+				go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+					"Rental payment overdue",
+					"Your weekly payment has failed repeatedly. Pay in the app or return the car — new bookings are paused until this is resolved.",
+					&chatID, &leaseID)
+				go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
+					"Weekly payment failed",
+					"This week's payment for your rental couldn't be collected. The rental is ending unless the driver fixes it — you can also end it now from the rental card.",
+					&chatID, &leaseID)
+			}
+		}
+	}
+	if terminal {
+		if halted, _ := h.leaseRepo.HaltRenewals(ctx, lr.ID, "delinquent"); halted {
+			h.logger.Warn("billing: renewals halted — dunning exhausted", "lease_request_id", lr.ID)
+		}
+	}
+}
+
+// extractDeclineCode pulls Stripe's decline_code/code out of a raw error body.
+func extractDeclineCode(errBody string) string {
+	for _, key := range []string{`"decline_code": "`, `"decline_code":"`, `"code": "`, `"code":"`} {
+		if i := strings.Index(errBody, key); i >= 0 {
+			rest := errBody[i+len(key):]
+			if j := strings.IndexByte(rest, '"'); j > 0 {
+				return rest[:j]
+			}
+		}
+	}
+	return ""
+}
+
+// Phase 4 — needs_action TTL: past 72h the rescue window closes.
+func (h *LeaseRequestHandler) billingNeedsActionPhase(ctx context.Context, now time.Time) {
+	expired, err := h.billingRepo.ListNeedsActionExpired(ctx, now.Add(-models.BillingNeedsActionTTL), 50)
+	if err != nil {
+		h.logger.Error("billing needs-action: list", "error", err)
+		return
+	}
+	for i := range expired {
+		c := &expired[i]
+		lr, gerr := h.leaseRepo.GetByID(ctx, c.LeaseRequestID)
+		if gerr != nil || lr == nil {
+			continue
+		}
+		if updated, _ := h.billingRepo.RecordFailure(ctx, c.ID, "authentication_timeout", nil, true); updated != nil {
+			_, _ = h.leaseRepo.MarkDelinquent(ctx, lr.ID)
+			_, _ = h.leaseRepo.HaltRenewals(ctx, lr.ID, "delinquent")
+			chatID := lr.ChatID
+			leaseID := lr.ID
+			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+				"Verification window closed",
+				"The bank verification for this week's payment wasn't completed, so the rental is ending. Pay in the app or return the car.",
+				&chatID, &leaseID)
+		}
+	}
+}
+
+// Phase 5 — arrears promotion: consumed weeks become payable (guards live
+// in the repository query); the existing payout sweep transfers them.
+func (h *LeaseRequestHandler) billingPromotePhase(ctx context.Context, now time.Time) {
+	if h.payoutRepo == nil {
+		return
+	}
+	n, err := h.payoutRepo.PromoteConsumedCycles(ctx, now, 50)
+	if err != nil {
+		h.logger.Error("billing promote: promote", "error", err)
+		return
+	}
+	if n > 0 {
+		h.logger.Info("billing promote: cycles consumed → payable", "count", n)
+	}
+}
+
+// handleCyclePaid is the ONE success path (called from the direct charge
+// outcome and from the webhook route — both idempotent through the
+// AdvanceOnCyclePaid claim): cycle→paid + paid-through advance atomically,
+// then payout accrual and notifications.
+func (h *LeaseRequestHandler) handleCyclePaid(ctx context.Context, cycleID uuid.UUID, intentID string) bool {
+	cycle, err := h.billingRepo.AdvanceOnCyclePaid(ctx, cycleID)
+	if err != nil {
+		h.logger.Error("cycle paid: advance", "error", err, "cycle_id", cycleID)
+		return false // webhook 500s; redelivery re-runs the whole TX
+	}
+	if cycle == nil {
+		return true // already handled
+	}
+	lr, gerr := h.leaseRepo.GetByID(ctx, cycle.LeaseRequestID)
+	if gerr != nil || lr == nil {
+		h.logger.Error("cycle paid: load lease", "error", gerr, "lease_request_id", cycle.LeaseRequestID)
+		return false
+	}
+
+	// Accrue the owner's share (arrears; promoted at period_end). The
+	// charge id makes the row dispute-addressable from birth.
+	sourceCharge := ""
+	if h.stripe != nil && intentID != "" {
+		if chID, cerr := h.stripe.GetLatestChargeID(intentID); cerr == nil {
+			sourceCharge = chID
+		}
+	}
+	fee, ownerShare := models.ComputePayoutSplit(cycle.AmountCents, h.billingFeeBPS)
+	var chargePtr *string
+	if sourceCharge != "" {
+		chargePtr = &sourceCharge
+	}
+	cycleRef := cycle.ID
+	ps := cycle.PeriodStart
+	pe := cycle.PeriodEnd
+	if _, _, aerr := h.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
+		LeaseRequestID:   cycle.LeaseRequestID,
+		OwnerID:          lr.OwnerID,
+		GrossKeptCents:   cycle.AmountCents,
+		FeeBPS:           h.billingFeeBPS,
+		FeeCents:         fee,
+		OwnerAmountCents: ownerShare,
+		Currency:         "USD",
+		SourceChargeID:   chargePtr,
+		BillingCycleID:   &cycleRef,
+		PeriodStart:      &ps,
+		PeriodEnd:        &pe,
+	}); aerr != nil {
+		h.logger.Error("cycle paid: accrue payout", "error", aerr, "cycle_id", cycle.ID)
+		return false
+	}
+
+	h.logger.Info("cycle paid — paid-through advanced",
+		"lease_request_id", lr.ID, "cycle", cycle.CycleNumber, "amount_cents", cycle.AmountCents)
+	if updated, uerr := h.leaseRepo.GetByID(ctx, lr.ID); uerr == nil && updated != nil {
+		h.broadcastLeaseUpdate(ctx, updated)
+		chatID := updated.ChatID
+		leaseID := updated.ID
+		paidThrough := ""
+		if updated.RentalEndsAt != nil {
+			paidThrough = updated.RentalEndsAt.Format("Mon, Jan 2")
+		}
+		go h.notifHandler.Notify(updated.DriverID, models.NotificationTypePayment,
+			fmt.Sprintf("Week %d paid", cycle.CycleNumber),
+			fmt.Sprintf("$%.2f charged — you're paid through %s.", float64(cycle.AmountCents)/100, paidThrough),
+			&chatID, &leaseID)
+		go h.notifHandler.Notify(updated.OwnerID, models.NotificationTypePayment,
+			fmt.Sprintf("$%.2f earned for week %d", float64(ownerShare)/100, cycle.CycleNumber),
+			fmt.Sprintf("The week's rent was collected. Your $%.2f transfers when the week completes (%s).", float64(ownerShare)/100, paidThrough),
+			&chatID, &leaseID)
+	}
+	return true
+}
+
+// StopRenewal — POST /api/v1/lease-requests/{id}/stop-renewal (driver).
+// Halts future charges; every hour already paid is kept; the term scanner
+// owns the tail. Claimed-once.
+func (h *LeaseRequestHandler) StopRenewal(w http.ResponseWriter, r *http.Request) {
+	h.renewalStopEndpoint(w, r, "driver")
+}
+
+// TerminateRenewal — POST /api/v1/lease-requests/{id}/terminate-renewal
+// (owner). Same rule from the other side: no further renewals, driver
+// returns by paid-through (floor 24h by construction).
+func (h *LeaseRequestHandler) TerminateRenewal(w http.ResponseWriter, r *http.Request) {
+	h.renewalStopEndpoint(w, r, "owner")
+}
+
+func (h *LeaseRequestHandler) renewalStopEndpoint(w http.ResponseWriter, r *http.Request, role string) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	leaseID, err := uuid.Parse(chiURLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+	var claimed bool
+	var cerr error
+	if role == "driver" {
+		claimed, cerr = h.leaseRepo.StopRenewal(r.Context(), leaseID, userID)
+	} else {
+		claimed, cerr = h.leaseRepo.TerminateRenewal(r.Context(), leaseID, userID)
+	}
+	if cerr != nil {
+		h.logger.Error("renewal stop", "error", cerr, "lease_request_id", leaseID, "role", role)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if !claimed {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RENEWAL_STOP_REFUSED",
+			"Auto-renew is already stopped, or this isn't your active weekly rental"))
+		return
+	}
+	lr, gerr := h.leaseRepo.GetByID(r.Context(), leaseID)
+	if gerr != nil || lr == nil {
+		httputil.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	h.broadcastLeaseUpdate(r.Context(), lr)
+	chatID := lr.ChatID
+	ref := lr.ID
+	endsCopy := "when the paid time runs out"
+	if lr.RentalEndsAt != nil {
+		endsCopy = "by " + lr.RentalEndsAt.Format("Mon, Jan 2 15:04 MST")
+	}
+	if role == "driver" {
+		go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
+			"Driver ended auto-renew",
+			fmt.Sprintf("The weekly rental stops renewing — the car comes back %s.", endsCopy),
+			&chatID, &ref)
+	} else {
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypeLeaseRequest,
+			"Owner ended the rental",
+			fmt.Sprintf("No more weekly charges. Please return the car %s — every hour you've paid for is yours.", endsCopy),
+			&chatID, &ref)
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "return_by": lr.RentalEndsAt})
+}
+
+// chiURLParam avoids importing chi in this file twice across the package.
+func chiURLParam(r *http.Request, key string) string {
+	return chi.URLParam(r, key)
+}

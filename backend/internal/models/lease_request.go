@@ -125,6 +125,14 @@ type LeaseRequest struct {
 	// not rely on them being set on a lease loaded via GetByID.
 	RentalEndsAt          *time.Time `json:"rental_ends_at,omitempty"`
 	VehicleReturnedAt     *time.Time `json:"vehicle_returned_at,omitempty"`
+	// Rolling-billing fields (batch 2; NULL/default on every fixed-term row).
+	BillingMode         LeaseBillingMode `json:"billing_mode"`
+	RenewalStoppedAt    *time.Time       `json:"renewal_stopped_at,omitempty"`
+	RenewalStoppedBy    *string          `json:"renewal_stopped_by,omitempty"`
+	DelinquentSince     *time.Time       `json:"delinquent_since,omitempty"`
+	RenewalNotifiedFor  *time.Time       `json:"-"`
+	RenewalHaltedReason *string          `json:"renewal_halted_reason,omitempty"`
+	ContinuesLeaseID    *uuid.UUID       `json:"continues_lease_id,omitempty"`
 	TermEndingNotifiedAt  *time.Time `json:"-"`
 	OverdueNotifiedAt     *time.Time `json:"-"`
 	OverdueEscalatedAt    *time.Time `json:"-"`
@@ -311,6 +319,10 @@ var (
 type CreateLeaseRequestBody struct {
 	Weeks   *int    `json:"weeks,omitempty"`
 	Message *string `json:"message,omitempty"`
+	// BillingMode "rolling" requests a weekly auto-renewing lease (weeks is
+	// forced to 1). Requires ROLLING_RENTALS_ENABLED; anything else — or
+	// the flag off — yields the default fixed_term.
+	BillingMode *string `json:"billing_mode,omitempty"`
 }
 
 type UpdateOfferedPriceBody struct {

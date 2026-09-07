@@ -58,11 +58,12 @@ type EphemeralKey struct {
 }
 
 type PaymentIntent struct {
-	ID           string `json:"id"`
-	ClientSecret string `json:"client_secret"`
-	Status       string `json:"status"`
-	Amount       int64  `json:"amount"`
-	Currency     string `json:"currency"`
+	ID            string `json:"id"`
+	ClientSecret  string `json:"client_secret"`
+	Status        string `json:"status"`
+	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency"`
+	PaymentMethod string `json:"payment_method"`
 }
 
 // --- Customer ---
@@ -165,6 +166,14 @@ type PaymentIntentOptions struct {
 	// purchase flow to persist `purchase_request_id` on the PI so the
 	// webhook can route generic PI events back to the right handler.
 	Metadata map[string]string
+	// SetupFutureUsage ("off_session") saves the card under the network
+	// stored-credential framework — rolling cycle 1 only.
+	SetupFutureUsage string
+	// OffSessionConfirm + PaymentMethod: a merchant-initiated renewal
+	// charge (rolling cycles >= 2): confirm immediately against the saved
+	// payment method with off_session=true.
+	OffSessionConfirm bool
+	PaymentMethod     string
 }
 
 // CreatePaymentIntent creates a Stripe PaymentIntent for mobile PaymentSheet.
@@ -198,6 +207,14 @@ func (s *Service) CreatePaymentIntentWithOptions(amountCents int64, currency, cu
 	}
 	if opts.CaptureMethod == "manual" {
 		params.Set("capture_method", "manual")
+	}
+	if opts.SetupFutureUsage != "" {
+		params.Set("setup_future_usage", opts.SetupFutureUsage)
+	}
+	if opts.OffSessionConfirm {
+		params.Set("off_session", "true")
+		params.Set("confirm", "true")
+		params.Set("payment_method", opts.PaymentMethod)
 	}
 
 	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/payment_intents", strings.NewReader(params.Encode()))
@@ -536,4 +553,37 @@ func (s *Service) GetChargeRefundedAmount(chargeID string) (int64, error) {
 		return 0, fmt.Errorf("decode charge: %w", err)
 	}
 	return ch.AmountRefunded, nil
+}
+
+// ConfirmPaymentIntent re-confirms an existing intent off-session — the
+// rolling retry primitive: ONE intent per cycle, per-attempt confirm keys.
+func (s *Service) ConfirmPaymentIntent(paymentIntentID, paymentMethodID, idempotencyKey string) (*PaymentIntent, error) {
+	params := url.Values{}
+	params.Set("off_session", "true")
+	if paymentMethodID != "" {
+		params.Set("payment_method", paymentMethodID)
+	}
+	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/payment_intents/"+url.PathEscape(paymentIntentID)+"/confirm", strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("confirm payment intent: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("confirm payment intent: %s", string(body))
+	}
+	var pi PaymentIntent
+	if err := json.Unmarshal(body, &pi); err != nil {
+		return nil, fmt.Errorf("decode payment intent: %w", err)
+	}
+	return &pi, nil
 }

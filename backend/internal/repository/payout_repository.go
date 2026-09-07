@@ -28,7 +28,8 @@ const ownerPayoutColumns = `
 	id, lease_request_id, owner_id, stripe_account_id,
 	gross_kept_cents, fee_bps, fee_cents, owner_amount_cents, currency,
 	status, source, source_charge_id, stripe_transfer_id, failure_reason, note,
-	reminder_count, last_reminder_at, escalated_at, paid_at, created_at, updated_at`
+	reminder_count, last_reminder_at, escalated_at, paid_at,
+	billing_cycle_id, period_start, period_end, consumed_at, created_at, updated_at`
 
 func scanOwnerPayout(row scanRow) (*models.OwnerPayout, error) {
 	var p models.OwnerPayout
@@ -36,7 +37,8 @@ func scanOwnerPayout(row scanRow) (*models.OwnerPayout, error) {
 		&p.ID, &p.LeaseRequestID, &p.OwnerID, &p.StripeAccountID,
 		&p.GrossKeptCents, &p.FeeBPS, &p.FeeCents, &p.OwnerAmountCents, &p.Currency,
 		&p.Status, &p.Source, &p.SourceChargeID, &p.StripeTransferID, &p.FailureReason, &p.Note,
-		&p.ReminderCount, &p.LastReminderAt, &p.EscalatedAt, &p.PaidAt, &p.CreatedAt, &p.UpdatedAt,
+		&p.ReminderCount, &p.LastReminderAt, &p.EscalatedAt, &p.PaidAt,
+		&p.BillingCycleID, &p.PeriodStart, &p.PeriodEnd, &p.ConsumedAt, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -55,7 +57,7 @@ func (r *PayoutRepository) Create(ctx context.Context, p *models.OwnerPayout) (*
 			 gross_kept_cents, fee_bps, fee_cents, owner_amount_cents, currency,
 			 status, source, source_charge_id, note, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
-		ON CONFLICT (lease_request_id) DO NOTHING
+		ON CONFLICT (lease_request_id) WHERE billing_cycle_id IS NULL DO NOTHING
 		RETURNING `+ownerPayoutColumns,
 		uuid.New(), p.LeaseRequestID, p.OwnerID, p.StripeAccountID,
 		p.GrossKeptCents, p.FeeBPS, p.FeeCents, p.OwnerAmountCents, p.Currency,
@@ -492,6 +494,86 @@ func (r *PayoutRepository) RetagDisputeWithheldUnreleasable(ctx context.Context,
 	`, leaseID, disputeTag)
 	if err != nil {
 		return 0, fmt.Errorf("retag dispute-withheld: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// --- Rolling billing (batch 2): per-cycle arrears ledger ---
+
+// CreateCycleAccruing inserts the cycle's payout row at charge time in the
+// 'accruing' state (arrears model). Idempotent per billing_cycle_id via the
+// partial unique index — a webhook redelivery returns the existing row.
+func (r *PayoutRepository) CreateCycleAccruing(ctx context.Context, p *models.OwnerPayout) (*models.OwnerPayout, bool, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO owner_payouts
+			(id, lease_request_id, owner_id, gross_kept_cents, fee_bps, fee_cents,
+			 owner_amount_cents, currency, status, source, source_charge_id,
+			 billing_cycle_id, period_start, period_end, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'accruing', 'cycle_consumed', $8,
+		        $9, $10, $11, NOW(), NOW())
+		ON CONFLICT (billing_cycle_id) WHERE billing_cycle_id IS NOT NULL DO NOTHING
+		RETURNING `+ownerPayoutColumns,
+		p.LeaseRequestID, p.OwnerID, p.GrossKeptCents, p.FeeBPS, p.FeeCents,
+		p.OwnerAmountCents, p.Currency, p.SourceChargeID,
+		p.BillingCycleID, p.PeriodStart, p.PeriodEnd)
+	created, err := scanOwnerPayout(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, gerr := r.GetByBillingCycleID(ctx, *p.BillingCycleID)
+		return existing, false, gerr
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("create cycle accruing: %w", err)
+	}
+	return created, true, nil
+}
+
+func (r *PayoutRepository) GetByBillingCycleID(ctx context.Context, cycleID uuid.UUID) (*models.OwnerPayout, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+ownerPayoutColumns+` FROM owner_payouts WHERE billing_cycle_id = $1`, cycleID)
+	p, err := scanOwnerPayout(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// PromoteConsumedCycles is the arrears promotion (design §5): accruing rows
+// whose week is over become pending — GUARDED: pickup confirmed, no live
+// return, no refund on the cycle, no open dispute on the cycle's intent.
+// Returns how many promoted; the existing payout sweep transfers them.
+func (r *PayoutRepository) PromoteConsumedCycles(ctx context.Context, now time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts op
+		SET status = 'pending', consumed_at = NOW(), updated_at = NOW()
+		FROM (
+			SELECT op2.id AS pid
+			FROM owner_payouts op2
+			JOIN billing_cycles bc ON bc.id = op2.billing_cycle_id
+			JOIN lease_requests lr ON lr.id = op2.lease_request_id
+			WHERE op2.status = 'accruing'
+			  AND op2.period_end <= $1
+			  AND lr.pickup_confirmed_at IS NOT NULL
+			  AND bc.refunded_cents = 0
+			  AND bc.status = 'paid'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM vehicle_returns vr
+			      WHERE vr.lease_request_id = op2.lease_request_id
+			        AND vr.status IN ('driver_initiated', 'owner_confirmed', 'disputed'))
+			  AND NOT EXISTS (
+			      SELECT 1 FROM charge_disputes cd
+			      WHERE cd.payment_intent_id = bc.stripe_payment_intent_id
+			        AND cd.outcome_settled = FALSE)
+			ORDER BY op2.period_end ASC
+			LIMIT $2
+			FOR UPDATE OF op2 SKIP LOCKED
+		) picked
+		WHERE op.id = picked.pid
+	`, now, limit)
+	if err != nil {
+		return 0, fmt.Errorf("promote consumed cycles: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

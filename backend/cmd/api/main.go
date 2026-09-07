@@ -262,6 +262,11 @@ func main() {
 	leaseHandler.SetDisputeDependencies(repository.NewChargeDisputeRepository(db), repository.NewPayoutRepository(db))
 	leaseHandler.SetReturnRepositoryForDisputes(vehicleReturnRepo)
 
+	// Rolling-billing engine (batch 2). The flag gates rolling lease
+	// creation and cycle-1 consent; the engine's sweeps match zero rows
+	// until a rolling lease exists, so starting them is always safe.
+	leaseHandler.SetBillingDependencies(repository.NewBillingRepository(db), cfg.PlatformFeeBPS, cfg.RollingRentalsEnabled)
+
 	// Owner payouts (Stripe Connect, separate charges & transfers). The
 	// Connect webhook has its own signing secret — the payment webhook's
 	// secret does not verify Connect events.
@@ -495,6 +500,8 @@ func main() {
 			// explicitly accepts or declines the new offer.
 			r.Post("/lease-requests/{id}/accept-price", leaseHandler.AcceptPriceChange)
 			r.Post("/lease-requests/{id}/decline-price", leaseHandler.DeclinePriceChange)
+			r.Post("/lease-requests/{id}/stop-renewal", leaseHandler.StopRenewal)
+			r.Post("/lease-requests/{id}/terminate-renewal", leaseHandler.TerminateRenewal)
 			r.Post("/lease-requests/{id}/pickup-confirm", leaseHandler.ConfirmPickup)
 			r.Post("/lease-requests/{id}/pickup-deadline/extend", leaseHandler.ExtendPickupDeadline)
 
