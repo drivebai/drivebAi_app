@@ -5,7 +5,7 @@ import DataTable from '../components/DataTable.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import Drawer from '../components/Drawer.vue'
 import { adminApi } from '../api/admin'
-import type { AdminRent } from '../api/types'
+import type { AdminRent, AdminBillingCycle, AdminBillingCyclesResponse, AdminCyclePayout } from '../api/types'
 import { useToastStore } from '../stores/toast'
 import { fmtDate, fmtDateTime, fmtMoney } from '../utils/format'
 
@@ -43,7 +43,90 @@ async function load() {
 load()
 
 const detail = ref<AdminRent | null>(null)
-function openDetails(r: AdminRent) { detail.value = r }
+function openDetails(r: AdminRent) { detail.value = r; loadBilling(r) }
+
+// ---- Rolling billing (batch 4) ----
+// The weekly-cycle ledger, loaded on drawer open. Fixed-term rents get
+// billing_mode 'fixed_term' back and the section stays hidden.
+const billing = ref<AdminBillingCyclesResponse | null>(null)
+const billingLoading = ref(false)
+const waivingCycle = ref<AdminBillingCycle | null>(null)
+const waiveNote = ref('')
+const waiveError = ref<string | null>(null)
+const savingWaive = ref(false)
+
+async function loadBilling(r: AdminRent) {
+  billing.value = null
+  waivingCycle.value = null
+  billingLoading.value = true
+  try {
+    billing.value = await adminApi.getBillingCycles(r.id)
+  } catch {
+    billing.value = null // section simply stays hidden; nothing money-bearing
+  } finally {
+    billingLoading.value = false
+  }
+}
+
+const isRollingRent = computed(() =>
+  billing.value?.billing_mode === 'rolling')
+
+function cycleTone(status: string): 'success' | 'danger' | 'warning' | 'neutral' {
+  switch (status) {
+    case 'paid': return 'success'
+    case 'failed_final': case 'arrears_due': return 'danger'
+    case 'waived': case 'refunded': case 'partially_refunded': return 'neutral'
+    default: return 'warning'
+  }
+}
+function cycleLabel(status: string): string {
+  switch (status) {
+    case 'needs_action': return 'Bank verification pending'
+    case 'failed_final': return 'Failed — uncollected'
+    case 'arrears_due': return 'Balance owed'
+    case 'partially_refunded': return 'Paid, partly refunded'
+    default: return status.replace('_', ' ')
+  }
+}
+// The server is the authority (it refuses paid and in-flight cycles) —
+// this only decides button visibility.
+function canWaive(c: AdminBillingCycle): boolean {
+  return c.status === 'failed_final' || c.status === 'arrears_due' ||
+    (c.status === 'scheduled' && c.attempt_count === 0)
+}
+function cyclePayout(c: AdminBillingCycle): AdminCyclePayout | null {
+  return billing.value?.payouts?.find(p => p.billing_cycle_id === c.id) ?? null
+}
+function startWaive(c: AdminBillingCycle) {
+  waivingCycle.value = c
+  waiveNote.value = ''
+  waiveError.value = null
+}
+async function confirmWaive() {
+  const target = waivingCycle.value
+  if (!target || savingWaive.value) return
+  const note = waiveNote.value.trim()
+  if (note.length < 5) {
+    waiveError.value = 'A note is required — a waive forgives money the owner would otherwise be owed.'
+    return
+  }
+  savingWaive.value = true
+  waiveError.value = null
+  try {
+    const res = await adminApi.waiveBillingCycle(target.id, note)
+    toast.success(res.paid_through_advanced
+      ? 'Week waived — paid-through advanced so the driver is not re-billed for it'
+      : res.delinquency_cleared
+        ? 'Week waived and the delinquency lifted — billing resumes'
+        : 'Week waived')
+    waivingCycle.value = null
+    if (detail.value) await loadBilling(detail.value)
+  } catch (e) {
+    waiveError.value = e instanceof Error ? e.message : 'Waive failed'
+  } finally {
+    savingWaive.value = false
+  }
+}
 
 // Focused vehicle-return dialog. Lets admins drill into the return without
 // the rest of the rental drawer noise; reuses the same AdminRent payload
@@ -473,9 +556,73 @@ async function confirmResolve() {
       </dl>
     </template>
     <p v-else class="muted">Not settled yet — the owner's share moves when the rent settles (return completed or an admin settlement).</p>
-    <div v-if="canSettle(detail)" class="resolve-actions">
+    <div v-if="canSettle(detail) && !isRollingRent" class="resolve-actions">
       <button class="secondary" @click="startSettle(detail)">Settle rent…</button>
     </div>
+    <p v-if="isRollingRent" class="muted">This rental bills weekly — money settles per cycle below, not through the whole-rent settlement.</p>
+
+    <template v-if="isRollingRent && billing">
+      <h4 class="section">Weekly billing</h4>
+      <dl class="kv">
+        <template v-if="billing.consent">
+          <dt>Mandate</dt>
+          <dd>
+            {{ fmtCents(billing.consent.amount_cents, detail.currency) }}/week
+            <template v-if="billing.consent.card_last4"> · {{ billing.consent.card_brand }} ••••{{ billing.consent.card_last4 }}</template>
+            <template v-if="billing.consent.revoked_at"> · <span class="danger-text">revoked ({{ billing.consent.revoked_reason || 'no reason' }})</span></template>
+          </dd>
+          <dt>Terms</dt><dd>{{ billing.consent.terms_version }}</dd>
+        </template>
+        <dt>Paid through</dt><dd>{{ billing.rental_ends_at ? fmtDateTime(billing.rental_ends_at) : '—' }}</dd>
+        <template v-if="billing.renewal_halted_reason">
+          <dt>Billing halted</dt><dd class="danger-text">{{ billing.renewal_halted_reason.replace('_', ' ') }}</dd>
+        </template>
+        <template v-if="billing.delinquent_since">
+          <dt>Delinquent since</dt><dd class="danger-text">{{ fmtDateTime(billing.delinquent_since) }}</dd>
+        </template>
+      </dl>
+      <table v-if="billing.cycles?.length" class="cycles-table">
+        <thead>
+          <tr><th>Week</th><th>Period</th><th>Amount</th><th>Status</th><th>Owner share</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="c in billing.cycles" :key="c.id">
+            <td>#{{ c.cycle_number }}</td>
+            <td>{{ fmtDate(c.period_start) }} – {{ fmtDate(c.period_end) }}</td>
+            <td>
+              {{ fmtCents(c.amount_cents, detail.currency) }}
+              <span v-if="c.refunded_cents > 0" class="muted">(−{{ fmtCents(c.refunded_cents, detail.currency) }} refunded)</span>
+            </td>
+            <td><StatusBadge :label="cycleLabel(c.status)" :tone="cycleTone(c.status)" /></td>
+            <td>
+              <template v-if="cyclePayout(c)">
+                {{ fmtCents(cyclePayout(c)!.owner_amount_cents, detail.currency) }}
+                <span class="muted">({{ cyclePayout(c)!.status }})</span>
+              </template>
+              <span v-else class="muted">—</span>
+            </td>
+            <td>
+              <button v-if="canWaive(c)" class="ghost" @click="startWaive(c)">Waive…</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="muted">No billing cycles yet — week 1 is cycled shortly after pickup.</p>
+      <div v-if="waivingCycle" class="waive-form">
+        <p>
+          Waive week #{{ waivingCycle.cycle_number }}
+          ({{ fmtCents(waivingCycle.amount_cents, detail.currency) }}) — this writes the debt off;
+          uncollected days are borne by the owner under the rolling terms.
+        </p>
+        <textarea v-model="waiveNote" rows="2" placeholder="Why is this week being written off? (required, recorded on the cycle)"></textarea>
+        <p v-if="waiveError" class="danger-text">{{ waiveError }}</p>
+        <div class="resolve-actions">
+          <button class="danger" :disabled="savingWaive" @click="confirmWaive">{{ savingWaive ? 'Waiving…' : 'Waive week' }}</button>
+          <button class="ghost" :disabled="savingWaive" @click="waivingCycle = null">Cancel</button>
+        </div>
+      </div>
+    </template>
+    <p v-else-if="billingLoading" class="muted">Loading billing…</p>
   </Drawer>
 
   <!-- Focused return dialog: a tiny modal so admins can scan return state
@@ -787,5 +934,33 @@ async function confirmResolve() {
   }
   .mobile-pager .pager { display: flex; align-items: center; gap: 12px; }
   .mobile-pager .pager button { min-height: 44px; min-width: 72px; }
+}
+.cycles-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0.75rem;
+}
+.cycles-table th, .cycles-table td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  vertical-align: top;
+}
+.cycles-table th { font-weight: 600; color: var(--muted-text, #6b7280); }
+.waive-form {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+}
+.waive-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.35rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  font: inherit;
 }
 </style>

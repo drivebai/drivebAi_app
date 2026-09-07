@@ -748,3 +748,57 @@ export interface PurchaseRequestDetail extends PurchaseRequest {
    */
   admin_detail?: PurchaseAdminDetail | null
 }
+
+// ---- Rolling billing (batch 4) ----
+
+export interface AdminBillingCycle {
+  id: string
+  lease_request_id: string
+  cycle_number: number
+  period_start: string
+  period_end: string
+  amount_cents: number
+  status: string
+  attempt_count: number
+  next_attempt_at?: string | null
+  needs_action_since?: string | null
+  refunded_cents: number
+  admin_note?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminBillingConsent {
+  id: string
+  amount_cents: number
+  billing_interval: string
+  terms_version: string
+  card_brand?: string | null
+  card_last4?: string | null
+  activated_at?: string | null
+  revoked_at?: string | null
+  revoked_reason?: string | null
+}
+
+export interface AdminCyclePayout {
+  id: string
+  billing_cycle_id?: string | null
+  gross_kept_cents: number
+  fee_cents: number
+  owner_amount_cents: number
+  status: string
+  source: string
+  period_start?: string | null
+  period_end?: string | null
+  note?: string | null
+}
+
+export interface AdminBillingCyclesResponse {
+  billing_mode: string
+  rental_ends_at?: string | null
+  renewal_halted_reason?: string | null
+  delinquent_since?: string | null
+  consent?: AdminBillingConsent | null
+  cycles?: AdminBillingCycle[] | null
+  payouts?: AdminCyclePayout[] | null
+}

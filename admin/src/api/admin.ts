@@ -7,6 +7,7 @@ import type {
   AdminRent, AdminPayout, AdminSupportChat, AdminSupportMessage, AdminAccident, AdminAccidentsPage, AdminCarSell, Page,
   AdminTicket, AdminTicketsPage,
   PurchaseRequest, PurchaseRequestDetail, PurchaseRejection, PurchaseBillOfSale,
+  AdminBillingCycle, AdminBillingCyclesResponse,
 } from './types'
 
 const BASE = '/api/v1/admin'
@@ -165,6 +166,15 @@ export const adminApi = {
    */
   settleRent: (rentId: string, body: { resolution: 'close' | 'payout_only' | 'withhold'; driver_refund_cents?: number; note: string }) =>
     api.post<unknown>(`${BASE}/rents/${rentId}/settle`, body),
+
+  // ---- Rolling billing (batch 4) ----
+  // The weekly-cycle ledger for a rolling rent, and the unpaid-week waive
+  // (the write-off — the server refuses paid or in-flight cycles).
+  getBillingCycles: (rentId: string) =>
+    api.get<AdminBillingCyclesResponse>(`${BASE}/rents/${rentId}/billing-cycles`),
+  waiveBillingCycle: (cycleId: string, note: string) =>
+    api.post<{ cycle: AdminBillingCycle; delinquency_cleared: boolean; paid_through_advanced: boolean }>(
+      `${BASE}/billing-cycles/${cycleId}/waive`, { note }),
 
   // ---- Support ----
   listSupportChats: () => api.get<{ chats: AdminSupportChat[] }>(`${BASE}/support/chats`),
