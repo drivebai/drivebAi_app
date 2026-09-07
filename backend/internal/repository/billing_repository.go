@@ -354,6 +354,7 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 		    updated_at = NOW()
 		WHERE id = $1 AND billing_mode = 'rolling'
 		  AND status = 'paid' AND vehicle_returned_at IS NULL
+		  AND renewal_stopped_at IS NULL
 	`, c.LeaseRequestID)
 	if err != nil {
 		return nil, false, fmt.Errorf("advance paid-through: %w", err)

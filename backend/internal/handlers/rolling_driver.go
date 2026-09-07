@@ -109,8 +109,12 @@ func (h *LeaseRequestHandler) GetBillingStatus(w http.ResponseWriter, r *http.Re
 			"period_end":   open.PeriodEnd,
 		}
 		// The client secret authorizes a confirm — driver's hands only,
-		// and only for states a driver action can rescue.
+		// only for states a driver action can rescue, and never on a lease
+		// where a success must not land (stopped, or return in flight —
+		// batch-4 verification: a confirm there extends or erases what the
+		// settlement machinery owns).
 		if userID == lr.DriverID && h.stripe != nil && open.StripePaymentIntentID != nil &&
+			lr.RenewalStoppedAt == nil && lr.RenewalHaltedReason == nil && lr.VehicleReturnedAt == nil &&
 			(open.Status == models.CycleNeedsAction || open.Status == models.CycleRetrying || open.Status == models.CycleFailedFinal) {
 			if pi, perr := h.stripe.RetrievePaymentIntent(*open.StripePaymentIntentID); perr == nil &&
 				pi.Status != "succeeded" && pi.Status != "canceled" {
@@ -195,6 +199,19 @@ func (h *LeaseRequestHandler) PayNow(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusBadGateway, models.NewAPIError("STRIPE_ERROR", "could not start the payment"))
 			return
 		}
+		// The stable key returns the SAME intent for 24h — if it already
+		// succeeded (webhook delayed or lost), settle inline instead of
+		// showing a payable sheet for money already taken (batch-4
+		// verification MEDIUM).
+		if pi.Status == "succeeded" {
+			if !h.handleArrearsPaid(ctx, latest.ID, pi.ID) {
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("ALREADY_PAID",
+				"this balance was already paid — it may take a moment to reflect"))
+			return
+		}
 		ek := ""
 		if k, ekErr := h.stripe.CreateEphemeralKey(customer.ID); ekErr == nil {
 			ek = k.Secret
@@ -216,6 +233,23 @@ func (h *LeaseRequestHandler) PayNow(w http.ResponseWriter, r *http.Request) {
 	if lr.RenewalHaltedReason != nil && *lr.RenewalHaltedReason == "return_initiated" {
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RETURN_IN_PROGRESS",
 			"a vehicle return is in progress — payments resume if the return is cancelled"))
+		return
+	}
+	// Belt beyond the single-slot halt (batch-4 verification HIGH): the
+	// halt slot may be owned by another reason while a return is live.
+	if h.returnRepoForDisputes != nil {
+		if ret, rerr := h.returnRepoForDisputes.GetByLeaseRequestID(ctx, lr.ID); rerr == nil && ret != nil &&
+			ret.Status != models.VehicleReturnCompleted && ret.Status != models.VehicleReturnCancelled {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RETURN_IN_PROGRESS",
+				"a vehicle return is in progress — payments resume if the return is cancelled"))
+			return
+		}
+	}
+	// A stopped rental takes no more money — a success here would extend
+	// a termination the owner or driver already chose (batch-4 verification).
+	if lr.RenewalStoppedAt != nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RENEWALS_STOPPED",
+			"auto-renew was ended on this rental — no further weekly charges apply"))
 		return
 	}
 
@@ -291,10 +325,15 @@ func (h *LeaseRequestHandler) CardUpdateStart(w http.ResponseWriter, r *http.Req
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
-	if consent == nil || consent.ActivatedAt == nil {
-		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_MANDATE", "weekly billing was never activated on this rental"))
+	if consent == nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_MANDATE", "weekly billing was never set up on this rental"))
 		return
 	}
+	// An UNACTIVATED consent is deliberately allowed through (batch-4
+	// verification MEDIUM: the consent_revoked halt's realistic producer is
+	// exactly the unactivated crash-window consent — refusing here left
+	// the halt with no exit). Completion activates it from the verified
+	// SetupIntent.
 	user, uerr := h.userRepo.GetByID(ctx, lr.DriverID)
 	if uerr != nil || user == nil {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
@@ -367,6 +406,9 @@ func (h *LeaseRequestHandler) CardUpdateComplete(w http.ResponseWriter, r *http.
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("SETUP_MISMATCH", "this card update does not belong to this rental"))
 		return
 	}
+	// Activate-or-update: an unactivated consent (the crash-window halt
+	// state) is ACTIVATED from the verified SetupIntent; an active one has
+	// its card swapped. Both claimed/status-scoped in the repo.
 	updated, uerr := h.billingRepo.UpdateConsentPaymentMethod(ctx, lr.ID, si.PaymentMethod, card.Brand, card.Last4, card.Fingerprint)
 	if uerr != nil {
 		h.logger.Error("card update: swap consent pm", "error", uerr, "lease_request_id", lr.ID)
@@ -374,13 +416,26 @@ func (h *LeaseRequestHandler) CardUpdateComplete(w http.ResponseWriter, r *http.
 		return
 	}
 	if !updated {
-		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_MANDATE", "weekly billing is not active on this rental"))
-		return
+		activated, aerr := h.billingRepo.ActivateConsent(ctx, lr.ID, si.PaymentMethod, card.Brand, card.Last4, card.Fingerprint)
+		if aerr != nil {
+			h.logger.Error("card update: activate consent", "error", aerr, "lease_request_id", lr.ID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if !activated {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_MANDATE", "weekly billing is not active on this rental"))
+			return
+		}
 	}
 	// Claim-scoped: only the consent_revoked reason lifts — a delinquency,
-	// dispute, or live-return halt is not cured by a new card.
+	// dispute, or live-return halt is not cured by a new card. A FAILURE
+	// here fails the whole request (batch-4 verification MEDIUM: this
+	// endpoint is the halt's ONLY clearer and is safely re-runnable — a
+	// 200 with the halt stuck would end the rental after a success push).
 	if _, herr := h.leaseRepo.ClearRenewalHalt(ctx, lr.ID, "consent_revoked"); herr != nil {
-		h.logger.Warn("card update: clear halt", "error", herr, "lease_request_id", lr.ID)
+		h.logger.Error("card update: clear halt failed — failing request for retry", "error", herr, "lease_request_id", lr.ID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
 	}
 	h.logger.Info("rolling consent card updated", "lease_request_id", lr.ID, "brand", card.Brand, "last4", card.Last4)
 	chatID := lr.ChatID
@@ -448,6 +503,15 @@ func (h *LeaseRequestHandler) handleArrearsPaid(ctx context.Context, cycleID uui
 		h.logger.Error("arrears paid: load lease", "error", lerr, "lease_request_id", cycle.LeaseRequestID)
 		return false
 	}
+	// Pure redelivery (payout already written): ACK without re-sending
+	// the settlement notifications (batch-4 verification LOW).
+	if cycle.Status == models.CyclePaid {
+		if row, rerr := h.payoutRepo.GetByBillingCycleID(ctx, cycle.ID); rerr != nil {
+			return false
+		} else if row != nil {
+			return true
+		}
+	}
 	// The owner's share of collected arrears settles directly to pending —
 	// promotion's consumed-week guards don't apply to a week that already
 	// ended (design: "owner's share settles from collected cents only").
@@ -467,6 +531,12 @@ func (h *LeaseRequestHandler) handleArrearsPaid(ctx context.Context, cycleID uui
 	}, "pending", "arrears collected on-session"); perr != nil {
 		h.logger.Error("arrears paid: payout write", "error", perr, "cycle_id", cycle.ID)
 		return false
+	}
+	// The collection ticket is finished work now (batch-4 verification LOW).
+	if h.ticketRepo != nil {
+		if terr := h.ticketRepo.ResolveForLeaseRequest(ctx, lr.ID); terr != nil {
+			h.logger.Error("arrears paid: resolve ticket", "error", terr, "lease_request_id", lr.ID)
+		}
 	}
 	h.logger.Info("arrears settled on-session", "cycle_id", cycle.ID, "amount_cents", cycle.AmountCents, "intent_id", intentID)
 	chatID := lr.ChatID

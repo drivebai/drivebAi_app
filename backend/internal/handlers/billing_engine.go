@@ -335,7 +335,14 @@ func (h *LeaseRequestHandler) recordCycleOutcomeError(ctx context.Context, lr *m
 			&chatID, &leaseID)
 	}
 
-	// 3rd failure (T+24h): the lease is formally delinquent.
+	// 3rd failure (T+24h): the lease is formally delinquent. Re-read the
+	// cycle FIRST (batch-4 verification HIGH): a driver's on-session
+	// pay-now can succeed between the ladder's confirm failure and this
+	// write — branding a fully-paid lease delinquent would halt it with no
+	// exit (the admin waive finds nothing to waive on a paid cycle).
+	if fresh, ferr := h.billingRepo.GetCycle(ctx, c.ID); ferr != nil || fresh == nil || fresh.Status == models.CyclePaid {
+		return
+	}
 	if attempt >= 3 {
 		if marked, _ := h.leaseRepo.MarkDelinquent(ctx, lr.ID); marked {
 			if claimed, _ := h.billingRepo.ClaimDelinquentNotice(ctx, c.ID); claimed {
