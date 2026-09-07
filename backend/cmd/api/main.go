@@ -255,6 +255,7 @@ func main() {
 	// scanner escalates sustained-overdue rentals to one — both handlers
 	// need the ticket repo (constructed above for the ticket endpoints).
 	vehicleReturnHandler.SetTicketRepository(ticketRepo)
+	vehicleReturnHandler.SetDisputeRepository(repository.NewChargeDisputeRepository(db))
 	leaseHandler.SetTicketRepository(ticketRepo)
 
 	// Dispute/refund webhooks (batch 1, audit M2): the mirror table, the

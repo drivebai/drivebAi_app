@@ -558,6 +558,8 @@ func (r *PayoutRepository) PromoteConsumedCycles(ctx context.Context, now time.T
 			  AND lr.pickup_confirmed_at IS NOT NULL
 			  AND bc.refunded_cents = 0
 			  AND bc.status = 'paid'
+			  AND (bc.admin_note IS NULL OR bc.admin_note NOT LIKE 'refund_pending%')
+			  AND (lr.vehicle_returned_at IS NULL OR lr.vehicle_returned_at >= op2.period_end)
 			  AND NOT EXISTS (
 			      SELECT 1 FROM vehicle_returns vr
 			      WHERE vr.lease_request_id = op2.lease_request_id

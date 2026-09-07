@@ -517,6 +517,28 @@ func TestBatch2_ReviewFixes(t *testing.T) {
 	if !endsBefore.Equal(endsAfter) {
 		t.Fatal("H4: rental_ends_at moved")
 	}
+	// The durable discriminator was stamped IN the advance TX (verify-pass
+	// CRITICAL): redelivery must route to refund, never to accrual, and
+	// promotion must refuse the row.
+	var note *string
+	e.db.Pool.QueryRow(ctx, `SELECT admin_note FROM billing_cycles WHERE id=$1`, cyc.ID).Scan(&note)
+	if note == nil || !strings.HasPrefix(*note, "refund_pending") {
+		t.Fatalf("refund_pending discriminator missing: %v", note)
+	}
+	cycRef2 := cyc.ID
+	ps2 := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	pe2 := time.Now().UTC().Add(-1 * time.Hour)
+	if _, _, err := e.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
+		LeaseRequestID: leaseID, OwnerID: owner, GrossKeptCents: 15000,
+		FeeBPS: payoutTestFeeBPS, FeeCents: 1500, OwnerAmountCents: 13500,
+		Currency: "USD", BillingCycleID: &cycRef2, PeriodStart: &ps2, PeriodEnd: &pe2,
+	}); err != nil {
+		t.Fatalf("accrue refund-pending: %v", err)
+	}
+	if n, _ := e.payoutRepo.PromoteConsumedCycles(ctx, time.Now().UTC(), 50); n != 0 {
+		t.Fatalf("promotion paid a refund_pending cycle (%d rows)", n)
+	}
+
 	// The refund claim is claimed-once.
 	if ok, _ := billingRepo.RefundCycleClaim(ctx, cyc.ID, "re_x", 15000); !ok {
 		t.Fatal("H4: refund claim refused")

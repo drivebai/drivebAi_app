@@ -1133,6 +1133,24 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 			switch cur.Status {
 			case models.LeaseStatusPaid:
 				h.logger.Info("webhook: lease already paid (idempotent skip)", "lease_request_id", cur.ID, "intent_id", intentID)
+				// A crash between SetPaid and consent activation lands the
+				// redelivery HERE (verify-pass C3 residual) — finish the
+				// activation before ACKing, or the rolling lease bricks.
+				if h.billingRepo != nil {
+					if consent, cerr := h.billingRepo.GetActiveConsent(r.Context(), cur.ID); cerr != nil {
+						return false
+					} else if consent != nil && consent.ActivatedAt == nil {
+						pmID, _ := obj["payment_method"].(string)
+						if pmID == "" {
+							h.logger.Error("rolling consent: redelivery carries no payment_method", "lease_request_id", cur.ID)
+							return false
+						}
+						if _, aerr := h.billingRepo.ActivateConsent(r.Context(), cur.ID, pmID, "", "", ""); aerr != nil {
+							return false
+						}
+						h.logger.Info("rolling consent activated on redelivery", "lease_request_id", cur.ID)
+					}
+				}
 				// Still broadcast in case the client missed the first one —
 				// but no notifications/handover re-fire (they already did).
 				h.broadcastLeaseUpdate(r.Context(), cur)

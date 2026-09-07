@@ -37,6 +37,14 @@ type VehicleReturnHandler struct {
 	notifHandler *NotificationHandler
 	payoutH      *PayoutHandler
 	logger       *slog.Logger
+	// disputeRepoForBilling lets the return flow respect open disputes when
+	// juggling the single-slot renewal halt (wired via setter; nil-safe).
+	disputeRepoForBilling *repository.ChargeDisputeRepository
+}
+
+// SetDisputeRepository wires the dispute mirror for halt juggling.
+func (h *VehicleReturnHandler) SetDisputeRepository(r *repository.ChargeDisputeRepository) {
+	h.disputeRepoForBilling = r
 }
 
 // SetPayoutHandler wires the owner-payout engine so a completed return
@@ -213,6 +221,13 @@ func (h *VehicleReturnHandler) reviveCancelledReturn(w http.ResponseWriter, r *h
 		return
 	}
 
+	// The revive path pauses rolling billing exactly like a fresh initiate
+	// (verify-pass H3: initiate→cancel→revive previously left the ladder
+	// live during the second handshake).
+	if _, herr := h.leaseRepo.HaltRenewals(r.Context(), revived.LeaseRequestID, "return_initiated"); herr != nil {
+		h.logger.Warn("return revive: halt renewals", "error", herr, "lease_request_id", revived.LeaseRequestID)
+	}
+
 	resp := h.buildResponse(r.Context(), revived, userID)
 	httputil.WriteJSON(w, http.StatusCreated, resp)
 
@@ -270,9 +285,19 @@ func (h *VehicleReturnHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	resp := h.buildResponse(r.Context(), updated, userID)
 
 	// Undo the rolling-billing pause the initiate set (claim-scoped: only
-	// clears the 'return_initiated' reason, never a delinquency/dispute halt).
+	// clears the 'return_initiated' reason, never a delinquency/dispute halt)
+	// — then RE-halt if a dispute is live on the lease (the single-slot
+	// reason column can only hold one; a dispute opening mid-return would
+	// otherwise resume billing here — verify-pass H2).
 	if _, herr := h.leaseRepo.ClearRenewalHalt(r.Context(), updated.LeaseRequestID, "return_initiated"); herr != nil {
 		h.logger.Warn("return cancel: clear renewal halt", "error", herr, "lease_request_id", updated.LeaseRequestID)
+	}
+	if h.disputeRepoForBilling != nil {
+		if n, derr := h.disputeRepoForBilling.CountOtherOpenForLease(r.Context(), updated.LeaseRequestID, uuid.Nil); derr == nil && n > 0 {
+			if _, herr := h.leaseRepo.HaltRenewals(r.Context(), updated.LeaseRequestID, "dispute"); herr != nil {
+				h.logger.Warn("return cancel: re-halt for open dispute", "error", herr)
+			}
+		}
 	}
 
 	httputil.WriteJSON(w, http.StatusOK, resp)

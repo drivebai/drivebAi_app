@@ -358,11 +358,24 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 	if err != nil {
 		return nil, false, fmt.Errorf("advance paid-through: %w", err)
 	}
+	advanced := tag.RowsAffected() == 1
+
+	// Durable discriminator (verify-pass CRITICAL): {paid, payout absent}
+	// is otherwise ambiguous between crashed-before-accrual and
+	// crashed-before-refund — and resolving it wrong pays an owner for a
+	// week that must be refunded. The marker is written IN THIS TX.
+	if !advanced {
+		if _, err := tx.Exec(ctx, `
+			UPDATE billing_cycles SET admin_note = 'refund_pending: charge landed after occupancy ended', updated_at = NOW()
+			WHERE id = $1`, cycleID); err != nil {
+			return nil, false, fmt.Errorf("stamp refund-pending: %w", err)
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, false, err
 	}
-	return c, tag.RowsAffected() == 1, nil
+	return c, advanced, nil
 }
 
 // SettleArrears flips an unpaid cycle to arrears_due at return completion

@@ -60,13 +60,13 @@ func (h *LeaseRequestHandler) billingNoticePhase(ctx context.Context, now time.T
 	}
 	for i := range due {
 		lr := &due[i]
-		claimed, cerr := h.leaseRepo.ClaimRenewalNotice(ctx, lr.ID)
-		if cerr != nil || !claimed {
-			continue
-		}
 		consent, _ := h.billingRepo.GetActiveConsent(ctx, lr.ID)
 		if consent == nil || !consent.Active() {
 			continue // the mint phase halts these with the right copy
+		}
+		claimed, cerr := h.leaseRepo.ClaimRenewalNotice(ctx, lr.ID)
+		if cerr != nil || !claimed {
+			continue
 		}
 		amount := consent.AmountCents
 		chatID := lr.ChatID
@@ -110,15 +110,6 @@ func (h *LeaseRequestHandler) billingMintPhase(ctx context.Context, now time.Tim
 					"The driver's payment method needs updating. If they don't fix it, the rental ends when their paid time runs out — you'll be kept posted.",
 					&chatID, &leaseID)
 				h.logger.Warn("billing: renewals halted — no active consent", "lease_request_id", lr.ID)
-				// Interim exit until the card-update flow ships (batch 4):
-				// a human is looped in via ticket (deduped per lease).
-				if h.ticketRepo != nil {
-					ref := lr.ID
-					_, _ = h.ticketRepo.CreateSystemTicket(ctx, lr.DriverID, models.TicketCategoryPayments,
-						"Rolling rental halted — payment method unusable",
-						fmt.Sprintf("Lease %s cannot be charged (no active consent / payment method). Renewals are halted; the rental ends at paid-through unless resolved. Driver must re-add a card (ships in the app update) or return the car.", lr.ID),
-						&ref, nil)
-				}
 			}
 			continue
 		}
@@ -158,6 +149,14 @@ func (h *LeaseRequestHandler) billingRetryPhase(ctx context.Context, now time.Ti
 		// H3: a stopped/terminated rental must never be charged again).
 		if lr.RenewalHaltedReason != nil || lr.VehicleReturnedAt != nil || lr.RenewalStoppedAt != nil {
 			continue
+		}
+		// Belt-and-braces live-return shield (verify pass: the revive path
+		// can leave the halt unset — never charge mid-handshake).
+		if h.returnRepoForDisputes != nil {
+			if ret, rerr := h.returnRepoForDisputes.GetByLeaseRequestID(ctx, c.LeaseRequestID); rerr == nil && ret != nil &&
+				ret.Status != models.VehicleReturnCompleted && ret.Status != models.VehicleReturnCancelled {
+				continue
+			}
 		}
 		consent, cerr := h.billingRepo.GetActiveConsent(ctx, c.LeaseRequestID)
 		if cerr != nil || consent == nil || !consent.Active() {
@@ -435,7 +434,11 @@ func (h *LeaseRequestHandler) handleCyclePaid(ctx context.Context, cycleID uuid.
 			return true // fully settled — benign redelivery
 		}
 		cycle = existing
-		advanced = true // the original delivery advanced; only accrual is missing
+		// The durable discriminator decides which crash window this is
+		// (verify-pass CRITICAL): refund_pending → the advance was REFUSED
+		// and the refund must be retried; otherwise the advance happened
+		// and only the accrual is missing.
+		advanced = existing.AdminNote == nil || !strings.HasPrefix(*existing.AdminNote, "refund_pending")
 	}
 	lr, gerr := h.leaseRepo.GetByID(ctx, cycle.LeaseRequestID)
 	if gerr != nil || lr == nil {
@@ -572,19 +575,38 @@ func (h *LeaseRequestHandler) renewalStopEndpoint(w http.ResponseWriter, r *http
 	// intent (proven-neutralized rule) and waive it. A cycle that already
 	// PAID stays paid — the money settles at the return per the design.
 	if oc, ocerr := h.billingRepo.GetOpenCycleForLease(r.Context(), leaseID); ocerr == nil && oc != nil {
-		neutralized := true
-		if oc.StripePaymentIntentID != nil && *oc.StripePaymentIntentID != "" && h.stripe != nil {
-			switch neutralizePaymentIntentSvc(h.stripe, *oc.StripePaymentIntentID) {
-			case piMoneyMoved:
-				neutralized = false // the charge won; webhook路 settles it
-			case piUnknown:
-				neutralized = false // defer; the ladder guard skips stopped leases anyway
+		// Waive only on PROOF (verify-pass HIGH: an in-flight create with
+		// no stored id must not be waived over — the charge may land):
+		//   scheduled          → no attempt ever claimed, safe.
+		//   stored intent      → proven-neutralized rule.
+		//   no id, attempted   → search Stripe by metadata; unknown = leave
+		//                        it (the ladder skips stopped leases; the
+		//                        stuck-charging phase reconciles).
+		intent := ""
+		if oc.StripePaymentIntentID != nil {
+			intent = *oc.StripePaymentIntentID
+		}
+		if intent == "" && oc.Status != models.CycleScheduled && h.stripe != nil {
+			if found, ferr := h.stripe.FindPaymentIntentByCycle(oc.ID.String()); ferr == nil && found != nil {
+				intent = found.ID
+				_ = h.billingRepo.StampIntent(r.Context(), oc.ID, found.ID)
+			} else if ferr != nil {
+				intent = "unknown"
 			}
 		}
-		if neutralized {
+		waive := false
+		switch {
+		case oc.Status == models.CycleScheduled && intent == "":
+			waive = true
+		case intent != "" && intent != "unknown" && h.stripe != nil:
+			waive = neutralizePaymentIntentSvc(h.stripe, intent) == piNeutralized
+		}
+		if waive {
 			if _, werr := h.billingRepo.WaiveUnpaidCycle(r.Context(), oc.ID, "auto: renewal stopped by "+role); werr != nil {
 				h.logger.Error("renewal stop: waive open cycle", "error", werr, "cycle_id", oc.ID)
 			}
+		} else {
+			h.logger.Warn("renewal stop: open cycle left for reconciliation", "cycle_id", oc.ID, "status", oc.Status)
 		}
 	}
 
@@ -668,8 +690,12 @@ func (h *LeaseRequestHandler) runStuckChargingPhase(ctx context.Context, now tim
 			h.handleCyclePaid(ctx, c.ID, intent)
 		case "canceled":
 			h.recordCycleOutcomeError(ctx, lr, c, c.AttemptCount, fmt.Errorf("intent canceled"))
-		case "processing", "requires_action":
-			// Still in flight — leave it; the webhook or needs-action TTL owns it.
+		case "requires_action":
+			if ok, _ := h.billingRepo.MarkNeedsAction(ctx, c.ID); ok {
+				h.logger.Info("stuck charging → needs_action (TTL armed)", "cycle_id", c.ID)
+			}
+		case "processing":
+			// Still in flight — the webhook owns it.
 		default:
 			h.deferAttempt(ctx, c)
 		}

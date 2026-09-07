@@ -395,18 +395,21 @@ func (h *LeaseRequestHandler) disputeMoneyGoneEffects(ctx context.Context, d *mo
 // a lease-wide bulk resolve (review: unrelated live tickets).
 func (h *LeaseRequestHandler) disputeWonEffects(ctx context.Context, d *models.ChargeDispute, lr *models.LeaseRequest) bool {
 	if d.LeaseRequestID != nil {
-		if _, herr := h.leaseRepo.ClearRenewalHalt(ctx, *d.LeaseRequestID, "dispute"); herr != nil {
-			h.logger.Warn("dispute won: clear renewal halt", "error", herr, "lease_request_id", *d.LeaseRequestID)
-		}
 		others, oerr := h.disputeRepo.CountOtherOpenForLease(ctx, *d.LeaseRequestID, d.ID)
 		if oerr != nil {
 			h.logger.Error("dispute won: sibling check", "error", oerr, "dispute_id", d.StripeDisputeID)
 			return false
 		}
 		if others > 0 {
-			h.logger.Warn("dispute won: sibling dispute still open — leaving rows withheld",
+			h.logger.Warn("dispute won: sibling dispute still open — leaving rows withheld and renewals halted",
 				"dispute_id", d.StripeDisputeID, "open_siblings", others)
 		} else {
+			// Renewals resume only when the LAST open dispute wins
+			// (verify pass: clearing before the sibling check resumed
+			// billing under a live dispute).
+			if _, herr := h.leaseRepo.ClearRenewalHalt(ctx, *d.LeaseRequestID, "dispute"); herr != nil {
+				h.logger.Warn("dispute won: clear renewal halt", "error", herr, "lease_request_id", *d.LeaseRequestID)
+			}
 			n, rerr := h.payoutRepo.ReleaseDisputeWithheld(ctx, *d.LeaseRequestID)
 			if rerr != nil {
 				h.logger.Error("dispute won: release withheld", "error", rerr, "dispute_id", d.StripeDisputeID)
