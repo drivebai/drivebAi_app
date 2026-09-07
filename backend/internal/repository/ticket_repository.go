@@ -395,3 +395,14 @@ func (r *TicketRepository) AdminUpdateStatus(ctx context.Context, ticketID uuid.
 		RETURNING user_id`, string(status), ticketID).Scan(&userID)
 	return userID, err
 }
+
+// ResolveTicketByID resolves exactly one ticket — the dispute flow records
+// its own ticket_id and must never bulk-resolve by lease (an unrelated live
+// lease ticket could be swallowed; review finding).
+func (r *TicketRepository) ResolveTicketByID(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE support_tickets
+		SET status = 'resolved', resolved_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status = 'open'`, id)
+	return err
+}

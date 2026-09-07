@@ -18,10 +18,11 @@ CREATE TABLE charge_disputes (
     currency           TEXT NOT NULL DEFAULT 'usd',
     reason             TEXT,
     status             TEXT NOT NULL,             -- Stripe's own status string
-    outcome            TEXT CHECK (outcome IN ('won', 'lost')),
+    outcome            TEXT CHECK (outcome IN ('won', 'lost', 'refunded')),
     ticket_id          UUID REFERENCES support_tickets(id),
     payouts_withheld   BOOLEAN NOT NULL DEFAULT FALSE,
     reversal_done      BOOLEAN NOT NULL DEFAULT FALSE,
+    outcome_settled    BOOLEAN NOT NULL DEFAULT FALSE,  -- ALL closure side effects completed
     closed_at          TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()

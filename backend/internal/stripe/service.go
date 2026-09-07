@@ -518,3 +518,22 @@ func (s *Service) CreateTransferReversal(transferID, idempotencyKey string, amou
 	}
 	return &rev, nil
 }
+
+// GetChargeRefundedAmount reads how many cents of a charge have been
+// refunded — the AUTHORITATIVE pre-release check on dispute closures: a
+// closure whose charge was refunded (inquiry ended by a dashboard refund,
+// status charge_refunded/warning_closed) must never release withheld
+// payouts as if the platform kept the money.
+func (s *Service) GetChargeRefundedAmount(chargeID string) (int64, error) {
+	body, err := s.apiGet("/v1/charges/" + url.PathEscape(chargeID))
+	if err != nil {
+		return 0, fmt.Errorf("get charge: %w", err)
+	}
+	var ch struct {
+		AmountRefunded int64 `json:"amount_refunded"`
+	}
+	if err := json.Unmarshal(body, &ch); err != nil {
+		return 0, fmt.Errorf("decode charge: %w", err)
+	}
+	return ch.AmountRefunded, nil
+}

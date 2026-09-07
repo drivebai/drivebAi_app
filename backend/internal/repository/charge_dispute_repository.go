@@ -26,14 +26,14 @@ func NewChargeDisputeRepository(db *database.DB) *ChargeDisputeRepository {
 const chargeDisputeColumns = `
 	id, stripe_dispute_id, stripe_charge_id, payment_intent_id, lease_request_id,
 	amount_cents, currency, reason, status, outcome, ticket_id,
-	payouts_withheld, reversal_done, closed_at, created_at, updated_at`
+	payouts_withheld, reversal_done, outcome_settled, closed_at, created_at, updated_at`
 
 func scanChargeDispute(row pgx.Row) (*models.ChargeDispute, error) {
 	var d models.ChargeDispute
 	err := row.Scan(
 		&d.ID, &d.StripeDisputeID, &d.StripeChargeID, &d.PaymentIntentID, &d.LeaseRequestID,
 		&d.AmountCents, &d.Currency, &d.Reason, &d.Status, &d.Outcome, &d.TicketID,
-		&d.PayoutsWithheld, &d.ReversalDone, &d.ClosedAt, &d.CreatedAt, &d.UpdatedAt,
+		&d.PayoutsWithheld, &d.ReversalDone, &d.OutcomeSettled, &d.ClosedAt, &d.CreatedAt, &d.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,10 @@ func (r *ChargeDisputeRepository) Upsert(ctx context.Context, d *models.ChargeDi
 			 amount_cents, currency, reason, status, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
 		ON CONFLICT (stripe_dispute_id)
-		DO UPDATE SET status = EXCLUDED.status, updated_at = NOW()
+		DO UPDATE SET status = EXCLUDED.status,
+		    lease_request_id  = COALESCE(charge_disputes.lease_request_id, EXCLUDED.lease_request_id),
+		    payment_intent_id = COALESCE(charge_disputes.payment_intent_id, EXCLUDED.payment_intent_id),
+		    updated_at = NOW()
 		RETURNING `+chargeDisputeColumns+`, (xmax = 0) AS created_now`,
 		d.StripeDisputeID, d.StripeChargeID, d.PaymentIntentID, d.LeaseRequestID,
 		d.AmountCents, d.Currency, d.Reason, d.Status)
@@ -61,7 +64,7 @@ func (r *ChargeDisputeRepository) Upsert(ctx context.Context, d *models.ChargeDi
 	err := row.Scan(
 		&out.ID, &out.StripeDisputeID, &out.StripeChargeID, &out.PaymentIntentID, &out.LeaseRequestID,
 		&out.AmountCents, &out.Currency, &out.Reason, &out.Status, &out.Outcome, &out.TicketID,
-		&out.PayoutsWithheld, &out.ReversalDone, &out.ClosedAt, &out.CreatedAt, &out.UpdatedAt,
+		&out.PayoutsWithheld, &out.ReversalDone, &out.OutcomeSettled, &out.ClosedAt, &out.CreatedAt, &out.UpdatedAt,
 		&createdNow,
 	)
 	if err != nil {
@@ -130,4 +133,29 @@ func (r *ChargeDisputeRepository) GetByStripeID(ctx context.Context, stripeDispu
 		return nil, nil
 	}
 	return d, err
+}
+
+// MarkOutcomeSettled is the durable "ALL closure side effects completed"
+// marker (review R1): the handler answers 200 to a closure event only once
+// this claims, so Stripe keeps redelivering across transient failures and
+// side effects stay re-runnable until everything stuck.
+func (r *ChargeDisputeRepository) MarkOutcomeSettled(ctx context.Context, id uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE charge_disputes SET outcome_settled = TRUE, updated_at = NOW()
+		WHERE id = $1 AND outcome_settled = FALSE`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// CountOtherOpenForLease reports how many OTHER live disputes exist on the
+// lease — a WON release must not un-park rows a sibling dispute still needs
+// parked (review R5).
+func (r *ChargeDisputeRepository) CountOtherOpenForLease(ctx context.Context, leaseID, excludeID uuid.UUID) (int, error) {
+	var n int
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT count(*) FROM charge_disputes
+		WHERE lease_request_id = $1 AND id <> $2 AND outcome_settled = FALSE`, leaseID, excludeID).Scan(&n)
+	return n, err
 }

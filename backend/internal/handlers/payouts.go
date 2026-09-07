@@ -510,20 +510,10 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	// double-pay guard: Stripe caches ERROR responses under an idempotency
 	// key for 24h, so a stable key would replay one transient failure
 	// forever (observed in E2E).
-	transferGroup := "lease-" + row.LeaseRequestID.String()
-	if existing, ferr := h.stripe.FindTransferByGroup(transferGroup); ferr == nil && existing != nil {
-		h.logger.Info("payout: adopting existing transfer", "payout_id", row.ID, "transfer_id", existing.ID)
-		if paid, merr := h.payoutRepo.MarkPaid(ctx, row.ID, existing.ID, *accountID); merr == nil {
-			leaseRef := paid.LeaseRequestID
-			go h.notifHandler.Notify(paid.OwnerID, models.NotificationTypePayment,
-				fmt.Sprintf("%s sent to your bank", formatMoney(paid.OwnerAmountCents)),
-				fmt.Sprintf("Your rental payout of %s is on its way (platform fee %s).", formatMoney(paid.OwnerAmountCents), formatMoney(paid.FeeCents)),
-				nil, &leaseRef)
-		}
-		return
-	}
-
-	// source_transaction: ride the original charge's settlement.
+	// source_transaction + dispute-addressability: resolve the funding
+	// charge up front — MarkPaid stamps it as source_charge_id so a lost
+	// chargeback can target exactly this row (review CRITICAL: the column
+	// was never written before, making the clawback dead code).
 	sourceCharge := ""
 	if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
 		if chargeID, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID); cerr == nil {
@@ -531,6 +521,19 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 		} else {
 			h.logger.Warn("payout: charge lookup failed, transferring from balance", "error", cerr, "lease_request_id", row.LeaseRequestID)
 		}
+	}
+
+	transferGroup := "lease-" + row.LeaseRequestID.String()
+	if existing, ferr := h.stripe.FindTransferByGroup(transferGroup); ferr == nil && existing != nil {
+		h.logger.Info("payout: adopting existing transfer", "payout_id", row.ID, "transfer_id", existing.ID)
+		if paid, merr := h.payoutRepo.MarkPaid(ctx, row.ID, existing.ID, *accountID, sourceCharge); merr == nil {
+			leaseRef := paid.LeaseRequestID
+			go h.notifHandler.Notify(paid.OwnerID, models.NotificationTypePayment,
+				fmt.Sprintf("%s sent to your bank", formatMoney(paid.OwnerAmountCents)),
+				fmt.Sprintf("Your rental payout of %s is on its way (platform fee %s).", formatMoney(paid.OwnerAmountCents), formatMoney(paid.FeeCents)),
+				nil, &leaseRef)
+		}
+		return
 	}
 
 	// Per-attempt idempotency: updated_at changes on every MarkFailed, so
@@ -547,7 +550,7 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 		}
 		return
 	}
-	paid, err := h.payoutRepo.MarkPaid(ctx, row.ID, tr.ID, *accountID)
+	paid, err := h.payoutRepo.MarkPaid(ctx, row.ID, tr.ID, *accountID, sourceCharge)
 	if err != nil {
 		// The transfer DID land; the next sweep's FindTransferByGroup
 		// reconciliation adopts it and MarkPaid then succeeds.

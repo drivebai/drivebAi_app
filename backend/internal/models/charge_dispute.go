@@ -28,6 +28,7 @@ type ChargeDispute struct {
 	TicketID        *uuid.UUID `json:"ticket_id,omitempty"`
 	PayoutsWithheld bool       `json:"payouts_withheld"`
 	ReversalDone    bool       `json:"reversal_done"`
+	OutcomeSettled  bool       `json:"outcome_settled"`
 	ClosedAt        *time.Time `json:"closed_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`

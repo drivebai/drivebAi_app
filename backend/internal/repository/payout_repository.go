@@ -82,13 +82,18 @@ func (r *PayoutRepository) GetByLeaseRequestID(ctx context.Context, leaseID uuid
 
 // MarkPaid stamps the successful transfer. Guarded so a concurrent sweep
 // can't double-stamp.
-func (r *PayoutRepository) MarkPaid(ctx context.Context, id uuid.UUID, transferID, accountID string) (*models.OwnerPayout, error) {
+func (r *PayoutRepository) MarkPaid(ctx context.Context, id uuid.UUID, transferID, accountID, sourceChargeID string) (*models.OwnerPayout, error) {
+	// sourceChargeID makes the row dispute-addressable: a lost chargeback
+	// reverses exactly the transfer funded by that charge (review CRITICAL —
+	// the column was previously never written in production, making the
+	// clawback dead code). COALESCE keeps an earlier stamp authoritative.
 	row := r.db.Pool.QueryRow(ctx, `
 		UPDATE owner_payouts
 		SET status = 'paid', stripe_transfer_id = $2, stripe_account_id = $3,
+		    source_charge_id = COALESCE(source_charge_id, NULLIF($4, '')),
 		    failure_reason = NULL, paid_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND status IN ('pending', 'failed', 'awaiting_onboarding')
-		RETURNING `+ownerPayoutColumns, id, transferID, accountID)
+		RETURNING `+ownerPayoutColumns, id, transferID, accountID, sourceChargeID)
 	p, err := scanOwnerPayout(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, models.NewAPIError("PAYOUT_STATE", "payout already settled")
@@ -121,7 +126,7 @@ func (r *PayoutRepository) Withhold(ctx context.Context, id uuid.UUID, note stri
 	row := r.db.Pool.QueryRow(ctx, `
 		UPDATE owner_payouts
 		SET status = 'withheld', note = $2, updated_at = NOW()
-		WHERE id = $1 AND status <> 'paid'
+		WHERE id = $1 AND status NOT IN ('paid', 'reversed')
 		RETURNING `+ownerPayoutColumns, id, note)
 	p, err := scanOwnerPayout(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -406,18 +411,20 @@ func (r *PayoutRepository) WithholdAllUnpaidForLease(ctx context.Context, leaseI
 	return int(tag.RowsAffected()), nil
 }
 
-// ReleaseDisputeWithheld undoes WithholdAllUnpaidForLease after a WON
-// dispute: rows whose note carries the dispute tag return to 'pending'.
-// The payout sweep re-parks non-ready owners to awaiting_onboarding on its
-// own, so 'pending' is always the safe reentry point.
-func (r *PayoutRepository) ReleaseDisputeWithheld(ctx context.Context, leaseID uuid.UUID, notePrefix string) (int, error) {
+// ReleaseDisputeWithheld undoes dispute withholding after the LAST open
+// dispute on the lease closes won: every row still tagged "pending outcome"
+// returns to 'pending' (rows a money-gone closure re-tagged as unreleasable
+// stay parked; external-refund tags never match). The caller guarantees no
+// sibling dispute remains open. The payout sweep re-parks non-ready owners
+// to awaiting_onboarding on its own, so 'pending' is the safe reentry.
+func (r *PayoutRepository) ReleaseDisputeWithheld(ctx context.Context, leaseID uuid.UUID) (int, error) {
 	tag, err := r.db.Pool.Exec(ctx, `
 		UPDATE owner_payouts
 		SET status = 'pending', updated_at = NOW()
 		WHERE lease_request_id = $1
 		  AND status = 'withheld'
-		  AND note LIKE $2 || '%'
-	`, leaseID, notePrefix)
+		  AND note LIKE 'dispute %: withheld pending outcome'
+	`, leaseID)
 	if err != nil {
 		return 0, fmt.Errorf("release dispute-withheld: %w", err)
 	}
@@ -454,4 +461,37 @@ func (r *PayoutRepository) MarkReversed(ctx context.Context, id uuid.UUID, rever
 		return false, fmt.Errorf("mark payout reversed: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// GetPaidByLeaseID is the reversal-target FALLBACK for legacy rows created
+// before MarkPaid stamped source_charge_id (incl. the one live paid row):
+// fixed-term leases settle exactly once, so lease-scoped is exact for them.
+func (r *PayoutRepository) GetPaidByLeaseID(ctx context.Context, leaseID uuid.UUID) (*models.OwnerPayout, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+ownerPayoutColumns+`
+		FROM owner_payouts
+		WHERE lease_request_id = $1 AND status = 'paid'
+	`, leaseID)
+	p, err := scanOwnerPayout(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// RetagDisputeWithheldUnreleasable permanently parks dispute-withheld rows
+// whose money went back to the cardholder (lost/refunded closure): the note
+// stops matching the release pattern, so no later WON sibling can free them.
+func (r *PayoutRepository) RetagDisputeWithheldUnreleasable(ctx context.Context, leaseID uuid.UUID, disputeTag string) (int, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET note = $2 || ': money returned to cardholder — unreleasable', updated_at = NOW()
+		WHERE lease_request_id = $1
+		  AND status = 'withheld'
+		  AND note LIKE 'dispute %: withheld pending outcome'
+	`, leaseID, disputeTag)
+	if err != nil {
+		return 0, fmt.Errorf("retag dispute-withheld: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }

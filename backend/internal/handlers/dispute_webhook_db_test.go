@@ -202,3 +202,123 @@ func TestBatch1_ExternalRefundWithholdsAndTickets(t *testing.T) {
 		t.Fatalf("external refund tickets = %d, want 1", tickets)
 	}
 }
+
+// Review R3: a closure that ends with the charge refunded (inquiry killed
+// by a dashboard refund) must NOT release withheld payouts — the exact
+// double-loss kill chain the review executed.
+func TestBatch1_RefundedClosureDoesNotRelease(t *testing.T) {
+	e, dr := disputeEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "b1_owner_rc@example.com")
+	driver := e.seedUser(t, "driver", "b1_driver_rc@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := e.seedActiveRental(t, owner, driver)
+	e.cleanupLedger(t, leaseID)
+	intent := "pi_b1_rc_" + leaseID.String()[:8]
+	seedPaymentAt(t, e, leaseID, 15000, "succeeded", &intent)
+	e.payoutH.SettleRentalPayout(ctx, leaseID, owner, 15000, models.PayoutSourceReturnCompleted, nil)
+	t.Cleanup(func() { e.db.Pool.Exec(ctx, `DELETE FROM charge_disputes WHERE lease_request_id=$1`, leaseID) })
+
+	dp := disputeObj("dp_b1_rc", "ch_b1_rc", intent, "warning_needs_response", 15000)
+	if ok := e.leaseH.handleChargeDispute(webhookReq(), "charge.dispute.created", dp); !ok {
+		t.Fatal("created not-ok")
+	}
+	var status string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM owner_payouts WHERE lease_request_id=$1`, leaseID).Scan(&status)
+	if status != "withheld" {
+		t.Fatalf("precondition: payout = %q, want withheld", status)
+	}
+
+	dpClosed := disputeObj("dp_b1_rc", "ch_b1_rc", intent, "charge_refunded", 15000)
+	if ok := e.leaseH.handleChargeDispute(webhookReq(), "charge.dispute.closed", dpClosed); !ok {
+		t.Fatal("refunded closure not-ok")
+	}
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM owner_payouts WHERE lease_request_id=$1`, leaseID).Scan(&status)
+	if status != "withheld" {
+		t.Fatalf("refunded closure released the payout: %q — the double-loss chain is open", status)
+	}
+	d, _ := dr.GetByStripeID(ctx, "dp_b1_rc")
+	if d == nil || d.Outcome == nil || *d.Outcome != "refunded" || !d.OutcomeSettled {
+		t.Fatalf("dispute not settled-refunded: %+v", d)
+	}
+}
+
+// Review R5: a WON closure must not release rows while a sibling dispute on
+// the same lease is still open.
+func TestBatch1_WonWithOpenSiblingKeepsWithheld(t *testing.T) {
+	e, _ := disputeEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "b1_owner_sb@example.com")
+	driver := e.seedUser(t, "driver", "b1_driver_sb@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := e.seedActiveRental(t, owner, driver)
+	e.cleanupLedger(t, leaseID)
+	intent := "pi_b1_sb_" + leaseID.String()[:8]
+	seedPaymentAt(t, e, leaseID, 15000, "succeeded", &intent)
+	e.payoutH.SettleRentalPayout(ctx, leaseID, owner, 15000, models.PayoutSourceReturnCompleted, nil)
+	t.Cleanup(func() { e.db.Pool.Exec(ctx, `DELETE FROM charge_disputes WHERE lease_request_id=$1`, leaseID) })
+
+	dp1 := disputeObj("dp_b1_sb1", "ch_b1_sb1", intent, "needs_response", 15000)
+	dp2 := disputeObj("dp_b1_sb2", "ch_b1_sb2", intent, "needs_response", 15000)
+	e.leaseH.handleChargeDispute(webhookReq(), "charge.dispute.created", dp1)
+	e.leaseH.handleChargeDispute(webhookReq(), "charge.dispute.created", dp2)
+
+	dp1Won := disputeObj("dp_b1_sb1", "ch_b1_sb1", intent, "won", 15000)
+	if ok := e.leaseH.handleChargeDispute(webhookReq(), "charge.dispute.closed", dp1Won); !ok {
+		t.Fatal("won closure not-ok")
+	}
+	var status string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM owner_payouts WHERE lease_request_id=$1`, leaseID).Scan(&status)
+	if status != "withheld" {
+		t.Fatalf("won with open sibling released the payout: %q", status)
+	}
+
+	// Second dispute also won → NOW it releases.
+	dp2Won := disputeObj("dp_b1_sb2", "ch_b1_sb2", intent, "won", 15000)
+	if ok := e.leaseH.handleChargeDispute(webhookReq(), "charge.dispute.closed", dp2Won); !ok {
+		t.Fatal("second won closure not-ok")
+	}
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM owner_payouts WHERE lease_request_id=$1`, leaseID).Scan(&status)
+	if status != "pending" {
+		t.Fatalf("after both won: payout = %q, want pending", status)
+	}
+}
+
+// Review R4: recognition is amount-aware — a recorded PARTIAL refund does
+// not blind the lease to a larger external refund.
+func TestBatch1_PartialRecognitionCatchesExternalTopUp(t *testing.T) {
+	e, _ := disputeEnv(t)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "b1_owner_pa@example.com")
+	driver := e.seedUser(t, "driver", "b1_driver_pa@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := e.seedActiveRental(t, owner, driver)
+	e.cleanupLedger(t, leaseID)
+	intent := "pi_b1_pa_" + leaseID.String()[:8]
+	seedPaymentAt(t, e, leaseID, 15000, "succeeded", &intent)
+	e.payoutH.SettleRentalPayout(ctx, leaseID, owner, 15000, models.PayoutSourceReturnCompleted, nil)
+
+	// Our recorded refund: a partial return refund of $21.48.
+	rr := httptest.NewRecorder()
+	e.returnH.Initiate(rr, returnReq(t, driver, leaseID, `{}`))
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE vehicle_returns SET refund_id='re_partial', refund_amount_cents=2148 WHERE lease_request_id=$1`, leaseID); err != nil {
+		t.Fatalf("seed partial refund: %v", err)
+	}
+
+	// Stripe reports MORE refunded than we recorded → external top-up.
+	obj := map[string]interface{}{"id": "ch_b1_pa", "payment_intent": intent, "amount_refunded": float64(15000)}
+	if ok := e.leaseH.handleChargeRefunded(webhookReq(), obj); !ok {
+		t.Fatal("external top-up refund not-ok")
+	}
+	var status string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM owner_payouts WHERE lease_request_id=$1`, leaseID).Scan(&status)
+	if status != "withheld" {
+		t.Fatalf("external top-up did not withhold: %q", status)
+	}
+	// And a refund matching exactly what we recorded is recognized.
+	objOK := map[string]interface{}{"id": "ch_b1_pa", "payment_intent": intent, "amount_refunded": float64(2148)}
+	if ok := e.leaseH.handleChargeRefunded(webhookReq(), objOK); !ok {
+		t.Fatal("recognized partial not-ok")
+	}
+}
