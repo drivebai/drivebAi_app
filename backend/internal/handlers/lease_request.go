@@ -754,8 +754,10 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 			LeaseRequestID: leaseID,
 			DriverID:       lr.DriverID,
 			AmountCents:    totalCents,
-			TermsVersion:   models.TermsVersionRolling,
-			DisclosureText: models.RollingDriverDisclosure(totalCents),
+			// v2 is the client-approved consent package (batch 4) — the
+			// screen shows exactly this text and the row records it.
+			TermsVersion:   models.TermsVersionRollingV2,
+			DisclosureText: models.RollingDriverDisclosureV2(totalCents),
 		}); cerr != nil {
 			h.logger.Error("rolling consent: create", "error", cerr, "lease_request_id", leaseID)
 			revertWindow()

@@ -29,3 +29,30 @@ func RollingDriverDisclosure(amountCents int64) string {
 			"Terms: %s.",
 		float64(amountCents)/100, float64(amountCents)/100, TermsVersionRolling)
 }
+
+// TermsVersionRollingV2 is the client-approved consent package for the
+// batch-4 consent screen (approved 2026-09-07 with three edits: explicit
+// first-charge line, arrears payment path, return-first exit ordering).
+const TermsVersionRollingV2 = "rolling-billing-v2 (2026-09-07)"
+
+// RollingDriverDisclosureV2 renders the consent screen's recorded text.
+// Client-approved verbatim — NEVER edit under this version string; any
+// wording change mints v3. The pickup-day example sentence survives all
+// future edits by client instruction.
+func RollingDriverDisclosureV2(amountCents int64) string {
+	amt := float64(amountCents) / 100
+	return fmt.Sprintf(
+		"You're authorizing an automatic weekly charge. $%.2f will be charged now, for your first week. "+
+			"After that, DriveBai will charge your card $%.2f every 7 days for as long as you keep the car — there is no fixed end date. "+
+			"Each new week is charged one day before it starts, counted from your pickup day and time "+
+			"(pick up Tuesday at 3 PM, and you're charged every Monday around 3 PM), so your next charge comes 6 days after pickup. "+
+			"We'll remind you before every charge, and this amount never changes without a new agreement from you.\n\n"+
+			"Returning the car in the app stops the charges — that's the exit, any day, no notice needed. "+
+			"You can also turn off auto-renew instead: your rental then ends when your paid week runs out. "+
+			"Return mid-week and we refund the days you didn't use.\n\n"+
+			"If a weekly payment fails, we'll retry your card over the next two days and notify you each time; you keep the car while we retry. "+
+			"If it still can't be collected, weekly billing stops and your rental ends when your paid time runs out. "+
+			"Any days you used but didn't pay for are still owed — you can settle them in the app with Pay now, and we'll contact you if the balance isn't paid.\n\n"+
+			"Terms: %s.",
+		amt, amt, TermsVersionRollingV2)
+}
