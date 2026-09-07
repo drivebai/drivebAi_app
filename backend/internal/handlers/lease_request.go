@@ -755,7 +755,7 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 			DriverID:       lr.DriverID,
 			AmountCents:    totalCents,
 			TermsVersion:   models.TermsVersionRolling,
-			DisclosureText: models.RollingDriverDisclosure(totalCents, "the weekday your rental begins", "today"),
+			DisclosureText: models.RollingDriverDisclosure(totalCents),
 		}); cerr != nil {
 			h.logger.Error("rolling consent: create", "error", cerr, "lease_request_id", leaseID)
 			revertWindow()
@@ -1154,18 +1154,27 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 
 	h.logger.Info("payment succeeded", "lease_request_id", lr.ID, "payment_id", payment.ID, "intent_id", intentID)
 
-	// Rolling cycle 1: activate the consent with the saved payment method
-	// (claimed-once; the renewal engine refuses to run without it).
-	if lr.BillingMode == models.BillingModeRolling && h.billingRepo != nil {
-		if pmID, _ := obj["payment_method"].(string); pmID != "" {
+	// Rolling cycle 1: activate the consent with the saved payment method.
+	// Keyed on the CONSENT ROW's existence, never on lr.BillingMode — the
+	// SetPaid return does not carry billing_mode, which made the original
+	// gate dead code (review C3: every rolling lease would have bricked at
+	// its first renewal).
+	if h.billingRepo != nil {
+		if consent, cerr := h.billingRepo.GetActiveConsent(r.Context(), lr.ID); cerr != nil {
+			h.logger.Error("rolling consent: lookup", "error", cerr, "lease_request_id", lr.ID)
+			return false
+		} else if consent != nil && consent.ActivatedAt == nil {
+			pmID, _ := obj["payment_method"].(string)
+			if pmID == "" {
+				h.logger.Error("rolling consent: succeeded event carries no payment_method — refusing until redelivery", "lease_request_id", lr.ID)
+				return false
+			}
 			if activated, aerr := h.billingRepo.ActivateConsent(r.Context(), lr.ID, pmID, "", "", ""); aerr != nil {
 				h.logger.Error("rolling consent: activate", "error", aerr, "lease_request_id", lr.ID)
 				return false
 			} else if activated {
 				h.logger.Info("rolling consent activated", "lease_request_id", lr.ID)
 			}
-		} else {
-			h.logger.Error("rolling consent: succeeded event carries no payment_method", "lease_request_id", lr.ID)
 		}
 	}
 

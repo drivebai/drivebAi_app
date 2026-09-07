@@ -587,3 +587,24 @@ func (s *Service) ConfirmPaymentIntent(paymentIntentID, paymentMethodID, idempot
 	}
 	return &pi, nil
 }
+
+// FindPaymentIntentByCycle searches for an intent carrying our cycle
+// metadata — the >24h crash-window reconciliation (the create idempotency
+// key expires; metadata search does not). Mirrors FindTransferByGroup.
+func (s *Service) FindPaymentIntentByCycle(cycleID string) (*PaymentIntent, error) {
+	q := url.QueryEscape("metadata['billing_cycle_id']:'" + cycleID + "'")
+	body, err := s.apiGet("/v1/payment_intents/search?limit=1&query=" + q)
+	if err != nil {
+		return nil, fmt.Errorf("search payment intents: %w", err)
+	}
+	var result struct {
+		Data []PaymentIntent `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode payment intent search: %w", err)
+	}
+	if len(result.Data) == 0 {
+		return nil, nil
+	}
+	return &result.Data[0], nil
+}

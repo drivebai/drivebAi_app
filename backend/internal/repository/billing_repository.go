@@ -55,7 +55,11 @@ func (r *BillingRepository) CreateConsent(ctx context.Context, c *models.Billing
 			(id, lease_request_id, driver_id, amount_cents, billing_interval,
 			 terms_version, disclosure_text, created_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, 'weekly', $4, $5, NOW())
-		ON CONFLICT (lease_request_id) WHERE revoked_at IS NULL DO NOTHING
+		ON CONFLICT (lease_request_id) WHERE revoked_at IS NULL
+		DO UPDATE SET amount_cents = EXCLUDED.amount_cents,
+		    terms_version = EXCLUDED.terms_version,
+		    disclosure_text = EXCLUDED.disclosure_text
+		WHERE lease_billing_consents.activated_at IS NULL
 		RETURNING `+billingConsentColumns,
 		c.LeaseRequestID, c.DriverID, c.AmountCents, c.TermsVersion, c.DisclosureText)
 	created, err := scanBillingConsent(row)
@@ -182,19 +186,32 @@ func (r *BillingRepository) GetCycleByNumber(ctx context.Context, leaseID uuid.U
 	return c, err
 }
 
-// AttachIntent stamps the cycle's ONE PaymentIntent and moves it to
-// charging (claimed from scheduled/retrying — the attempt gate).
-func (r *BillingRepository) AttachIntent(ctx context.Context, id uuid.UUID, intentID string) (bool, error) {
+// ClaimAttempt is the attempt gate: scheduled/retrying → charging,
+// attempt_count+1. It does NOT touch the intent id (review C2: the old
+// combined form stamped '' and poisoned the confirm ladder forever).
+func (r *BillingRepository) ClaimAttempt(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := r.db.Pool.Exec(ctx, `
 		UPDATE billing_cycles
-		SET stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $2),
-		    status = 'charging', attempt_count = attempt_count + 1, updated_at = NOW()
+		SET status = 'charging', attempt_count = attempt_count + 1, updated_at = NOW()
 		WHERE id = $1 AND status IN ('scheduled', 'retrying')
-	`, id, intentID)
+	`, id)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// StampIntent persists the cycle's ONE PaymentIntent id. First writer wins
+// (NULLIF guards against empty-string poisoning); no status restriction —
+// the stamp must land even after the claim moved the row to charging.
+func (r *BillingRepository) StampIntent(ctx context.Context, id uuid.UUID, intentID string) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles
+		SET stripe_payment_intent_id = COALESCE(NULLIF(stripe_payment_intent_id, ''), NULLIF($2, '')),
+		    updated_at = NOW()
+		WHERE id = $1
+	`, id, intentID)
+	return err
 }
 
 // RecordFailure moves a charging/needs_action cycle down the ladder.
@@ -303,10 +320,10 @@ func (r *BillingRepository) ClaimDelinquentNotice(ctx context.Context, id uuid.U
 // Claimed-once by the cycle-status scope; the paid-through advance is
 // anchor arithmetic (from the stored value, never NOW()). Callers treat
 // (nil, nil) as "another delivery won" and do nothing.
-func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid.UUID) (*models.BillingCycle, error) {
+func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid.UUID) (*models.BillingCycle, bool, error) {
 	tx, err := r.db.Pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -317,13 +334,16 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 		RETURNING `+billingCycleColumns, cycleID)
 	c, err := scanBillingCycle(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil // already paid (redelivery) — benign
+		return nil, false, nil // already paid (redelivery) — benign
 	}
 	if err != nil {
-		return nil, fmt.Errorf("claim cycle paid: %w", err)
+		return nil, false, fmt.Errorf("claim cycle paid: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx, `
+	// The advance requires a LIVE occupancy (review H4): a charge landing
+	// after the return completed must not extend a finished rental — the
+	// caller refunds it instead.
+	tag, err := tx.Exec(ctx, `
 		UPDATE lease_requests
 		SET rental_ends_at = rental_ends_at + INTERVAL '7 days',
 		    term_ending_notified_at = NULL,
@@ -333,14 +353,16 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 		    renewal_halted_reason = CASE WHEN renewal_halted_reason = 'delinquent' THEN NULL ELSE renewal_halted_reason END,
 		    updated_at = NOW()
 		WHERE id = $1 AND billing_mode = 'rolling'
-	`, c.LeaseRequestID); err != nil {
-		return nil, fmt.Errorf("advance paid-through: %w", err)
+		  AND status = 'paid' AND vehicle_returned_at IS NULL
+	`, c.LeaseRequestID)
+	if err != nil {
+		return nil, false, fmt.Errorf("advance paid-through: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return c, nil
+	return c, tag.RowsAffected() == 1, nil
 }
 
 // SettleArrears flips an unpaid cycle to arrears_due at return completion
@@ -354,4 +376,84 @@ func (r *BillingRepository) SettleArrears(ctx context.Context, id uuid.UUID) (bo
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// ListStuckCharging returns cycles parked in 'charging' beyond the grace —
+// the process died between the claim and the outcome; the engine re-reads
+// the intent's true state (review M2: no state without an exit).
+func (r *BillingRepository) ListStuckCharging(ctx context.Context, before time.Time, limit int) ([]models.BillingCycle, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+billingCycleColumns+` FROM billing_cycles
+		WHERE status = 'charging' AND updated_at <= $1
+		ORDER BY updated_at ASC LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.BillingCycle
+	for rows.Next() {
+		c, serr := scanBillingCycle(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
+}
+
+// RefundCycleClaim records a full cycle refund claimed-once (H4: a charge
+// landing on a returned/terminal lease is refunded, never kept).
+func (r *BillingRepository) RefundCycleClaim(ctx context.Context, id uuid.UUID, refundID string, amountCents int64) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles
+		SET status = 'refunded', refund_id = $2, refunded_cents = $3, updated_at = NOW()
+		WHERE id = $1 AND status = 'paid' AND refund_id IS NULL
+	`, id, refundID, amountCents)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// WaiveUnpaidCycle voids an unpaid cycle when renewals stop before its
+// period ever started (stop/terminate with the charge not yet through).
+func (r *BillingRepository) WaiveUnpaidCycle(ctx context.Context, id uuid.UUID, note string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles
+		SET status = 'waived', admin_note = $2, next_attempt_at = NULL, updated_at = NOW()
+		WHERE id = $1 AND status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final')
+	`, id, note)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// GetOpenCycleForLease returns the lease's single unresolved cycle, if any.
+func (r *BillingRepository) GetOpenCycleForLease(ctx context.Context, leaseID uuid.UUID) (*models.BillingCycle, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+billingCycleColumns+` FROM billing_cycles
+		WHERE lease_request_id = $1
+		  AND status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final')
+		ORDER BY cycle_number DESC LIMIT 1`, leaseID)
+	c, err := scanBillingCycle(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return c, err
+}
+
+// GetCycleByIntent resolves a Stripe intent to its cycle (dispute routing).
+func (r *BillingRepository) GetCycleByIntent(ctx context.Context, intentID string) (*models.BillingCycle, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+billingCycleColumns+` FROM billing_cycles
+		WHERE stripe_payment_intent_id = $1`, intentID)
+	c, err := scanBillingCycle(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return c, err
 }

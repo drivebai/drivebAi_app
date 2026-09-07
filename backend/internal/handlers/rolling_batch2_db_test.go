@@ -371,9 +371,9 @@ func TestBatch2_RollingEngineMechanics(t *testing.T) {
 	}
 	var endsBefore time.Time
 	e.db.Pool.QueryRow(ctx, `SELECT rental_ends_at FROM lease_requests WHERE id=$1`, leaseID).Scan(&endsBefore)
-	paid, aerr := billingRepo.AdvanceOnCyclePaid(ctx, cycle.ID)
-	if aerr != nil || paid == nil {
-		t.Fatalf("advance: %v", aerr)
+	paid, advanced, aerr := billingRepo.AdvanceOnCyclePaid(ctx, cycle.ID)
+	if aerr != nil || paid == nil || !advanced {
+		t.Fatalf("advance: %v (advanced=%v)", aerr, advanced)
 	}
 	var endsAfter time.Time
 	var delinquent *time.Time
@@ -385,7 +385,7 @@ func TestBatch2_RollingEngineMechanics(t *testing.T) {
 	if delinquent != nil || overdueNotified != nil {
 		t.Fatal("advance did not clear delinquency/term flags")
 	}
-	if replay, _ := billingRepo.AdvanceOnCyclePaid(ctx, cycle.ID); replay != nil {
+	if replay, _, _ := billingRepo.AdvanceOnCyclePaid(ctx, cycle.ID); replay != nil {
 		t.Fatal("second advance claimed — double paid-through")
 	}
 
@@ -417,5 +417,139 @@ func TestBatch2_RollingEngineMechanics(t *testing.T) {
 	e.db.Pool.QueryRow(ctx, `SELECT status FROM owner_payouts WHERE billing_cycle_id=$1`, cycle.ID).Scan(&pStatus)
 	if pStatus != "pending" {
 		t.Fatalf("promoted row = %q, want pending", pStatus)
+	}
+}
+
+// Review-fix regression tests (C1/C2/C3/H4).
+func TestBatch2_ReviewFixes(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	billingRepo := repository.NewBillingRepository(e.db)
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+
+	owner := e.seedUser(t, "car_owner", "b2_owner_rf@example.com")
+	driver := e.seedUser(t, "driver", "b2_driver_rf@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := e.seedActiveRental(t, owner, driver)
+	e.cleanupLedger(t, leaseID)
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM owner_payouts WHERE lease_request_id=$1 AND billing_cycle_id IS NOT NULL`, leaseID)
+		e.db.Pool.Exec(ctx, `DELETE FROM billing_cycles WHERE lease_request_id=$1`, leaseID)
+		e.db.Pool.Exec(ctx, `DELETE FROM lease_billing_consents WHERE lease_request_id=$1`, leaseID)
+	})
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET billing_mode='rolling', weeks=1,
+		    rental_ends_at = NOW() + interval '20 hours' WHERE id=$1`, leaseID); err != nil {
+		t.Fatalf("to rolling: %v", err)
+	}
+	if _, err := billingRepo.CreateConsent(ctx, &models.BillingConsent{
+		LeaseRequestID: leaseID, DriverID: driver, AmountCents: 15000,
+		TermsVersion: models.TermsVersionRolling, DisclosureText: "t",
+	}); err != nil {
+		t.Fatalf("consent: %v", err)
+	}
+	if _, err := billingRepo.ActivateConsent(ctx, leaseID, "pm_x", "", "", ""); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// C1: an OPEN cycle excludes the lease from the due-lister — no
+	// sibling mint, ever.
+	if _, err := billingRepo.MintCycle(ctx, leaseID, 2, time.Now().UTC(), time.Now().UTC().Add(7*24*time.Hour), 15000, time.Now().UTC()); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	due, _ := e.leaseRepo.ListRollingDueForBilling(ctx, time.Now().UTC().Add(48*time.Hour), 50)
+	for i := range due {
+		if due[i].ID == leaseID {
+			t.Fatal("C1: lease with an open cycle still listed as due — sibling-mint storm possible")
+		}
+	}
+	var cycles int
+	e.leaseH.runBillingSweep(ctx)
+	e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM billing_cycles WHERE lease_request_id=$1`, leaseID).Scan(&cycles)
+	if cycles != 1 {
+		t.Fatalf("C1: sweep minted a sibling (%d cycles)", cycles)
+	}
+
+	// C2: ClaimAttempt never writes the intent; StampIntent survives ''
+	// poisoning and later claims.
+	cyc, _ := billingRepo.GetCycleByNumber(ctx, leaseID, 2)
+	if ok, _ := billingRepo.ClaimAttempt(ctx, cyc.ID); !ok {
+		t.Fatal("C2: first claim refused")
+	}
+	var stored *string
+	e.db.Pool.QueryRow(ctx, `SELECT stripe_payment_intent_id FROM billing_cycles WHERE id=$1`, cyc.ID).Scan(&stored)
+	if stored != nil {
+		t.Fatalf("C2: claim wrote intent id %v", *stored)
+	}
+	if err := billingRepo.StampIntent(ctx, cyc.ID, ""); err != nil {
+		t.Fatalf("stamp '' errored: %v", err)
+	}
+	if err := billingRepo.StampIntent(ctx, cyc.ID, "pi_real"); err != nil {
+		t.Fatalf("stamp real: %v", err)
+	}
+	e.db.Pool.QueryRow(ctx, `SELECT stripe_payment_intent_id FROM billing_cycles WHERE id=$1`, cyc.ID).Scan(&stored)
+	if stored == nil || *stored != "pi_real" {
+		t.Fatalf("C2: stamp poisoned by '' — got %v", stored)
+	}
+	if err := billingRepo.StampIntent(ctx, cyc.ID, "pi_other"); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	e.db.Pool.QueryRow(ctx, `SELECT stripe_payment_intent_id FROM billing_cycles WHERE id=$1`, cyc.ID).Scan(&stored)
+	if *stored != "pi_real" {
+		t.Fatal("C2: first-writer-wins violated")
+	}
+
+	// H4: a paid cycle on a RETURNED lease does not advance paid-through.
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE lease_requests SET vehicle_returned_at = NOW() WHERE id=$1`, leaseID); err != nil {
+		t.Fatalf("mark returned: %v", err)
+	}
+	var endsBefore time.Time
+	e.db.Pool.QueryRow(ctx, `SELECT rental_ends_at FROM lease_requests WHERE id=$1`, leaseID).Scan(&endsBefore)
+	paidCycle, advanced, aerr := billingRepo.AdvanceOnCyclePaid(ctx, cyc.ID)
+	if aerr != nil || paidCycle == nil {
+		t.Fatalf("H4 advance call: %v", aerr)
+	}
+	if advanced {
+		t.Fatal("H4: paid-through advanced on a returned lease")
+	}
+	var endsAfter time.Time
+	e.db.Pool.QueryRow(ctx, `SELECT rental_ends_at FROM lease_requests WHERE id=$1`, leaseID).Scan(&endsAfter)
+	if !endsBefore.Equal(endsAfter) {
+		t.Fatal("H4: rental_ends_at moved")
+	}
+	// The refund claim is claimed-once.
+	if ok, _ := billingRepo.RefundCycleClaim(ctx, cyc.ID, "re_x", 15000); !ok {
+		t.Fatal("H4: refund claim refused")
+	}
+	if ok, _ := billingRepo.RefundCycleClaim(ctx, cyc.ID, "re_y", 15000); ok {
+		t.Fatal("H4: refund double-claimed")
+	}
+
+	// C3: activation keys on consent existence — a fresh rolling lease's
+	// webhook path activates without relying on the SetPaid return.
+	lease2, _ := seedAcceptedLease(t, e, owner, driver)
+	e.cleanupLedger(t, lease2)
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM key_handovers WHERE lease_request_id=$1`, lease2)
+		e.db.Pool.Exec(ctx, `DELETE FROM lease_billing_consents WHERE lease_request_id=$1`, lease2)
+	})
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE lease_requests SET billing_mode='rolling', weeks=1, status='payment_pending', payment_pending_at=NOW() WHERE id=$1`, lease2); err != nil {
+		t.Fatalf("lease2 rolling: %v", err)
+	}
+	if _, err := billingRepo.CreateConsent(ctx, &models.BillingConsent{
+		LeaseRequestID: lease2, DriverID: driver, AmountCents: 15000,
+		TermsVersion: models.TermsVersionRolling, DisclosureText: "t",
+	}); err != nil {
+		t.Fatalf("consent2: %v", err)
+	}
+	intent := "pi_c3_" + lease2.String()[:8]
+	seedPaymentAt(t, e, lease2, 15000, "requires_payment_method", &intent)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/stripe/webhook", nil)
+	if ok := e.leaseH.handlePaymentSucceeded(req, intent, map[string]interface{}{"payment_method": "pm_from_webhook"}); !ok {
+		t.Fatal("C3: webhook path failed")
+	}
+	consent2, _ := billingRepo.GetActiveConsent(ctx, lease2)
+	if consent2 == nil || !consent2.Active() || *consent2.StripePaymentMethodID != "pm_from_webhook" {
+		t.Fatalf("C3: consent not activated by webhook: %+v", consent2)
 	}
 }

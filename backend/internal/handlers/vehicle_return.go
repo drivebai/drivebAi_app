@@ -167,7 +167,14 @@ func (h *VehicleReturnHandler) Initiate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	resp := h.buildResponse(r.Context(), created, userID)
-	httputil.WriteJSON(w, http.StatusCreated, resp)
+		// Rolling leases: a live return pauses the billing ladder explicitly
+	// (review H3: nothing wrote 'return_initiated' before). Cleared on
+	// cancel; superseded by vehicle_returned_at on completion.
+	if _, herr := h.leaseRepo.HaltRenewals(r.Context(), leaseID, "return_initiated"); herr != nil {
+		h.logger.Warn("return initiate: halt renewals", "error", herr, "lease_request_id", leaseID)
+	}
+
+httputil.WriteJSON(w, http.StatusCreated, resp)
 
 	h.broadcast("vehicle_return_initiated", created)
 	h.postSystemMessage(r.Context(), created, "driver_initiated", resp)
@@ -261,6 +268,13 @@ func (h *VehicleReturnHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := h.buildResponse(r.Context(), updated, userID)
+
+	// Undo the rolling-billing pause the initiate set (claim-scoped: only
+	// clears the 'return_initiated' reason, never a delinquency/dispute halt).
+	if _, herr := h.leaseRepo.ClearRenewalHalt(r.Context(), updated.LeaseRequestID, "return_initiated"); herr != nil {
+		h.logger.Warn("return cancel: clear renewal halt", "error", herr, "lease_request_id", updated.LeaseRequestID)
+	}
+
 	httputil.WriteJSON(w, http.StatusOK, resp)
 
 	h.broadcast("vehicle_return_cancelled", updated)

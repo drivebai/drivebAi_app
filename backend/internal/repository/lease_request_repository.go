@@ -2004,6 +2004,10 @@ func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, d
 		      SELECT 1 FROM vehicle_returns vr
 		      WHERE vr.lease_request_id = lease_requests.id
 		        AND vr.status IN ('driver_initiated', 'owner_confirmed', 'disputed'))
+		  AND NOT EXISTS (
+		      SELECT 1 FROM billing_cycles bc
+		      WHERE bc.lease_request_id = lease_requests.id
+		        AND bc.status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final', 'arrears_due'))
 		ORDER BY rental_ends_at ASC
 		LIMIT $2`, dueBefore, limit)
 	if err != nil {

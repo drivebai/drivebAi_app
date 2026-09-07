@@ -91,6 +91,23 @@ func (h *LeaseRequestHandler) handleChargeDispute(r *http.Request, eventType str
 			}
 			lr = cur
 			leaseRef = &cur.ID
+		} else if h.billingRepo != nil {
+			// Rolling cycle charges live in billing_cycles, not payments
+			// (review H2: cycle disputes were lease-blind).
+			var cycleLease uuid.UUID
+			ferr := h.dbLookupCycleLease(ctx, intentID, &cycleLease)
+			if ferr != nil {
+				h.logger.Error("dispute webhook: cycle lease lookup", "error", ferr, "intent_id", intentID)
+				return false
+			}
+			if cycleLease != uuid.Nil {
+				cur, gerr := h.leaseRepo.GetByID(ctx, cycleLease)
+				if gerr != nil || cur == nil {
+					return false
+				}
+				lr = cur
+				leaseRef = &cur.ID
+			}
 		}
 	}
 
@@ -192,6 +209,15 @@ func (h *LeaseRequestHandler) disputeOpenSideEffects(ctx context.Context, d *mod
 		} else {
 			h.logger.Warn("dispute open: ticket deduped against an existing live lease ticket — dispute is queued there",
 				"dispute_id", d.StripeDisputeID, "lease_request_id", *d.LeaseRequestID)
+		}
+	}
+
+	// Rolling leases: pause renewals while the dispute is open (cleared on
+	// a won closure; a lost/refunded closure leaves the halt for the term
+	// machinery to drive the return).
+	if lr != nil {
+		if _, herr := h.leaseRepo.HaltRenewals(ctx, lr.ID, "dispute"); herr != nil {
+			h.logger.Warn("dispute open: halt renewals", "error", herr, "lease_request_id", lr.ID)
 		}
 	}
 
@@ -369,6 +395,9 @@ func (h *LeaseRequestHandler) disputeMoneyGoneEffects(ctx context.Context, d *mo
 // a lease-wide bulk resolve (review: unrelated live tickets).
 func (h *LeaseRequestHandler) disputeWonEffects(ctx context.Context, d *models.ChargeDispute, lr *models.LeaseRequest) bool {
 	if d.LeaseRequestID != nil {
+		if _, herr := h.leaseRepo.ClearRenewalHalt(ctx, *d.LeaseRequestID, "dispute"); herr != nil {
+			h.logger.Warn("dispute won: clear renewal halt", "error", herr, "lease_request_id", *d.LeaseRequestID)
+		}
 		others, oerr := h.disputeRepo.CountOtherOpenForLease(ctx, *d.LeaseRequestID, d.ID)
 		if oerr != nil {
 			h.logger.Error("dispute won: sibling check", "error", oerr, "dispute_id", d.StripeDisputeID)
@@ -517,4 +546,17 @@ func (h *LeaseRequestHandler) recognizedRefundCents(ctx context.Context, lr *mod
 		total = payment.Amount
 	}
 	return total, nil
+}
+
+// dbLookupCycleLease resolves a payment intent to its rolling lease via the
+// billing_cycles table (uuid.Nil when not a cycle charge).
+func (h *LeaseRequestHandler) dbLookupCycleLease(ctx context.Context, intentID string, out *uuid.UUID) error {
+	cycle, err := h.billingRepo.GetCycleByIntent(ctx, intentID)
+	if err != nil {
+		return err
+	}
+	if cycle != nil {
+		*out = cycle.LeaseRequestID
+	}
+	return nil
 }

@@ -405,7 +405,7 @@ func (r *PayoutRepository) WithholdAllUnpaidForLease(ctx context.Context, leaseI
 		UPDATE owner_payouts
 		SET status = 'withheld', note = $2, updated_at = NOW()
 		WHERE lease_request_id = $1
-		  AND status IN ('pending', 'awaiting_onboarding', 'failed')
+		  AND status IN ('pending', 'awaiting_onboarding', 'failed', 'accruing')
 	`, leaseID, note)
 	if err != nil {
 		return 0, fmt.Errorf("withhold unpaid for lease: %w", err)
