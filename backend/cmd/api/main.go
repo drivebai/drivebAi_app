@@ -257,6 +257,11 @@ func main() {
 	vehicleReturnHandler.SetTicketRepository(ticketRepo)
 	leaseHandler.SetTicketRepository(ticketRepo)
 
+	// Dispute/refund webhooks (batch 1, audit M2): the mirror table, the
+	// payout withhold/release/reverse levers, and refund recognition.
+	leaseHandler.SetDisputeDependencies(repository.NewChargeDisputeRepository(db), repository.NewPayoutRepository(db))
+	leaseHandler.SetReturnRepositoryForDisputes(vehicleReturnRepo)
+
 	// Owner payouts (Stripe Connect, separate charges & transfers). The
 	// Connect webhook has its own signing secret — the payment webhook's
 	// secret does not verify Connect events.

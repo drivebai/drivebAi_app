@@ -386,3 +386,72 @@ func prefixCols(cols, alias string) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// --- Batch 1 (dispute policy, design §5) ---
+
+// WithholdAllUnpaidForLease parks every not-yet-paid payout row for the
+// lease when a dispute opens. Status-scoped: paid rows are untouched (their
+// clawback happens only on dispute LOST, via MarkReversed). The note tags
+// the dispute so a WON outcome can release exactly these rows.
+func (r *PayoutRepository) WithholdAllUnpaidForLease(ctx context.Context, leaseID uuid.UUID, note string) (int, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET status = 'withheld', note = $2, updated_at = NOW()
+		WHERE lease_request_id = $1
+		  AND status IN ('pending', 'awaiting_onboarding', 'failed')
+	`, leaseID, note)
+	if err != nil {
+		return 0, fmt.Errorf("withhold unpaid for lease: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ReleaseDisputeWithheld undoes WithholdAllUnpaidForLease after a WON
+// dispute: rows whose note carries the dispute tag return to 'pending'.
+// The payout sweep re-parks non-ready owners to awaiting_onboarding on its
+// own, so 'pending' is always the safe reentry point.
+func (r *PayoutRepository) ReleaseDisputeWithheld(ctx context.Context, leaseID uuid.UUID, notePrefix string) (int, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET status = 'pending', updated_at = NOW()
+		WHERE lease_request_id = $1
+		  AND status = 'withheld'
+		  AND note LIKE $2 || '%'
+	`, leaseID, notePrefix)
+	if err != nil {
+		return 0, fmt.Errorf("release dispute-withheld: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// GetPaidByChargeID finds the PAID payout row funded by a specific charge —
+// the dispute-lost reversal target. Legacy rows store the charge on
+// source_charge_id at settlement time.
+func (r *PayoutRepository) GetPaidByChargeID(ctx context.Context, chargeID string) (*models.OwnerPayout, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+ownerPayoutColumns+`
+		FROM owner_payouts
+		WHERE source_charge_id = $1 AND status = 'paid'
+	`, chargeID)
+	p, err := scanOwnerPayout(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// MarkReversed records a completed clawback, claimed-once via the status
+// scope (paid → reversed).
+func (r *PayoutRepository) MarkReversed(ctx context.Context, id uuid.UUID, reversalID string, amountCents int64, reason string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET status = 'reversed', stripe_reversal_id = $2,
+		    reversed_amount_cents = $3, reversed_at = NOW(),
+		    reversal_reason = $4, updated_at = NOW()
+		WHERE id = $1 AND status = 'paid'
+	`, id, reversalID, amountCents, reason)
+	if err != nil {
+		return false, fmt.Errorf("mark payout reversed: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}

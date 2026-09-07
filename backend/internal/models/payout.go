@@ -26,6 +26,10 @@ const (
 	// reason recorded — the "explicitly and deliberately not paid" leg of
 	// the settlement matrix.
 	PayoutWithheld OwnerPayoutStatus = "withheld"
+	// PayoutReversed: the transfer was clawed back after a LOST card
+	// dispute (partial Transfer Reversal against the connected account).
+	// Terminal; reversal columns record the trr_…, amount, and reason.
+	PayoutReversed OwnerPayoutStatus = "reversed"
 )
 
 // OwnerPayoutSource records why the split exists.

@@ -48,6 +48,11 @@ type LeaseRequestHandler struct {
 	// scanner's sustained-overdue phase can escalate to a real support
 	// ticket instead of shouting into logs.
 	ticketRepo *repository.TicketRepository
+	// Dispute/refund webhook collaborators (batch 1, audit M2) — wired via
+	// SetDisputeDependencies / SetReturnRepositoryForDisputes.
+	disputeRepo           *repository.ChargeDisputeRepository
+	payoutRepo            *repository.PayoutRepository
+	returnRepoForDisputes *repository.VehicleReturnRepository
 }
 
 // SetTicketRepository wires the support-ticket repo for the rental-term
@@ -960,6 +965,25 @@ func (h *LeaseRequestHandler) HandleWebhook(w http.ResponseWriter, r *http.Reque
 	h.logger.Info("webhook: event received", "type", eventType, "intent_id", intentID, "verified", true)
 
 	if intentID == "" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Dispute and refund events carry a dispute/charge object, not a PI —
+	// route them BEFORE the intent-keyed switch (batch 1, audit M2).
+	switch eventType {
+	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed":
+		if !h.handleChargeDispute(r, eventType, obj) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	case "charge.refunded":
+		if !h.handleChargeRefunded(r, obj) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}

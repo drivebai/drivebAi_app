@@ -470,3 +470,51 @@ func (s *Service) apiPost(path string, params url.Values) ([]byte, error) {
 	}
 	return body, nil
 }
+
+// TransferReversal is the thin decode of POST /v1/transfers/{id}/reversals.
+type TransferReversal struct {
+	ID     string `json:"id"`
+	Amount int64  `json:"amount"`
+}
+
+// CreateTransferReversal claws back part (or all) of a transfer from a
+// connected account — the dispute-LOST path only (design §5: never on
+// dispute open). The reversal succeeds even against an insufficient
+// connected balance (it goes negative and future transfers repay it), so
+// callers must record the reversal unconditionally on success. Stable
+// idempotencyKey per logical clawback.
+func (s *Service) CreateTransferReversal(transferID, idempotencyKey string, amountCents int64) (*TransferReversal, error) {
+	if transferID == "" {
+		return nil, fmt.Errorf("stripe transfer reversal: transfer id required")
+	}
+	params := url.Values{}
+	if amountCents > 0 {
+		params.Set("amount", strconv.FormatInt(amountCents, 10))
+	}
+
+	req, err := http.NewRequest("POST", "https://api.stripe.com/v1/transfers/"+url.PathEscape(transferID)+"/reversals", strings.NewReader(params.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create transfer reversal: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("create transfer reversal: %s", string(body))
+	}
+	var rev TransferReversal
+	if err := json.Unmarshal(body, &rev); err != nil {
+		return nil, fmt.Errorf("decode transfer reversal: %w", err)
+	}
+	return &rev, nil
+}
