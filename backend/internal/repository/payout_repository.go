@@ -579,3 +579,94 @@ func (r *PayoutRepository) PromoteConsumedCycles(ctx context.Context, now time.T
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// RewriteAccruingForFinalCycle adjusts a cycle's provisional split when the
+// rental ends mid-cycle (rolling return settlement): kept shrinks to the
+// consumed share and the row becomes immediately payable (the lease is
+// over — nothing left to guard). Status-scoped to accruing: money that
+// already moved is never rewritten.
+func (r *PayoutRepository) RewriteAccruingForFinalCycle(ctx context.Context, cycleID uuid.UUID, keptCents, feeCents, ownerCents int64) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET gross_kept_cents = $2, fee_cents = $3, owner_amount_cents = $4,
+		    status = 'pending', consumed_at = NOW(), source = 'return_completed',
+		    updated_at = NOW()
+		WHERE billing_cycle_id = $1 AND status = 'accruing'
+	`, cycleID, keptCents, feeCents, ownerCents)
+	if err != nil {
+		return false, fmt.Errorf("rewrite final cycle payout: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// VoidAccruingCycle terminally voids an unconsumed cycle's payout row
+// (overshoot fully refunded / pickup no-show).
+func (r *PayoutRepository) VoidAccruingCycle(ctx context.Context, cycleID uuid.UUID, note string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET status = 'voided', gross_kept_cents = 0, fee_cents = 0,
+		    owner_amount_cents = 0, note = $2, updated_at = NOW()
+		WHERE billing_cycle_id = $1 AND status IN ('accruing', 'withheld')
+	`, cycleID, note)
+	if err != nil {
+		return false, fmt.Errorf("void cycle payout: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ListCycleLedgerForLease returns the lease's per-cycle payout rows
+// (billing_cycle_id NOT NULL), oldest first — the admin drawer's money
+// column alongside ListCyclesForLease.
+func (r *PayoutRepository) ListCycleLedgerForLease(ctx context.Context, leaseID uuid.UUID) ([]*models.OwnerPayout, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+ownerPayoutColumns+` FROM owner_payouts
+		WHERE lease_request_id = $1 AND billing_cycle_id IS NOT NULL
+		ORDER BY period_start ASC NULLS LAST, created_at ASC`, leaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.OwnerPayout
+	for rows.Next() {
+		p, serr := scanOwnerPayout(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// FinalizeCyclePayoutRow settles a cycle's payout slot race-proof against
+// the webhook's accrual insert (batch-3 review): the settlement can run
+// while handleCyclePaid sits between its advance and its
+// CreateCycleAccruing — a plain accruing→X UPDATE no-ops on the missing
+// row, and the late insert then zombies as a full-week 'accruing' that
+// nothing can ever move. This upsert claims the (billing_cycle_id) slot
+// FIRST, so the webhook's later ON CONFLICT DO NOTHING becomes the no-op.
+// An existing 'accruing' row rewrites; 'withheld' (dispute machinery owns
+// it) and already-final rows stay untouched.
+func (r *PayoutRepository) FinalizeCyclePayoutRow(ctx context.Context, p *models.OwnerPayout, status, note string) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		INSERT INTO owner_payouts
+			(id, lease_request_id, owner_id, gross_kept_cents, fee_bps, fee_cents,
+			 owner_amount_cents, currency, status, source, source_charge_id,
+			 billing_cycle_id, period_start, period_end, consumed_at, note, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, 'return_completed', $9,
+		        $10, $11, $12, NOW(), NULLIF($13, ''), NOW(), NOW())
+		ON CONFLICT (billing_cycle_id) WHERE billing_cycle_id IS NOT NULL
+		DO UPDATE SET gross_kept_cents = EXCLUDED.gross_kept_cents,
+		    fee_cents = EXCLUDED.fee_cents,
+		    owner_amount_cents = EXCLUDED.owner_amount_cents,
+		    status = EXCLUDED.status, source = 'return_completed',
+		    consumed_at = NOW(), note = COALESCE(owner_payouts.note, EXCLUDED.note),
+		    updated_at = NOW()
+		WHERE owner_payouts.status = 'accruing'
+	`, p.LeaseRequestID, p.OwnerID, p.GrossKeptCents, p.FeeBPS, p.FeeCents,
+		p.OwnerAmountCents, p.Currency, status, p.SourceChargeID,
+		p.BillingCycleID, p.PeriodStart, p.PeriodEnd, note)
+	if err != nil {
+		return fmt.Errorf("finalize cycle payout row: %w", err)
+	}
+	return nil
+}

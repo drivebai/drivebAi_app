@@ -276,6 +276,9 @@ func main() {
 	payoutHandler := handlers.NewPayoutHandler(payoutRepo, leaseRepo, userRepo, ticketRepo, stripeSvc, wsHub, notifHandler, cfg.PlatformFeeBPS, logger)
 	// A completed return settles the owner's share automatically.
 	vehicleReturnHandler.SetPayoutHandler(payoutHandler)
+	// Rolling returns settle per CYCLE (batch 3): pro-rata out of the final
+	// week's own charge, cycle-ledger rewrite instead of the legacy row.
+	vehicleReturnHandler.SetBillingDependencies(repository.NewBillingRepository(db), payoutRepo, cfg.PlatformFeeBPS)
 
 	// Purchase (buy the car) — mirrors the lease flow but with manual capture
 	// held until buyer inspection accept. See DESIGN SPEC for the state
@@ -667,6 +670,12 @@ func main() {
 				// return (close | payout_only | withhold).
 				r.Get("/payouts", payoutHandler.AdminListPayouts)
 				r.Post("/rents/{id}/settle", vehicleReturnHandler.AdminSettleRent)
+
+				// Rolling billing (batch 3): the per-cycle ledger and the
+				// unpaid-week waive — the settlement tools for weekly money
+				// (the rent settle endpoint 409s on rolling leases).
+				r.Get("/rents/{id}/billing-cycles", leaseHandler.AdminListBillingCycles)
+				r.Post("/billing-cycles/{id}/waive", leaseHandler.AdminWaiveBillingCycle)
 
 				// Purchase requests + rejections.
 				r.Get("/purchase-requests", purchaseHandler.AdminList)

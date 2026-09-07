@@ -1136,7 +1136,8 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 				// A crash between SetPaid and consent activation lands the
 				// redelivery HERE (verify-pass C3 residual) — finish the
 				// activation before ACKing, or the rolling lease bricks.
-				if h.billingRepo != nil {
+				// (cur comes from GetByID and carries billing_mode.)
+				if h.billingRepo != nil && cur.BillingMode == models.BillingModeRolling {
 					if consent, cerr := h.billingRepo.GetActiveConsent(r.Context(), cur.ID); cerr != nil {
 						return false
 					} else if consent != nil && consent.ActivatedAt == nil {
@@ -1173,11 +1174,11 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 	h.logger.Info("payment succeeded", "lease_request_id", lr.ID, "payment_id", payment.ID, "intent_id", intentID)
 
 	// Rolling cycle 1: activate the consent with the saved payment method.
-	// Keyed on the CONSENT ROW's existence, never on lr.BillingMode — the
-	// SetPaid return does not carry billing_mode, which made the original
-	// gate dead code (review C3: every rolling lease would have bricked at
-	// its first renewal).
-	if h.billingRepo != nil {
+	// SetPaid's RETURNING now carries billing_mode (batch 3 carry-in #1),
+	// so FIXED-TERM webhooks never touch the billing tables — a billing-
+	// table outage cannot 500 the legacy payment path. The consent-
+	// existence check remains inside the branch as defence-in-depth.
+	if h.billingRepo != nil && lr.BillingMode == models.BillingModeRolling {
 		if consent, cerr := h.billingRepo.GetActiveConsent(r.Context(), lr.ID); cerr != nil {
 			h.logger.Error("rolling consent: lookup", "error", cerr, "lease_request_id", lr.ID)
 			return false
@@ -1603,6 +1604,17 @@ func (h *LeaseRequestHandler) processExpiredLease(ctx context.Context, leaseID u
 	}
 
 	h.logger.Info("expiry: claimed", "lease_request_id", lr.ID)
+
+	// A no-show expiry ends any rolling consent with the lease (batch 3):
+	// no future charge may ever ride a consent whose rental never started.
+	// Claimed-once in the repo; fixed-term leases have no consent row, so
+	// this matches zero rows and is a no-op. (ClaimForExpiry's RETURNING
+	// doesn't carry billing_mode, hence no mode gate here.)
+	if h.billingRepo != nil {
+		if _, rerr := h.billingRepo.RevokeConsent(ctx, lr.ID, "pickup_no_show"); rerr != nil {
+			h.logger.Warn("expiry: revoke rolling consent", "error", rerr, "lease_request_id", lr.ID)
+		}
+	}
 
 	// Step 2: broadcast the cancel + notify so the UI flips immediately,
 	// regardless of the Stripe call latency.

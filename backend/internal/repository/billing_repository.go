@@ -378,13 +378,23 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 	return c, advanced, nil
 }
 
-// SettleArrears flips an unpaid cycle to arrears_due at return completion
-// (on-session collection only — never a silent MIT).
-func (r *BillingRepository) SettleArrears(ctx context.Context, id uuid.UUID) (bool, error) {
+// SettleArrearsProRata flips an unpaid cycle to arrears_due at return
+// completion with the amount cut to what the driver actually owes — the
+// used days of the final week (design §7: return is never blocked on
+// debt; collection is ON-SESSION only, never a silent MIT; admin waive is
+// the write-off). Deliberately excludes 'charging': a mid-confirm attempt
+// is hands-off per the proven-neutralize rule — if it lands post-return
+// the reconciler refunds it, and arrears never applies. 'retrying' and
+// 'needs_action' are included because their only arrears callers (the
+// returned-lease closer and the return-aware TTL) neutralize any live
+// intent before flipping.
+func (r *BillingRepository) SettleArrearsProRata(ctx context.Context, id uuid.UUID, owedCents int64) (bool, error) {
 	tag, err := r.db.Pool.Exec(ctx, `
-		UPDATE billing_cycles SET status = 'arrears_due', next_attempt_at = NULL, updated_at = NOW()
-		WHERE id = $1 AND status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final')
-	`, id)
+		UPDATE billing_cycles
+		SET status = 'arrears_due', amount_cents = $2, next_attempt_at = NULL,
+		    needs_action_since = NULL, updated_at = NOW()
+		WHERE id = $1 AND status IN ('scheduled', 'retrying', 'needs_action', 'failed_final')
+	`, id, owedCents)
 	if err != nil {
 		return false, err
 	}
@@ -437,7 +447,7 @@ func (r *BillingRepository) WaiveUnpaidCycle(ctx context.Context, id uuid.UUID, 
 	tag, err := r.db.Pool.Exec(ctx, `
 		UPDATE billing_cycles
 		SET status = 'waived', admin_note = $2, next_attempt_at = NULL, updated_at = NOW()
-		WHERE id = $1 AND status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final')
+		WHERE id = $1 AND status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final', 'arrears_due')
 	`, id, note)
 	if err != nil {
 		return false, err
@@ -469,4 +479,217 @@ func (r *BillingRepository) GetCycleByIntent(ctx context.Context, intentID strin
 		return nil, nil
 	}
 	return c, err
+}
+
+// PartialRefundCycleClaim records the final-cycle pro-rata refund
+// (claimed-once via refund_id IS NULL on a paid cycle).
+func (r *BillingRepository) PartialRefundCycleClaim(ctx context.Context, id uuid.UUID, refundID string, refundedCents int64) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles
+		SET status = 'partially_refunded', refund_id = $2, refunded_cents = $3, updated_at = NOW()
+		WHERE id = $1 AND status = 'paid' AND refund_id IS NULL
+	`, id, refundID, refundedCents)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// MintCycleOnePaid bootstraps week 1 as a real cycle row at pickup (batch
+// 3): rolling settlement and payout cadence then operate uniformly on
+// cycles. Claimed-once by the (lease, 1) unique; the intent comes from the
+// week-1 payments row.
+func (r *BillingRepository) MintCycleOnePaid(ctx context.Context, leaseID uuid.UUID, periodStart, periodEnd time.Time, amountCents int64, intentID string) (*models.BillingCycle, bool, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO billing_cycles
+			(id, lease_request_id, cycle_number, period_start, period_end,
+			 amount_cents, status, stripe_payment_intent_id, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, 1, $2, $3, $4, 'paid', NULLIF($5, ''), NOW(), NOW())
+		ON CONFLICT (lease_request_id, cycle_number) DO NOTHING
+		RETURNING `+billingCycleColumns,
+		leaseID, periodStart, periodEnd, amountCents, intentID)
+	c, err := scanBillingCycle(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, gerr := r.GetCycleByNumber(ctx, leaseID, 1)
+		return existing, false, gerr
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("mint cycle one: %w", err)
+	}
+	return c, true, nil
+}
+
+// ListRollingNeedingCycleOne finds paid+picked-up rolling leases whose week
+// 1 hasn't been bootstrapped (the sweep phase's lister).
+func (r *BillingRepository) ListRollingNeedingCycleOne(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT lr.id FROM lease_requests lr
+		WHERE lr.billing_mode = 'rolling' AND lr.status = 'paid'
+		  AND lr.pickup_confirmed_at IS NOT NULL
+		  AND (
+		    NOT EXISTS (SELECT 1 FROM billing_cycles bc
+		                WHERE bc.lease_request_id = lr.id AND bc.cycle_number = 1)
+		    -- Crash window (batch-3 review): cycle 1 minted but its accrual
+		    -- never landed — keep listing until the payout row exists, so
+		    -- the phase's idempotent fall-through can finish the job.
+		    OR EXISTS (SELECT 1 FROM billing_cycles bc
+		               WHERE bc.lease_request_id = lr.id AND bc.cycle_number = 1
+		                 AND bc.status = 'paid' AND bc.refund_id IS NULL
+		                 AND NOT EXISTS (SELECT 1 FROM owner_payouts op
+		                                 WHERE op.billing_cycle_id = bc.id))
+		  )
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// GetOpenOrLatestPaidCycle returns the highest-numbered cycle in a money-
+// bearing or money-settled state — the rolling settlement anchor. Refunded
+// states are included so a crashed settlement replays against the SAME
+// anchor cycle instead of sliding back to its predecessor; only 'waived'
+// (no money ever moved) is excluded.
+func (r *BillingRepository) GetOpenOrLatestPaidCycle(ctx context.Context, leaseID uuid.UUID) (*models.BillingCycle, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+billingCycleColumns+` FROM billing_cycles
+		WHERE lease_request_id = $1
+		  AND status IN ('paid', 'scheduled', 'charging', 'retrying', 'needs_action',
+		                 'failed_final', 'arrears_due', 'refunded', 'partially_refunded')
+		ORDER BY cycle_number DESC LIMIT 1`, leaseID)
+	c, err := scanBillingCycle(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return c, err
+}
+
+// ListPaidCyclesAfterReturn finds paid, un-refunded cycles whose period
+// starts strictly AFTER the lease's stamped return — money collected for a
+// week the driver never entered because the charge was in flight while the
+// return settled. The sweep refunds these in full (batch 3 reconciler).
+// Strict '>' so the boundary case (returned exactly at period start)
+// stays with the settlement path's current-cycle pro-rata instead.
+func (r *BillingRepository) ListPaidCyclesAfterReturn(ctx context.Context, limit int) ([]*models.BillingCycle, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT bc.id, bc.lease_request_id, bc.cycle_number, bc.period_start, bc.period_end,
+		       bc.amount_cents, bc.status, bc.stripe_payment_intent_id, bc.attempt_count,
+		       bc.next_attempt_at, bc.last_decline_code, bc.needs_action_since, bc.refunded_cents,
+		       bc.refund_id, bc.failure_notified_at, bc.delinquent_notified_at, bc.admin_note,
+		       bc.created_at, bc.updated_at
+		FROM billing_cycles bc
+		JOIN lease_requests lr ON lr.id = bc.lease_request_id
+		WHERE bc.status = 'paid' AND bc.refund_id IS NULL
+		  AND lr.billing_mode = 'rolling'
+		  AND lr.vehicle_returned_at IS NOT NULL
+		  AND (
+		    bc.period_start > lr.vehicle_returned_at
+		    -- refund_pending float (batch-3 review HIGH): the webhook's
+		    -- occupancy-refused branch stamped the marker but its refund
+		    -- kept failing until Stripe redelivery exhausted — without this
+		    -- arm the cycle floats paid-with-refund-owed forever.
+		    OR bc.admin_note LIKE 'refund_pending%'
+		  )
+		ORDER BY bc.updated_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.BillingCycle
+	for rows.Next() {
+		c, serr := scanBillingCycle(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ListCyclesForLease returns every cycle for a lease, oldest first — the
+// admin billing drawer's source.
+func (r *BillingRepository) ListCyclesForLease(ctx context.Context, leaseID uuid.UUID) ([]*models.BillingCycle, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+billingCycleColumns+` FROM billing_cycles
+		WHERE lease_request_id = $1 ORDER BY cycle_number ASC`, leaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.BillingCycle
+	for rows.Next() {
+		c, serr := scanBillingCycle(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RecordLateChargeRefund stamps a full refund onto a cycle whose status
+// was already written off (arrears_due / waived) when its charge landed —
+// the batch-3 review CRITICAL: the claim scope refuses those statuses on
+// purpose, but the money signal must still be processed, not ACKed away.
+// The status deliberately stays put: arrears keeps its (pro-rata) debt for
+// on-session collection; waived stays waived. Claimed-once via refund_id.
+func (r *BillingRepository) RecordLateChargeRefund(ctx context.Context, id uuid.UUID, refundID string, refundedCents int64) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles
+		SET refund_id = $2, refunded_cents = $3, updated_at = NOW()
+		WHERE id = $1 AND refund_id IS NULL AND status IN ('arrears_due', 'waived')
+	`, id, refundID, refundedCents)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ListOpenCyclesOnReturnedLeases finds cycles left open after the rental
+// factually ended — the states no other closer reaches (batch-3 review):
+// 'retrying' is skipped forever by the retry phase once the lease is
+// returned, 'scheduled' with a stamped intent is past the settlement's
+// provably-safe waive, and a 'failed_final' the settlement missed (crash,
+// overshoot) would otherwise park. The closer phase neutralizes any live
+// intent and settles pro-rata arrears / waives.
+func (r *BillingRepository) ListOpenCyclesOnReturnedLeases(ctx context.Context, limit int) ([]*models.BillingCycle, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT bc.id, bc.lease_request_id, bc.cycle_number, bc.period_start, bc.period_end,
+		       bc.amount_cents, bc.status, bc.stripe_payment_intent_id, bc.attempt_count,
+		       bc.next_attempt_at, bc.last_decline_code, bc.needs_action_since, bc.refunded_cents,
+		       bc.refund_id, bc.failure_notified_at, bc.delinquent_notified_at, bc.admin_note,
+		       bc.created_at, bc.updated_at
+		FROM billing_cycles bc
+		JOIN lease_requests lr ON lr.id = bc.lease_request_id
+		WHERE bc.status IN ('scheduled', 'retrying', 'failed_final')
+		  AND lr.billing_mode = 'rolling'
+		  AND lr.vehicle_returned_at IS NOT NULL
+		ORDER BY bc.updated_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.BillingCycle
+	for rows.Next() {
+		c, serr := scanBillingCycle(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

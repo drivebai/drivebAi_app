@@ -728,3 +728,17 @@ func (r *VehicleReturnRepository) ListByStatus(ctx context.Context, status strin
 	}
 	return out, nil
 }
+
+// SyncRollingSnapshot trues a rolling return's money snapshot up to what
+// the per-cycle settlement actually moved (a charge can land between
+// initiate and owner-confirm, changing which weeks are refundable). Gated
+// to the pre-finalize window so a completed row's audit record never
+// rewrites.
+func (r *VehicleReturnRepository) SyncRollingSnapshot(ctx context.Context, id uuid.UUID, paidCents, refundCents int64, usedDays int) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE vehicle_returns
+		SET paid_amount_cents = $2, refund_amount_cents = $3, used_days = $4, updated_at = NOW()
+		WHERE id = $1 AND status = 'owner_confirmed' AND refund_id IS NULL
+	`, id, paidCents, refundCents, usedDays)
+	return err
+}

@@ -42,11 +42,14 @@ func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
 		return
 	}
 	now := time.Now().UTC()
+	h.billingBootstrapPhase(ctx, now)
+	h.billingPostReturnRefundPhase(ctx, now)
 	h.billingNoticePhase(ctx, now)
 	h.billingMintPhase(ctx, now)
 	h.billingRetryPhase(ctx, now)
 	h.runStuckChargingPhase(ctx, now)
 	h.billingNeedsActionPhase(ctx, now)
+	h.billingReturnedLeaseCloserPhase(ctx, now)
 	h.billingPromotePhase(ctx, now)
 }
 
@@ -380,6 +383,51 @@ func (h *LeaseRequestHandler) billingNeedsActionPhase(ctx context.Context, now t
 		if gerr != nil || lr == nil {
 			continue
 		}
+		// Return-aware TTL (batch 3): the car is already back — marking a
+		// finished rental delinquent (with "the rental is ending" copy) is
+		// wrong on every axis. Settle what's actually owed instead: the
+		// used days pro-rata as arrears, or a waive when the week was
+		// never entered (an overshoot's verification lapsing).
+		if lr.VehicleReturnedAt != nil {
+			// Neutralize the live 3DS intent FIRST (belt; the webhook's
+			// late-charge backstop is the braces): an intent that succeeds
+			// after the write-off must not exist to succeed. Not proven
+			// neutralized → leave the cycle for the next tick; the TTL
+			// urgency is gone once the car is back. piMoneyMoved means the
+			// charge landed — the webhook/stuck-charging machinery settles
+			// it (needs_action is still in the paid-claim scope).
+			if c.StripePaymentIntentID != nil && *c.StripePaymentIntentID != "" && h.stripe != nil {
+				if neutralizePaymentIntentSvc(h.stripe, *c.StripePaymentIntentID) != piNeutralized {
+					continue
+				}
+			}
+			returnedAt := *lr.VehicleReturnedAt
+			if !returnedAt.After(c.PeriodStart) {
+				// The week began at/after the return — never entered,
+				// nothing owed (the refund formula's 1-day floor must not
+				// invent debt here — batch-3 review).
+				_, _ = h.billingRepo.WaiveUnpaidCycle(ctx, c.ID,
+					"waived: verification lapsed on a week that began after the vehicle was returned")
+				continue
+			}
+			owed := c.AmountCents - models.ComputeReturnRefund(c.AmountCents, 1, c.PeriodStart, returnedAt).RefundAmountCents
+			if owed > 0 {
+				if settled, serr := h.billingRepo.SettleArrearsProRata(ctx, c.ID, owed); serr == nil && settled {
+					h.openArrearsTicket(ctx, lr, c, owed)
+					chatID := lr.ChatID
+					leaseID := lr.ID
+					go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+						"Balance due on your rental",
+						fmt.Sprintf("The bank verification for your final rental week wasn't completed. $%.2f for the days you used is still owed — our support team will follow up to arrange payment.",
+							float64(owed)/100),
+						&chatID, &leaseID)
+				}
+			} else {
+				_, _ = h.billingRepo.WaiveUnpaidCycle(ctx, c.ID,
+					"waived: verification lapsed with nothing owed for the returned week")
+			}
+			continue
+		}
 		if updated, _ := h.billingRepo.RecordFailure(ctx, c.ID, "authentication_timeout", nil, true); updated != nil {
 			_, _ = h.leaseRepo.MarkDelinquent(ctx, lr.ID)
 			_, _ = h.leaseRepo.HaltRenewals(ctx, lr.ID, "delinquent")
@@ -420,13 +468,33 @@ func (h *LeaseRequestHandler) handleCyclePaid(ctx context.Context, cycleID uuid.
 		return false // webhook 500s; redelivery re-runs the whole TX
 	}
 	if cycle == nil {
-		// Already claimed paid — but a crash may have died between the
-		// advance and the accrual (review H1). Redelivery lands here, so
-		// finish the accrual if it is missing; CreateCycleAccruing is
-		// idempotent per cycle.
+		// The claim matched no row. Either already paid (redelivery — a
+		// crash may have died between the advance and the accrual, review
+		// H1), or the cycle sits in a status the claim scope refuses.
 		existing, gerr := h.billingRepo.GetCycle(ctx, cycleID)
-		if gerr != nil || existing == nil || existing.Status != models.CyclePaid {
-			return true
+		if gerr != nil {
+			return false // H2: unreadable ≠ settled; 500 → redelivery
+		}
+		if existing == nil {
+			return true // intent metadata points at a deleted cycle — nothing to do
+		}
+		switch existing.Status {
+		case models.CycleRefunded, models.CyclePartiallyRefunded:
+			return true // money already settled through the cycle's own record
+		case models.CycleArrearsDue, models.CycleWaived:
+			// A charge SUCCEEDED for a week that was already written off or
+			// cut to pro-rata arrears (late 3DS completion past the TTL
+			// flip; an admin waive racing the confirm). ACKing here would
+			// silently keep the driver's full week (batch-3 review
+			// CRITICAL) — refund it instead. The status stays put: arrears
+			// keeps its used-days debt for on-session collection.
+			return h.refundLateChargeOnSettledCycle(ctx, existing, intentID)
+		case models.CyclePaid:
+			// fall through to the accrual repair below
+		default:
+			// A claimable status read back after a nil claim = a concurrent
+			// worker owns the transition. 500 → redelivery re-checks.
+			return false
 		}
 		if row, perr := h.payoutRepo.GetByBillingCycleID(ctx, cycleID); perr != nil {
 			return false
@@ -699,5 +767,335 @@ func (h *LeaseRequestHandler) runStuckChargingPhase(ctx context.Context, now tim
 		default:
 			h.deferAttempt(ctx, c)
 		}
+	}
+}
+
+// billingBootstrapPhase (batch 3): week 1 becomes a real cycle row shortly
+// after pickup — paid, period [pickup, pickup+7d], intent from the week-1
+// payments row — with its payout accrued on the SAME weekly cadence as
+// every later cycle. Without this, week 1's owner share rode the legacy
+// settle-at-return path: correct money, wrong cadence for open-ended.
+func (h *LeaseRequestHandler) billingBootstrapPhase(ctx context.Context, now time.Time) {
+	if h.payoutRepo == nil {
+		return // accrual has nowhere to land — wait for full wiring
+	}
+	ids, err := h.billingRepo.ListRollingNeedingCycleOne(ctx, 50)
+	if err != nil {
+		h.logger.Error("billing bootstrap: list", "error", err)
+		return
+	}
+	for _, leaseID := range ids {
+		lr, gerr := h.leaseRepo.GetByID(ctx, leaseID)
+		if gerr != nil || lr == nil || lr.PickupConfirmedAt == nil {
+			continue
+		}
+		payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, leaseID)
+		if perr != nil || payment == nil || payment.Status != models.PaymentStatusSucceeded {
+			continue // week 1 not (yet) truly paid — wait
+		}
+		intent := ""
+		if payment.PaymentIntentID != nil {
+			intent = *payment.PaymentIntentID
+		}
+		periodStart := *lr.PickupConfirmedAt
+		cycle, created, merr := h.billingRepo.MintCycleOnePaid(ctx, leaseID,
+			periodStart, periodStart.Add(models.BillingCycleLength), payment.Amount, intent)
+		if merr != nil || cycle == nil {
+			h.logger.Error("billing bootstrap: mint cycle 1", "error", merr, "lease_request_id", leaseID)
+			continue
+		}
+		// !created ⇒ the row already existed — usually a crash between the
+		// mint and the accrual below (review H: `continue` here would lose
+		// the owner's week-1 share forever, since no other path backfills
+		// it). Fall through: CreateCycleAccruing is idempotent per cycle.
+		// Only a still-cleanly-paid cycle accrues; a refunded/settled week
+		// must not resurrect a payout.
+		if !created && (cycle.Status != models.CyclePaid || cycle.RefundID != nil) {
+			continue
+		}
+		_ = created
+		// Accrue week 1 (idempotent per cycle); the promotion sweep pays it
+		// at pickup+7d — the arrears cadence from day one.
+		sourceCharge := ""
+		if h.stripe != nil && intent != "" {
+			if chID, cerr := h.stripe.GetLatestChargeID(intent); cerr == nil {
+				sourceCharge = chID
+			}
+		}
+		fee, ownerShare := models.ComputePayoutSplit(cycle.AmountCents, h.billingFeeBPS)
+		var chargePtr *string
+		if sourceCharge != "" {
+			chargePtr = &sourceCharge
+		}
+		cycleRef := cycle.ID
+		ps := cycle.PeriodStart
+		pe := cycle.PeriodEnd
+		if _, _, aerr := h.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
+			LeaseRequestID:   leaseID,
+			OwnerID:          lr.OwnerID,
+			GrossKeptCents:   cycle.AmountCents,
+			FeeBPS:           h.billingFeeBPS,
+			FeeCents:         fee,
+			OwnerAmountCents: ownerShare,
+			Currency:         "USD",
+			SourceChargeID:   chargePtr,
+			BillingCycleID:   &cycleRef,
+			PeriodStart:      &ps,
+			PeriodEnd:        &pe,
+		}); aerr != nil {
+			h.logger.Error("billing bootstrap: accrue week 1", "error", aerr, "lease_request_id", leaseID)
+			continue
+		}
+		h.logger.Info("billing bootstrap: week 1 cycled + accrued", "lease_request_id", leaseID)
+	}
+}
+
+// RollingReturnSettlement describes what a rolling return settles: the
+// final (current) cycle pro-rata, plus a fully-unconsumed overshoot cycle
+// when the return lands inside the charge-lead window.
+type RollingReturnSettlement struct {
+	CurrentCycle *models.BillingCycle
+	// CurrentRefundCents is the pro-rata refund IF the current cycle is
+	// cleanly paid and not yet refunded; 0 otherwise (an unpaid week
+	// refunds nothing — nothing was collected; an already-refunded week
+	// carries its own record on the cycle row).
+	CurrentRefundCents int64
+	CurrentUsedDays    int
+	OvershootCycle     *models.BillingCycle // charged for a week never entered; fully refundable when paid
+}
+
+// computeRollingSettlement maps returnedAt onto the lease's cycle ledger.
+// The latest money-bearing cycle ends at the paid-through mark: when
+// returnedAt falls inside its period it is the final (current) cycle; when
+// returnedAt strictly precedes its period (the T−24h charge already bought
+// the NEXT week) that cycle is a full-refund overshoot and its predecessor
+// is current. CurrentCycle nil ⇒ nothing is cycled yet (pre-bootstrap
+// week 1) and the caller decides between legacy math and deferral.
+func computeRollingSettlement(ctx context.Context, repo *repository.BillingRepository, lr *models.LeaseRequest, returnedAt time.Time) (*RollingReturnSettlement, error) {
+	out := &RollingReturnSettlement{}
+	latest, err := repo.GetOpenOrLatestPaidCycle(ctx, lr.ID)
+	if err != nil {
+		return nil, err
+	}
+	if latest == nil {
+		return out, nil // nothing cycled yet (pre-bootstrap) — caller decides
+	}
+	current := latest
+	if returnedAt.Before(latest.PeriodStart) {
+		// The latest cycle is an unconsumed overshoot.
+		out.OvershootCycle = latest
+		prev, perr := repo.GetCycleByNumber(ctx, lr.ID, latest.CycleNumber-1)
+		if perr != nil {
+			return nil, perr
+		}
+		if prev == nil {
+			// Cycle N exists without N−1 — a bootstrap gap. Fail closed so
+			// the caller defers; the sweep's bootstrap phase fills the hole.
+			return nil, fmt.Errorf("rolling settlement: cycle %d missing for lease %s", latest.CycleNumber-1, lr.ID)
+		}
+		current = prev
+	}
+	out.CurrentCycle = current
+	calc := models.ComputeReturnRefund(current.AmountCents, 1, current.PeriodStart, returnedAt)
+	out.CurrentUsedDays = calc.UsedDays
+	if current.Status == models.CyclePaid && current.RefundID == nil {
+		out.CurrentRefundCents = calc.RefundAmountCents
+	}
+	return out, nil
+}
+
+// billingPostReturnRefundPhase (batch 3 reconciler): a cycle charge that
+// was in flight while a return settled can land AFTER the settlement read
+// the ledger — paid money for a week that starts after the car came back,
+// invisible to every other path (promotion refuses it: vehicle_returned_at
+// precedes period_end; the settlement already finished). Refund it in
+// full. Strict '>' in the lister keeps the boundary week with the
+// settlement's pro-rata instead. Key reuse with the settlement path
+// ("cycle-overshoot-refund-<id>") is deliberate — whichever actor runs
+// first, Stripe dedupes, and a same-charge race with the webhook's
+// occupancy-ended branch can only error harmlessly (a second full refund
+// exceeds the charge and Stripe rejects it).
+func (h *LeaseRequestHandler) billingPostReturnRefundPhase(ctx context.Context, now time.Time) {
+	if h.stripe == nil || h.payoutRepo == nil {
+		return // refunds and their ledger writes both need full wiring
+	}
+	cycles, err := h.billingRepo.ListPaidCyclesAfterReturn(ctx, 20)
+	if err != nil {
+		h.logger.Error("billing post-return: list", "error", err)
+		return
+	}
+	for _, bc := range cycles {
+		intent := ""
+		if bc.StripePaymentIntentID != nil {
+			intent = *bc.StripePaymentIntentID
+		}
+		if intent == "" {
+			h.logger.Error("billing post-return: paid cycle with no intent", "cycle_id", bc.ID)
+			continue
+		}
+		// Void the accrual BEFORE the refund claim (batch-3 review: the
+		// claim flips status/refund_id, which drops the cycle from this
+		// lister — a void failure after it would never be retried and the
+		// accruing row would sit exitless forever). Void-first is safe:
+		// while the refund hasn't claimed, the cycle stays listed and every
+		// step here is idempotent.
+		if _, verr := h.payoutRepo.VoidAccruingCycle(ctx, bc.ID,
+			"voided: charge landed after the vehicle was returned — refunded in full"); verr != nil {
+			h.logger.Error("billing post-return: void accrual", "error", verr, "cycle_id", bc.ID)
+			continue // next tick retries the whole unit
+		}
+		refund, rerr := h.stripe.CreateRefund(intent,
+			"cycle-overshoot-refund-"+bc.ID.String(), "requested_by_customer", bc.AmountCents)
+		if rerr != nil {
+			h.logger.Error("billing post-return: refund", "error", rerr, "cycle_id", bc.ID)
+			continue // next tick retries with the same key
+		}
+		if refund.Status != "succeeded" && refund.Status != "pending" {
+			h.logger.Error("billing post-return: refund unhealthy", "cycle_id", bc.ID, "stripe_status", refund.Status)
+			continue
+		}
+		claimed, cerr := h.billingRepo.RefundCycleClaim(ctx, bc.ID, refund.ID, bc.AmountCents)
+		if cerr != nil {
+			h.logger.Error("billing post-return: refund claim", "error", cerr, "cycle_id", bc.ID)
+			continue
+		}
+		if !claimed {
+			continue // another worker (or the settlement replay) owns the notify
+		}
+		h.logger.Info("billing post-return: refunded post-return cycle",
+			"cycle_id", bc.ID, "lease_request_id", bc.LeaseRequestID, "amount_cents", bc.AmountCents)
+		if lr, gerr := h.leaseRepo.GetByID(ctx, bc.LeaseRequestID); gerr == nil && lr != nil {
+			chatID := lr.ChatID
+			leaseRef := lr.ID
+			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+				"Refund issued",
+				fmt.Sprintf("Your card was charged $%.2f for a rental week after your return — we've refunded it in full.",
+					float64(bc.AmountCents)/100),
+				&chatID, &leaseRef)
+		}
+	}
+}
+
+// refundLateChargeOnSettledCycle processes a paid-signal for a cycle whose
+// status was already written off (arrears_due / waived) when the charge
+// landed — the batch-3 review CRITICAL. Full refund with the SAME stable
+// key as the occupancy-ended branch ("cycle-refund-<id>", amount 0=full),
+// so whichever path reaches Stripe first wins and the other dedupes.
+// Returns false (webhook 500 → redelivery) until both the refund and its
+// cycle stamp are durable.
+func (h *LeaseRequestHandler) refundLateChargeOnSettledCycle(ctx context.Context, c *models.BillingCycle, intentID string) bool {
+	if c.RefundID != nil {
+		return true // already recorded (replay)
+	}
+	intent := intentID
+	if intent == "" && c.StripePaymentIntentID != nil {
+		intent = *c.StripePaymentIntentID
+	}
+	if h.stripe == nil || intent == "" {
+		h.logger.Error("late charge on settled cycle: cannot refund (no stripe/intent)", "cycle_id", c.ID)
+		return false
+	}
+	refund, rerr := h.stripe.CreateRefund(intent, "cycle-refund-"+c.ID.String(), "requested_by_customer", 0)
+	if rerr != nil {
+		h.logger.Error("late charge on settled cycle: refund failed — redelivery retries", "error", rerr, "cycle_id", c.ID)
+		return false
+	}
+	if refund.Status != "succeeded" && refund.Status != "pending" {
+		h.logger.Error("late charge on settled cycle: refund unhealthy", "cycle_id", c.ID, "stripe_status", refund.Status)
+		return false
+	}
+	if _, serr := h.billingRepo.RecordLateChargeRefund(ctx, c.ID, refund.ID, refund.Amount); serr != nil {
+		h.logger.Error("late charge on settled cycle: record", "error", serr, "cycle_id", c.ID)
+		return false
+	}
+	h.logger.Warn("late charge on written-off cycle refunded",
+		"cycle_id", c.ID, "cycle_status", c.Status, "refund_id", refund.ID, "amount_cents", refund.Amount)
+	if lr, gerr := h.leaseRepo.GetByID(ctx, c.LeaseRequestID); gerr == nil && lr != nil {
+		chatID := lr.ChatID
+		leaseID := lr.ID
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+			"Charge refunded",
+			fmt.Sprintf("A payment of $%.2f went through after this rental week was closed out — it has been refunded in full.",
+				float64(refund.Amount)/100),
+			&chatID, &leaseID)
+	}
+	return true
+}
+
+// billingReturnedLeaseCloserPhase (batch-3 review): closes cycles left
+// open after the rental factually ended. 'retrying' has NO other closer —
+// the retry phase skips returned leases forever; a 'scheduled' with a
+// stamped intent is past the settlement's provably-safe waive; and a
+// 'failed_final' the settlement missed (crash window, or an overshoot the
+// settlement's current-cycle arm never touches) would park. Any live
+// intent is proven-neutralized first (belt; the webhook's late-charge
+// backstop is the braces), then the used days settle as pro-rata arrears
+// (ticket + notice) or the week waives when it began after the return.
+func (h *LeaseRequestHandler) billingReturnedLeaseCloserPhase(ctx context.Context, now time.Time) {
+	cycles, err := h.billingRepo.ListOpenCyclesOnReturnedLeases(ctx, 20)
+	if err != nil {
+		h.logger.Error("billing returned-closer: list", "error", err)
+		return
+	}
+	for _, c := range cycles {
+		lr, gerr := h.leaseRepo.GetByID(ctx, c.LeaseRequestID)
+		if gerr != nil || lr == nil || lr.VehicleReturnedAt == nil {
+			continue
+		}
+		intent := ""
+		if c.StripePaymentIntentID != nil {
+			intent = *c.StripePaymentIntentID
+		}
+		if intent != "" {
+			if h.stripe == nil {
+				continue
+			}
+			if neutralizePaymentIntentSvc(h.stripe, intent) != piNeutralized {
+				// Live or unknown — retry next tick. piMoneyMoved routes
+				// through the webhook/stuck-charging machinery instead.
+				continue
+			}
+		}
+		returnedAt := *lr.VehicleReturnedAt
+		if !returnedAt.After(c.PeriodStart) {
+			_, _ = h.billingRepo.WaiveUnpaidCycle(ctx, c.ID,
+				"waived: week began after the vehicle was returned")
+			continue
+		}
+		owed := c.AmountCents - models.ComputeReturnRefund(c.AmountCents, 1, c.PeriodStart, returnedAt).RefundAmountCents
+		if owed <= 0 {
+			_, _ = h.billingRepo.WaiveUnpaidCycle(ctx, c.ID,
+				"waived: nothing owed for the returned week")
+			continue
+		}
+		if settled, serr := h.billingRepo.SettleArrearsProRata(ctx, c.ID, owed); serr == nil && settled {
+			h.openArrearsTicket(ctx, lr, c, owed)
+			chatID := lr.ChatID
+			leaseID := lr.ID
+			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+				"Balance due on your rental",
+				fmt.Sprintf("$%.2f for the days used in your final rental week couldn't be collected — our support team will follow up to arrange payment.",
+					float64(owed)/100),
+				&chatID, &leaseID)
+		}
+	}
+}
+
+// openArrearsTicket gives every arrears_due debt a live actor (batch-3
+// review: 'support will follow up' with no ticket is the defect-4 pattern
+// this codebase already treats as a bug). Callers gate on the claimed-once
+// SettleArrearsProRata, so each cycle opens at most one ticket.
+func (h *LeaseRequestHandler) openArrearsTicket(ctx context.Context, lr *models.LeaseRequest, c *models.BillingCycle, owedCents int64) {
+	if h.ticketRepo == nil {
+		return
+	}
+	leaseRef := lr.ID
+	subject := "Uncollected rental week — collection needed"
+	desc := fmt.Sprintf(
+		"A rolling rental ended with %s still owed for the used days of its final week (cycle %d, %s – %s).\n\nCollection is ON-SESSION ONLY (never charge the saved card silently). Arrange payment with the driver, or write the debt off via Admin → Rents → Billing cycles → Waive — uncollected days are borne by the owner per the rolling terms.\n\nLease request: %s",
+		formatMoney(owedCents), c.CycleNumber,
+		c.PeriodStart.Format("Jan 2"), c.PeriodEnd.Format("Jan 2, 2006"), lr.ID)
+	if _, terr := h.ticketRepo.CreateSystemTicket(ctx, lr.DriverID, models.TicketCategoryPayments, subject, desc, &leaseRef, nil); terr != nil {
+		h.logger.Error("arrears ticket failed", "error", terr, "cycle_id", c.ID)
 	}
 }

@@ -513,12 +513,12 @@ func (r *LeaseRequestRepository) SetPaid(ctx context.Context, id uuid.UUID) (*mo
 		       price_change_acted_at = COALESCE(price_change_acted_at, NOW())
 		WHERE id = $1 AND status IN ('accepted', 'payment_pending')
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
-		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at, billing_mode
 	`, id, models.LeaseStatusPaid).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
-		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt, &lr.BillingMode,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrInvalidLeaseAction
@@ -2110,6 +2110,59 @@ func (r *LeaseRequestRepository) ClearRenewalHalt(ctx context.Context, leaseID u
 		UPDATE lease_requests SET renewal_halted_reason = NULL, updated_at = NOW()
 		WHERE id = $1 AND renewal_halted_reason = $2
 	`, leaseID, reason)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ClearDelinquency lifts the dunning-exhaustion stamp after an admin
+// waives (or the driver settles) the blocking cycle, so renewals can
+// resume. Pairs with ClearRenewalHalt(leaseID, "delinquent").
+func (r *LeaseRequestRepository) ClearDelinquency(ctx context.Context, leaseID uuid.UUID) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET delinquent_since = NULL, updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling' AND delinquent_since IS NOT NULL
+	`, leaseID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// StampVehicleReturned records the moment the car factually came back —
+// written at rolling settlement START (batch-3 review: before the ledger
+// read), so a cycle charge landing mid-settlement is refused by
+// AdvanceOnCyclePaid's occupancy guard and auto-refunded instead of
+// advancing a finished rental. First-writer-wins via COALESCE; the
+// finalize path's own stamp then no-ops. Rolling-gated: fixed-term keeps
+// its finalize-time stamp byte-identical.
+func (r *LeaseRequestRepository) StampVehicleReturned(ctx context.Context, leaseID uuid.UUID, returnedAt time.Time) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET vehicle_returned_at = COALESCE(vehicle_returned_at, $2), updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling'
+	`, leaseID, returnedAt)
+	return err
+}
+
+// AdvanceOnCycleWaived extends paid-through when an admin forgives a week
+// on a LIVE rental (batch-3 review: waive + resume without the advance
+// re-bills the exact forgiven period — the mint phase sees the old
+// paid-through and mints a fresh cycle for the same week). The forgiven
+// week reads as covered; the owner absorbs it, per the rolling terms.
+// Same guard set as AdvanceOnCyclePaid's advance.
+func (r *LeaseRequestRepository) AdvanceOnCycleWaived(ctx context.Context, leaseID uuid.UUID, periodEnd time.Time) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests
+		SET rental_ends_at = GREATEST(rental_ends_at, $2),
+		    term_ending_notified_at = NULL,
+		    overdue_notified_at = NULL,
+		    overdue_escalated_at = NULL,
+		    updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling'
+		  AND status = 'paid' AND vehicle_returned_at IS NULL
+	`, leaseID, periodEnd)
 	if err != nil {
 		return false, err
 	}
