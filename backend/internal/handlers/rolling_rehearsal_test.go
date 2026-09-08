@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -50,10 +51,13 @@ const (
 	rehearsalWebhookSecret = "whsec_rehearsal_local_only"
 	rehearsalWeeklyCents   = 15000
 
-	cardSuccess    = "4242424242424242"
-	cardMastercard = "5555555555554444"
-	cardDecline    = "4000000000000002"
-	cardDispute    = "4000000000000259" // succeeds, then disputed as fraudulent
+	// Stripe TEST TOKENS, not raw PANs: this account (like most) has raw
+	// card data APIs disabled, and tokens are the supported way to pick a
+	// specific test behaviour.
+	cardSuccess    = "tok_visa"
+	cardMastercard = "tok_mastercard"
+	cardDecline    = "tok_chargeCustomerFail" // attaches, then fails on every charge
+	cardDispute    = "tok_createDispute"      // succeeds, then Stripe raises a dispute
 )
 
 type rehearsalEnv struct {
@@ -73,7 +77,12 @@ func newRehearsalEnv(t *testing.T) *rehearsalEnv {
 		t.Fatalf("rehearsal requires a TEST secret key (sk_test_…); refusing to run")
 	}
 	e := newPayoutEnv(t)
+	// REHEARSAL_VERBOSE=1 surfaces handler errors that are otherwise
+	// logged-and-swallowed — the rehearsal must be able to see them.
 	logger := discardLogger()
+	if os.Getenv("REHEARSAL_VERBOSE") == "1" {
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
 	svc := stripeService.NewService(sk, "pk_test_rehearsal", rehearsalWebhookSecret, payoutTestFeeBPS, logger)
 
 	// Full production wiring, with the real Stripe service everywhere.
@@ -203,22 +212,29 @@ func (e *rehearsalEnv) advanceTestClock(t *testing.T, clockID string, to time.Ti
 	t.Fatalf("test clock did not become ready")
 }
 
-// newCardPM mints a PaymentMethod from a raw test card (allowed with a test
-// key) so the rehearsal can use decline/dispute/3DS behaviours deliberately.
-func (e *rehearsalEnv) newCardPM(t *testing.T, number string) string {
+// newCardPM mints a PaymentMethod from a Stripe test token, which selects
+// the card behaviour (success / decline / dispute) the line needs.
+func (e *rehearsalEnv) newCardPM(t *testing.T, token string) string {
+	id, _, _ := e.newCardPMDetail(t, token)
+	return id
+}
+
+// newCardPMDetail also returns the brand and last4 Stripe assigned, so the
+// consent record mirrors the real card rather than a guess.
+func (e *rehearsalEnv) newCardPMDetail(t *testing.T, token string) (id, brand, last4 string) {
 	t.Helper()
 	out := e.call(t, "POST", "payment_methods", url.Values{
-		"type":            {"card"},
-		"card[number]":    {number},
-		"card[exp_month]": {"12"},
-		"card[exp_year]":  {fmt.Sprintf("%d", time.Now().Year()+3)},
-		"card[cvc]":       {"123"},
+		"type":        {"card"},
+		"card[token]": {token},
 	})
-	id := str(out, "id")
+	id = str(out, "id")
 	if id == "" {
-		t.Fatalf("create PM (%s) failed: %v", number, out)
+		t.Fatalf("create PM from %s failed: %v", token, out)
 	}
-	return id
+	if card, ok := out["card"].(map[string]interface{}); ok {
+		brand, last4 = str(card, "brand"), str(card, "last4")
+	}
+	return id, brand, last4
 }
 
 func (e *rehearsalEnv) attachPM(t *testing.T, pmID, customerID string) {
@@ -259,11 +275,15 @@ func (e *rehearsalEnv) bookingCharge(t *testing.T, customerID, pmID string, cent
 func (e *rehearsalEnv) deliverWebhook(t *testing.T, eventType string, object map[string]interface{}) int {
 	t.Helper()
 	payload, err := json.Marshal(map[string]interface{}{
-		"id":      "evt_rehearsal_" + uuid.New().String()[:8],
-		"object":  "event",
-		"type":    eventType,
-		"created": time.Now().Unix(),
-		"data":    map[string]interface{}{"object": object},
+		"id":     "evt_rehearsal_" + uuid.New().String()[:8],
+		"object": "event",
+		"type":   eventType,
+		// stripe-go's ConstructEvent REJECTS an event whose api_version
+		// differs from the version the library pins — the same version the
+		// production webhook endpoints are pinned to.
+		"api_version": "2025-02-24.acacia",
+		"created":     time.Now().Unix(),
+		"data":        map[string]interface{}{"object": object},
 	})
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
@@ -300,7 +320,7 @@ type rehearsalLease struct {
 // startRollingRental creates a rolling lease, pays week 1 with a REAL saved
 // card on a test clock, drives the payment webhook, and confirms pickup —
 // then lets the bootstrap sweep cycle week 1.
-func (e *rehearsalEnv) startRollingRental(t *testing.T, tag, cardNumber string, clockID string, now time.Time) *rehearsalLease {
+func (e *rehearsalEnv) startRollingRental(t *testing.T, tag, cardToken string, clockID string, now time.Time) *rehearsalLease {
 	t.Helper()
 	ctx := context.Background()
 	runID := uuid.New().String()[:8]
@@ -331,7 +351,7 @@ func (e *rehearsalEnv) startRollingRental(t *testing.T, tag, cardNumber string, 
 	if err := repository.NewUserRepository(e.db).SetStripeCustomerID(ctx, driver, customerID); err != nil {
 		t.Fatalf("bind customer: %v", err)
 	}
-	pmID := e.newCardPM(t, cardNumber)
+	pmID, pmBrand, pmLast4 := e.newCardPMDetail(t, cardToken)
 	e.attachPM(t, pmID, customerID)
 
 	// The lease becomes rolling with its consent recorded (what the app's
@@ -347,22 +367,16 @@ func (e *rehearsalEnv) startRollingRental(t *testing.T, tag, cardNumber string, 
 		t.Fatalf("consent: %v", err)
 	}
 
+	// seedActiveRental already drove accept → paid → pickup; week 1's money
+	// is the REAL card charge below, recorded on the payments row exactly as
+	// the booking webhook would.
 	pi := e.bookingCharge(t, customerID, pmID, rehearsalWeeklyCents, nil)
 	intentID := str(pi, "id")
 	seedPaymentAt(t, e.payoutEnv, leaseID, rehearsalWeeklyCents, "succeeded", &intentID)
-	if _, err := e.leaseRepo.AcceptLeaseRequest(ctx, leaseID, owner); err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-	if _, err := e.leaseRepo.SetPaid(ctx, leaseID); err != nil {
-		t.Fatalf("set paid: %v", err)
-	}
 	// Activate the mandate from the real saved PM (what the payment webhook
 	// does on a rolling lease).
-	if ok, err := e.billingRepo.ActivateConsent(ctx, leaseID, str(pi, "payment_method"), "visa", cardNumber[len(cardNumber)-4:], "fp_rehearsal"); err != nil || !ok {
+	if ok, err := e.billingRepo.ActivateConsent(ctx, leaseID, str(pi, "payment_method"), pmBrand, pmLast4, "fp_rehearsal"); err != nil || !ok {
 		t.Fatalf("activate consent: ok=%v err=%v", ok, err)
-	}
-	if _, err := e.leaseRepo.ConfirmPickup(ctx, leaseID, driver); err != nil {
-		t.Fatalf("pickup: %v", err)
 	}
 	var pickup time.Time
 	e.db.Pool.QueryRow(ctx, `SELECT pickup_confirmed_at FROM lease_requests WHERE id=$1`, leaseID).Scan(&pickup)
@@ -383,10 +397,25 @@ func (e *rehearsalEnv) ageLease(t *testing.T, leaseID uuid.UUID, d time.Duration
 		WHERE id = $1`, leaseID, fmt.Sprintf("%d seconds", int(d.Seconds()))); err != nil {
 		t.Fatalf("age lease: %v", err)
 	}
+	e.ageCyclesOnly(t, leaseID, d)
+}
+
+// ageCyclesOnly ages the cycle ledger and its payout rows WITHOUT making
+// the lease due again — how you let already-charged weeks become consumed
+// (and therefore payable) without provoking another charge.
+func (e *rehearsalEnv) ageCyclesOnly(t *testing.T, leaseID uuid.UUID, d time.Duration) {
+	t.Helper()
+	iv := fmt.Sprintf("%d seconds", int(d.Seconds()))
 	if _, err := e.db.Pool.Exec(context.Background(), `
 		UPDATE billing_cycles SET period_start = period_start - $2::interval, period_end = period_end - $2::interval
-		WHERE lease_request_id = $1`, leaseID, fmt.Sprintf("%d seconds", int(d.Seconds()))); err != nil {
+		WHERE lease_request_id = $1`, leaseID, iv); err != nil {
 		t.Fatalf("age cycles: %v", err)
+	}
+	// Promotion keys on the PAYOUT row's period_end, so it must move too.
+	if _, err := e.db.Pool.Exec(context.Background(), `
+		UPDATE owner_payouts SET period_start = period_start - $2::interval, period_end = period_end - $2::interval
+		WHERE lease_request_id = $1 AND period_end IS NOT NULL`, leaseID, iv); err != nil {
+		t.Fatalf("age payouts: %v", err)
 	}
 }
 
@@ -424,15 +453,25 @@ func (e *rehearsalEnv) paidThrough(t *testing.T, leaseID uuid.UUID) time.Time {
 }
 
 // countPIsForCycle asks STRIPE how many intents exist for a cycle — the
-// idempotency proof (never two charges for one week).
-func (e *rehearsalEnv) countPIsForCycle(t *testing.T, cycleID uuid.UUID) int {
+// idempotency proof (never two charges for one week). Listed by customer
+// rather than via the search API, which is eventually consistent and
+// reported 0 for an intent that had demonstrably just been created.
+func (e *rehearsalEnv) countPIsForCycle(t *testing.T, customerID string, cycleID uuid.UUID) int {
 	t.Helper()
-	out := e.call(t, "GET", "payment_intents/search?query="+url.QueryEscape(
-		fmt.Sprintf("metadata['billing_cycle_id']:'%s'", cycleID.String())), nil)
-	if data, ok := out["data"].([]interface{}); ok {
-		return len(data)
+	out := e.call(t, "GET", "payment_intents?limit=100&customer="+url.QueryEscape(customerID), nil)
+	data, ok := out["data"].([]interface{})
+	if !ok {
+		return -1
 	}
-	return -1
+	n := 0
+	for _, item := range data {
+		pi, _ := item.(map[string]interface{})
+		md, _ := pi["metadata"].(map[string]interface{})
+		if md != nil && str(md, "billing_cycle_id") == cycleID.String() {
+			n++
+		}
+	}
+	return n
 }
 
 // refundTotal asks Stripe what has actually been returned to the driver

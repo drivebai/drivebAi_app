@@ -35,8 +35,10 @@ func TestBatch5_Line1_RecurringChargesNoHumanAction(t *testing.T) {
 		cycles[0].Status, float64(cycles[0].AmountCents)/100, strOrEmpty(cycles[0].StripePaymentIntentID))
 
 	for week := 2; week <= 4; week++ {
-		before := e.paidThrough(t, L.leaseID)
 		e.ageLease(t, L.leaseID, 7*24*time.Hour)
+		// Measured AFTER aging: aging is the harness standing in for elapsed
+		// time, the advance we are proving is the engine's.
+		before := e.paidThrough(t, L.leaseID)
 		e.advanceTestClock(t, clock, now.AddDate(0, 0, 7*(week-1)))
 
 		// The ONLY action is the scanner tick. No client call, no confirm.
@@ -69,7 +71,7 @@ func TestBatch5_Line1_RecurringChargesNoHumanAction(t *testing.T) {
 	}
 
 	// Arrears cadence: once each week is consumed, promotion makes it payable.
-	e.ageLease(t, L.leaseID, 8*24*time.Hour)
+	e.ageCyclesOnly(t, L.leaseID, 8*24*time.Hour)
 	e.leaseH.runBillingSweep(ctx)
 	rows, _ := e.payoutRepo.ListCycleLedgerForLease(ctx, L.leaseID)
 	promoted, accruing := 0, 0
@@ -153,7 +155,7 @@ func TestBatch5_Line2_FailedChargeFullLadder(t *testing.T) {
 	// new charges), and the car stays with the driver.
 	cycles, _ := e.billingRepo.ListCyclesForLease(ctx, L.leaseID)
 	c := cycles[len(cycles)-1]
-	if n := e.countPIsForCycle(t, c.ID); n != 1 {
+	if n := e.countPIsForCycle(t, L.customerID, c.ID); n != 1 {
 		t.Errorf("stripe intents for the failing cycle = %d, want exactly 1", n)
 	}
 	lr, _ := e.leaseRepo.GetByID(ctx, L.leaseID)
@@ -331,7 +333,7 @@ func TestBatch5_Line5_CrashInsideEveryIdempotencyWindow(t *testing.T) {
 	}
 	e.leaseH.runBillingSweep(ctx)
 	healed, _ := e.billingRepo.GetCycle(ctx, c2.ID)
-	n := e.countPIsForCycle(t, c2.ID)
+	n := e.countPIsForCycle(t, L.customerID, c2.ID)
 	t.Logf("W1 create→stamp crash: replay recovered intent=%s (same=%v); stripe intents for this week = %d",
 		strOrEmpty(healed.StripePaymentIntentID), strOrEmpty(healed.StripePaymentIntentID) == realIntent, n)
 	if n != 1 {
@@ -526,10 +528,22 @@ func TestBatch5_Line7_ArrearsPayNowAfterReturn(t *testing.T) {
 	latest, _ := e.billingRepo.GetOpenOrLatestPaidCycle(ctx, L.leaseID)
 	var tickets int
 	e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM support_tickets WHERE lease_request_id=$1 AND status='open'`, L.leaseID).Scan(&tickets)
+	// Diagnostic: every ticket on this lease, whatever its status/subject.
+	if rows, qerr := e.db.Pool.Query(ctx, `SELECT subject, status FROM support_tickets WHERE lease_request_id=$1`, L.leaseID); qerr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var subj, st string
+			rows.Scan(&subj, &st)
+			t.Logf("    existing ticket on this lease: %q [%s]", subj, st)
+		}
+	}
 	t.Logf("after return on an uncollected week: cycle=%s owed $%.2f (pro-rata for %d used days), open collection tickets=%d",
 		latest.Status, float64(latest.AmountCents)/100, 3, tickets)
 	if latest.Status != models.CycleArrearsDue {
 		t.Fatalf("expected arrears_due, got %s", latest.Status)
+	}
+	if tickets != 1 {
+		t.Errorf("open collection tickets = %d, want 1 — an uncollected debt must have a live actor", tickets)
 	}
 
 	rr = httptest.NewRecorder()
@@ -585,6 +599,9 @@ func TestBatch5_Line7_ArrearsPayNowAfterReturn(t *testing.T) {
 	}
 	if status != "pending" {
 		t.Errorf("owner share = %q, want pending", status)
+	}
+	if tickets != 0 {
+		t.Errorf("open tickets after settlement = %d, want 0 (the debt is paid)", tickets)
 	}
 }
 

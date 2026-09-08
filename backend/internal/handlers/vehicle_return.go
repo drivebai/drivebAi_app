@@ -1379,6 +1379,7 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 	}
 
 	var totalRefunded, paidBase, arrearsOwedCents int64
+	var arrearsCycle *models.BillingCycle
 	primaryRefundID := ""
 
 	// Slot-claiming ledger write for refunded overshoot weeks (batch-3
@@ -1571,23 +1572,12 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 			if settled, aerr := h.billingRepo.SettleArrearsProRata(ctx, cc.ID, owed); aerr != nil {
 				h.logger.Error("rolling return: settle arrears", "error", aerr, "cycle_id", cc.ID)
 			} else if settled {
+				// The ticket is opened LATER, after resolveLinkedTickets —
+				// see the completion block below (rehearsal line 7).
 				arrearsOwedCents = owed
+				arrearsCycle = cc
 				h.logger.Info("rolling return: final week settled as arrears",
 					"cycle_id", cc.ID, "owed_cents", owed)
-				// Every arrears debt gets a live actor (batch-3 review: a
-				// promised follow-up with no ticket is the defect-4
-				// pattern). Claimed-once via the settle above.
-				if h.ticketRepo != nil {
-					leaseRef := lr.ID
-					desc := fmt.Sprintf(
-						"A rolling rental ended with %s still owed for the used days of its final week (cycle %d, %s – %s).\n\nCollection is ON-SESSION ONLY (never charge the saved card silently). Arrange payment with the driver, or write the debt off via Admin → Rents → Billing cycles → Waive — uncollected days are borne by the owner per the rolling terms.\n\nLease request: %s",
-						formatMoney(owed), cc.CycleNumber,
-						cc.PeriodStart.Format("Jan 2"), cc.PeriodEnd.Format("Jan 2, 2006"), lr.ID)
-					if _, terr := h.ticketRepo.CreateSystemTicket(ctx, lr.DriverID, models.TicketCategoryPayments,
-						"Uncollected rental week — collection needed", desc, &leaseRef, nil); terr != nil {
-						h.logger.Error("rolling return: arrears ticket failed", "error", terr, "cycle_id", cc.ID)
-					}
-				}
 			}
 		} else {
 			if _, werr := h.billingRepo.WaiveUnpaidCycle(ctx, cc.ID,
@@ -1634,6 +1624,22 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 	}
 	h.postSystemMessage(ctx, completed, kind, resp)
 	h.resolveLinkedTickets(ctx, completed)
+	// The collection ticket opens AFTER that cleanup: resolveLinkedTickets
+	// closes every lease-linked open ticket, so a ticket opened earlier in
+	// this function was resolved the instant it was created — a real debt
+	// with no actor chasing it (found by the batch-5 rehearsal, line 7).
+	// The debt outlives the return, so its ticket must too.
+	if arrearsOwedCents > 0 && arrearsCycle != nil && h.ticketRepo != nil {
+		leaseRef := lr.ID
+		desc := fmt.Sprintf(
+			"A rolling rental ended with %s still owed for the used days of its final week (cycle %d, %s – %s).\n\nCollection is ON-SESSION ONLY (never charge the saved card silently). The driver can settle it in the app with Pay now; otherwise arrange payment with them, or write the debt off via Admin → Rents → Billing cycles → Waive — uncollected days are borne by the owner per the rolling terms.\n\nLease request: %s",
+			formatMoney(arrearsOwedCents), arrearsCycle.CycleNumber,
+			arrearsCycle.PeriodStart.Format("Jan 2"), arrearsCycle.PeriodEnd.Format("Jan 2, 2006"), lr.ID)
+		if _, terr := h.ticketRepo.CreateSystemTicket(ctx, lr.DriverID, models.TicketCategoryPayments,
+			"Uncollected rental week — collection needed", desc, &leaseRef, nil); terr != nil {
+			h.logger.Error("rolling return: arrears ticket failed", "error", terr, "cycle_id", arrearsCycle.ID)
+		}
+	}
 	// Deliberately NO settleOwnerPayout: the cycle ledger rows written
 	// above (rewrite / void / weekly accruals) are the rolling money.
 
