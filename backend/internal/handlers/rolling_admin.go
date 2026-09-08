@@ -55,7 +55,9 @@ func (h *LeaseRequestHandler) AdminListBillingCycles(w http.ResponseWriter, r *h
 			return
 		}
 	}
+	openAmendment, _ := h.billingRepo.GetOpenAmendmentForLease(r.Context(), leaseID)
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"open_amendment":        openAmendment,
 		"billing_mode":          lr.BillingMode,
 		"rental_ends_at":        lr.RentalEndsAt,
 		"renewal_halted_reason": lr.RenewalHaltedReason,

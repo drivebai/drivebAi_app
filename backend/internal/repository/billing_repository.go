@@ -816,6 +816,7 @@ func (r *BillingRepository) ExpireAmendments(ctx context.Context, limit int) ([]
 		SET status = 'expired', acted_at = NOW(), updated_at = NOW()
 		WHERE id IN (SELECT id FROM billing_amendment_offers
 		             WHERE status = 'open' AND expires_at <= NOW() LIMIT $1)
+		  AND status = 'open'
 		RETURNING `+amendmentColumns, limit)
 	if err != nil {
 		return nil, err
@@ -878,12 +879,13 @@ func (r *BillingRepository) AcceptAmendment(ctx context.Context, offerID uuid.UU
 	var pm, brand, last4, fingerprint *string
 	var activatedAt *time.Time
 	var driverID uuid.UUID
+	var oldInterval string
 	err = tx.QueryRow(ctx, `
 		UPDATE lease_billing_consents
 		SET revoked_at = NOW(), revoked_reason = 'superseded: amendment ' || $2
 		WHERE lease_request_id = $1 AND revoked_at IS NULL
-		RETURNING driver_id, stripe_payment_method_id, card_brand, card_last4, card_fingerprint, activated_at`,
-		offer.LeaseRequestID, offerID).Scan(&driverID, &pm, &brand, &last4, &fingerprint, &activatedAt)
+		RETURNING driver_id, billing_interval, stripe_payment_method_id, card_brand, card_last4, card_fingerprint, activated_at`,
+		offer.LeaseRequestID, offerID).Scan(&driverID, &oldInterval, &pm, &brand, &last4, &fingerprint, &activatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAmendmentNoMandate
 	}
@@ -893,6 +895,12 @@ func (r *BillingRepository) AcceptAmendment(ctx context.Context, offerID uuid.UU
 	if pm == nil || *pm == "" || activatedAt == nil {
 		return nil, ErrAmendmentNoMandate // never amend an unactivated mandate
 	}
+	// Belt inside the TX (review HIGH): a price offer can never change the
+	// interval, whatever its row says — the successor inherits the old one.
+	successorInterval := offer.NewInterval
+	if offer.Kind == "price" {
+		successorInterval = oldInterval
+	}
 
 	row := tx.QueryRow(ctx, `
 		INSERT INTO lease_billing_consents
@@ -901,7 +909,7 @@ func (r *BillingRepository) AcceptAmendment(ctx context.Context, offerID uuid.UU
 			 card_brand, card_last4, card_fingerprint, activated_at, created_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
 		RETURNING `+billingConsentColumns,
-		offer.LeaseRequestID, driverID, offer.NewAmountCents, offer.NewInterval,
+		offer.LeaseRequestID, driverID, offer.NewAmountCents, successorInterval,
 		termsVersion, disclosureText, pm, brand, last4, fingerprint)
 	consent, err := scanBillingConsent(row)
 	if err != nil {

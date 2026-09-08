@@ -2168,3 +2168,13 @@ func (r *LeaseRequestRepository) AdvanceOnCycleWaived(ctx context.Context, lease
 	}
 	return tag.RowsAffected() == 1, nil
 }
+
+// ResetRenewalNotice re-arms the T−48h notice after an accepted amendment
+// so the next reminder quotes the amount that will actually be charged.
+func (r *LeaseRequestRepository) ResetRenewalNotice(ctx context.Context, leaseID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET renewal_notified_for = NULL, updated_at = NOW()
+		WHERE id = $1 AND billing_mode = 'rolling'
+	`, leaseID)
+	return err
+}

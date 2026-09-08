@@ -174,13 +174,27 @@ func (h *LeaseRequestHandler) billingRetryPhase(ctx context.Context, now time.Ti
 // cycle's ONE intent (stable create key) confirmed off-session; retries
 // re-confirm it. Outcomes route to paid / needs_action / retry ladder.
 func (h *LeaseRequestHandler) attemptCycleCharge(ctx context.Context, lr *models.LeaseRequest, c *models.BillingCycle, consent *models.BillingConsent) {
-	if h.stripe == nil {
-		return
-	}
-	// The consent row is the ONLY amount authority (design §2).
+	// The consent row is the ONLY amount authority (design §2). A mismatch
+	// is the accept/mint write-skew (amendment review HIGH): the mint read
+	// the superseded consent moments before the amendment committed. A
+	// provably-untouched cycle self-heals — waive it and the next tick
+	// re-mints at the successor amount; anything with an attempt or an
+	// intent stays refused and alarmed (never charge an unagreed amount).
 	if c.AmountCents != consent.AmountCents {
+		if c.Status == models.CycleScheduled && c.AttemptCount == 0 &&
+			(c.StripePaymentIntentID == nil || *c.StripePaymentIntentID == "") {
+			if waived, werr := h.billingRepo.WaiveUnpaidCycle(ctx, c.ID,
+				"auto: superseded by amendment — re-minted at the new amount"); werr == nil && waived {
+				h.logger.Info("billing charge: superseded cycle waived for re-mint",
+					"cycle_id", c.ID, "cycle_cents", c.AmountCents, "consent_cents", consent.AmountCents)
+				return
+			}
+		}
 		h.logger.Error("billing charge: cycle amount disagrees with consent — refusing",
 			"cycle_id", c.ID, "cycle_cents", c.AmountCents, "consent_cents", consent.AmountCents)
+		return
+	}
+	if h.stripe == nil {
 		return
 	}
 
@@ -1148,6 +1162,11 @@ func (h *LeaseRequestHandler) billingAmendmentExpiryPhase(ctx context.Context, n
 	for _, a := range expired {
 		lr, gerr := h.leaseRepo.GetByID(ctx, a.LeaseRequestID)
 		if gerr != nil || lr == nil {
+			continue
+		}
+		// A dead rental's lapsed offer expires silently — "the rental
+		// continues" copy on a returned/stopped lease is a lie.
+		if lr.VehicleReturnedAt != nil || lr.RenewalStoppedAt != nil || lr.Status != models.LeaseStatusPaid {
 			continue
 		}
 		consent, _ := h.billingRepo.GetActiveConsent(ctx, lr.ID)

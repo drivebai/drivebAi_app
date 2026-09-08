@@ -388,8 +388,9 @@ func TestAmendments_AcceptSwapsConsentAtomically(t *testing.T) {
 		fresh.StripePaymentMethodID == nil || *fresh.StripePaymentMethodID != "pm_am1" {
 		t.Fatalf("successor consent wrong: %+v", fresh)
 	}
-	if fresh.DisclosureText != models.RollingDriverDisclosureV2(17500) {
-		t.Errorf("successor disclosure not re-rendered at new amount")
+	if fresh.DisclosureText != models.RollingAmendmentDisclosure(17500, 15000) ||
+		fresh.TermsVersion != models.TermsVersionRollingAmendV1 {
+		t.Errorf("successor must record the AMENDMENT disclosure (review HIGH), got %s", fresh.TermsVersion)
 	}
 	var revoked int
 	var reason string
@@ -486,5 +487,76 @@ func TestAmendments_FixedTermRefusedAndAdvanceExact(t *testing.T) {
 	e.db.Pool.QueryRow(ctx, `SELECT rental_ends_at FROM lease_requests WHERE id=$1`, f.leaseID).Scan(&endsAt)
 	if !endsAt.Equal(pe) {
 		t.Errorf("advance = %v, want the cycle's period_end %v", endsAt, pe)
+	}
+}
+
+// Amendment review fixes: interval smuggling blocked at propose AND inside
+// the TX; the accept/mint write-skew self-heals; the amendment consent
+// records the amendment disclosure, not the booking text.
+func TestAmendments_ReviewFixes(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	billingRepo := repository.NewBillingRepository(e.db)
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+
+	f := seedRollingLease(t, e, "amrf", 3, 7)
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM billing_amendment_offers WHERE lease_request_id=$1`, f.leaseID)
+	})
+	if _, err := billingRepo.CreateConsent(ctx, &models.BillingConsent{
+		LeaseRequestID: f.leaseID, DriverID: f.driver, AmountCents: 15000,
+		TermsVersion: models.TermsVersionRollingV2, DisclosureText: "d",
+	}); err != nil {
+		t.Fatalf("consent: %v", err)
+	}
+	if ok, _ := billingRepo.ActivateConsent(ctx, f.leaseID, "pm_amrf", "visa", "4242", "fp"); !ok {
+		t.Fatalf("activate")
+	}
+
+	// Smuggle attempt: price kind + monthly interval → the offer inherits
+	// the consent's interval instead.
+	rr := httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, f.owner, f.leaseID,
+		`{"kind":"price","new_amount_cents":17500,"new_interval":"monthly"}`))
+	if rr.Code != 201 {
+		t.Fatalf("propose: %d (%s)", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Amendment models.BillingAmendmentOffer `json:"amendment"`
+	}
+	mustDecode(t, rr.Body.Bytes(), &created)
+	if created.Amendment.NewInterval != "weekly" {
+		t.Errorf("price offer interval = %s, want inherited 'weekly'", created.Amendment.NewInterval)
+	}
+	// Belt: even a DB-tampered monthly value on a price offer cannot reach
+	// the successor consent — the TX inherits the superseded interval.
+	if _, err := e.db.Pool.Exec(ctx, `UPDATE billing_amendment_offers SET new_interval='monthly' WHERE id=$1`, created.Amendment.ID); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	rr = httptest.NewRecorder()
+	e.leaseH.AcceptAmendment(rr, returnReq(t, f.driver, created.Amendment.ID, `{}`))
+	if rr.Code != 200 {
+		t.Fatalf("accept: %d (%s)", rr.Code, rr.Body.String())
+	}
+	successor, _ := billingRepo.GetActiveConsent(ctx, f.leaseID)
+	if successor == nil || successor.BillingInterval != "weekly" {
+		t.Fatalf("successor interval = %v, want weekly (TX belt)", successor)
+	}
+	// The recorded disclosure is the AMENDMENT text with both amounts.
+	want := models.RollingAmendmentDisclosure(17500, 15000)
+	if successor.DisclosureText != want || successor.TermsVersion != models.TermsVersionRollingAmendV1 {
+		t.Errorf("recorded disclosure/version wrong:\n got %q (%s)", successor.DisclosureText, successor.TermsVersion)
+	}
+
+	// Write-skew self-heal: a scheduled, unattempted cycle at the OLD
+	// amount waives on the next charge attempt and the lease re-mints.
+	stale := seedCycleRow(t, e, f.leaseID, 2, f.pickup.AddDate(0, 0, 7), f.pickup.AddDate(0, 0, 14), 15000, "scheduled", nil, nil, 0)
+	lr, _ := e.leaseRepo.GetByID(ctx, f.leaseID)
+	cycle, _ := billingRepo.GetCycle(ctx, stale)
+	e.leaseH.attemptCycleCharge(ctx, lr, cycle, successor)
+	var st string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM billing_cycles WHERE id=$1`, stale).Scan(&st)
+	if st != "waived" {
+		t.Errorf("stale-amount cycle = %s, want waived (self-heal re-mint)", st)
 	}
 }

@@ -56,3 +56,24 @@ func RollingDriverDisclosureV2(amountCents int64) string {
 			"Terms: %s.",
 		amt, amt, TermsVersionRollingV2)
 }
+
+// TermsVersionRollingAmendV1 is the amendment-acceptance package: the
+// successor consent must describe THE AMENDMENT, not the booking (review
+// HIGH: recording the booking text would assert a charge 'now' that never
+// happens at acceptance — corrupting the very evidence the ceremony
+// exists to produce).
+const TermsVersionRollingAmendV1 = "rolling-amendment-v1 (2026-09-08)"
+
+// RollingAmendmentDisclosure renders what the driver agrees to when
+// accepting a price amendment mid-tenancy. Recorded verbatim on the
+// successor consent; shown to the driver before accepting.
+func RollingAmendmentDisclosure(newAmountCents, oldAmountCents int64) string {
+	return fmt.Sprintf(
+		"You agree that from your next rental week, DriveBai will charge your saved card $%.2f every 7 days, "+
+			"replacing the current $%.2f. Your current paid week is unaffected and no charge happens now. "+
+			"Everything else you agreed to at booking stays the same: each new week is charged one day before it starts, "+
+			"you're reminded before every charge, returning the car in the app stops the charges, unused days of a "+
+			"returned week are refunded pro-rata, and the failed-payment policy is unchanged. "+
+			"Terms: %s.",
+		float64(newAmountCents)/100, float64(oldAmountCents)/100, TermsVersionRollingAmendV1)
+}

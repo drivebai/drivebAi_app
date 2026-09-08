@@ -60,11 +60,7 @@ func (h *LeaseRequestHandler) ProposeAmendment(w http.ResponseWriter, r *http.Re
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("new_amount_cents must be a positive amount"))
 		return
 	}
-	interval := body.NewInterval
-	if interval == "" {
-		interval = "weekly"
-	}
-	if interval != "weekly" && interval != "monthly" {
+	if body.NewInterval != "" && body.NewInterval != "weekly" && body.NewInterval != "monthly" {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("new_interval must be 'weekly' or 'monthly'"))
 		return
 	}
@@ -89,6 +85,18 @@ func (h *LeaseRequestHandler) ProposeAmendment(w http.ResponseWriter, r *http.Re
 	if body.Kind == "price" && body.NewAmountCents == consent.AmountCents {
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_CHANGE", "that is already the current amount"))
 		return
+	}
+	// A price offer INHERITS the mandate's interval — the body's value is
+	// ignored entirely (review HIGH: kind='price' + new_interval='monthly'
+	// smuggled a monthly mandate past the interval gate). An interval
+	// offer must actually change it.
+	interval := consent.BillingInterval
+	if body.Kind == "interval" {
+		if body.NewInterval == "" || body.NewInterval == consent.BillingInterval {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("new_interval must differ from the current interval"))
+			return
+		}
+		interval = body.NewInterval
 	}
 
 	offer, oerr := h.billingRepo.CreateAmendmentOffer(ctx, lr.ID, userID, body.Kind,
@@ -172,10 +180,16 @@ func (h *LeaseRequestHandler) AcceptAmendment(w http.ResponseWriter, r *http.Req
 			"this rental is ending — the proposal no longer applies"))
 		return
 	}
-	// The successor consent records the v2 package rendered at the NEW
-	// amount — the same text shape the driver originally agreed to.
-	disclosure := models.RollingDriverDisclosureV2(offer.NewAmountCents)
-	consent, err := h.billingRepo.AcceptAmendment(r.Context(), offer.ID, models.TermsVersionRollingV2, disclosure)
+	// The successor consent records the AMENDMENT disclosure — what is
+	// actually being agreed to now — never the booking text (review HIGH:
+	// that text asserts a charge 'now' which does not happen here).
+	current, cgerr := h.billingRepo.GetActiveConsent(r.Context(), lr.ID)
+	if cgerr != nil || current == nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_MANDATE", "weekly billing is not active on this rental"))
+		return
+	}
+	disclosure := models.RollingAmendmentDisclosure(offer.NewAmountCents, current.AmountCents)
+	consent, err := h.billingRepo.AcceptAmendment(r.Context(), offer.ID, models.TermsVersionRollingAmendV1, disclosure)
 	if err != nil {
 		switch err {
 		case repository.ErrAmendmentGone:
@@ -206,10 +220,16 @@ func (h *LeaseRequestHandler) AcceptAmendment(w http.ResponseWriter, r *http.Req
 	if fresh, gerr := h.leaseRepo.GetByID(r.Context(), lr.ID); gerr == nil && fresh != nil {
 		h.broadcastLeaseUpdate(r.Context(), fresh)
 	}
+	// The imminent-charge notice may have quoted the old amount — re-arm
+	// it so the next notice names what will actually be charged.
+	if rerr := h.leaseRepo.ResetRenewalNotice(r.Context(), lr.ID); rerr != nil {
+		h.logger.Warn("amendment: reset renewal notice", "error", rerr, "lease_request_id", lr.ID)
+	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"amount_cents":  consent.AmountCents,
 		"interval":      consent.BillingInterval,
 		"terms_version": consent.TermsVersion,
+		"disclosure":    consent.DisclosureText,
 	})
 }
 
