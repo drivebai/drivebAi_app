@@ -236,6 +236,19 @@ func (h *LeaseRequestHandler) attemptCycleCharge(ctx context.Context, lr *models
 			h.stripe.PlatformFee(c.AmountCents), fmt.Sprintf("cycle-%s", c.ID),
 			stripePIOptions(consent, c, lr))
 		if err != nil {
+			// A confirm that FAILS still leaves an intent at Stripe, and
+			// Stripe returns it inside the error body. Capture it before
+			// recording the outcome: an authentication_required parks the
+			// cycle in needs_action, and with no intent recorded the
+			// driver's rescue (the client secret) is unreachable — so the
+			// "approve this in the app" notice we send is a dead end until
+			// the 72h TTL marks them delinquent for a tap they were never
+			// actually offered (found by the batch-5 rehearsal, line 12).
+			if recovered := extractIntentIDFromError(err.Error()); recovered != "" {
+				if serr := h.billingRepo.StampIntent(ctx, c.ID, recovered); serr != nil {
+					h.logger.Error("billing charge: stamp intent from failed confirm", "error", serr, "cycle_id", c.ID)
+				}
+			}
 			h.recordCycleOutcomeError(ctx, lr, c, attempt, err)
 			return
 		}
@@ -377,6 +390,27 @@ func (h *LeaseRequestHandler) recordCycleOutcomeError(ctx context.Context, lr *m
 			h.logger.Warn("billing: renewals halted — dunning exhausted", "lease_request_id", lr.ID)
 		}
 	}
+}
+
+// extractIntentIDFromError pulls the PaymentIntent id Stripe embeds in a
+// failed confirm ("payment_intent": {"id": "pi_…"}). Same shape of parse as
+// extractDeclineCode: the error body is the only place this id exists when
+// create-and-confirm fails in one call.
+func extractIntentIDFromError(errBody string) string {
+	i := strings.Index(errBody, `"payment_intent"`)
+	if i < 0 {
+		return ""
+	}
+	rest := errBody[i:]
+	for _, key := range []string{`"id": "pi_`, `"id":"pi_`} {
+		if j := strings.Index(rest, key); j >= 0 {
+			tail := rest[j+len(key)-3:] // keep the "pi_" prefix
+			if k := strings.IndexByte(tail, '"'); k > 0 {
+				return tail[:k]
+			}
+		}
+	}
+	return ""
 }
 
 // extractDeclineCode pulls Stripe's decline_code/code out of a raw error body.

@@ -63,6 +63,10 @@ const (
 	cardMastercard = "tok_mastercard"
 	cardDecline    = "tok_chargeCustomerFail" // attaches, then fails on every charge
 	cardDispute    = "tok_createDispute"      // succeeds, then Stripe raises a dispute
+	// Attaches cleanly, then demands 3DS on every off-session charge.
+	// Lost/stolen cards deliberately have no entry here: Stripe refuses to
+	// attach them to a customer at all, so they cannot be a saved card.
+	cardAuthRequired = "tok_authenticationRequired"
 )
 
 type rehearsalEnv struct {
