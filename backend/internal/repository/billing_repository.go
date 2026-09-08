@@ -343,9 +343,14 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 	// The advance requires a LIVE occupancy (review H4): a charge landing
 	// after the return completed must not extend a finished rental — the
 	// caller refunds it instead.
+	// Advance to the PAID CYCLE's own period_end, not a hardcoded +7d —
+	// interval-agnostic (amendment batch: a monthly cycle advances 28d),
+	// and for weekly cycles exactly equivalent by the mint's anchor
+	// arithmetic (period_end = the rental_ends_at the cycle was minted
+	// from + 7d). GREATEST defends against replays ever shrinking it.
 	tag, err := tx.Exec(ctx, `
 		UPDATE lease_requests
-		SET rental_ends_at = rental_ends_at + INTERVAL '7 days',
+		SET rental_ends_at = GREATEST(rental_ends_at, $2),
 		    term_ending_notified_at = NULL,
 		    overdue_notified_at = NULL,
 		    overdue_escalated_at = NULL,
@@ -355,7 +360,7 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 		WHERE id = $1 AND billing_mode = 'rolling'
 		  AND status = 'paid' AND vehicle_returned_at IS NULL
 		  AND renewal_stopped_at IS NULL
-	`, c.LeaseRequestID)
+	`, c.LeaseRequestID, c.PeriodEnd)
 	if err != nil {
 		return nil, false, fmt.Errorf("advance paid-through: %w", err)
 	}
@@ -728,4 +733,182 @@ func (r *BillingRepository) UpdateConsentPaymentMethod(ctx context.Context, leas
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// --- Amendment offers (batch: rolling amendments) ---
+
+const amendmentColumns = `
+	id, lease_request_id, proposed_by, kind, new_amount_cents, new_interval,
+	status, expires_at, acted_at, created_at`
+
+func scanAmendment(row pgx.Row) (*models.BillingAmendmentOffer, error) {
+	var a models.BillingAmendmentOffer
+	err := row.Scan(&a.ID, &a.LeaseRequestID, &a.ProposedBy, &a.Kind, &a.NewAmountCents,
+		&a.NewInterval, &a.Status, &a.ExpiresAt, &a.ActedAt, &a.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// CreateAmendmentOffer opens the single live offer per lease; a second
+// open proposal returns (nil, nil) so the handler can 409 with the
+// existing offer.
+func (r *BillingRepository) CreateAmendmentOffer(ctx context.Context, leaseID, proposedBy uuid.UUID, kind string, newAmountCents int64, newInterval string, ttl time.Duration) (*models.BillingAmendmentOffer, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO billing_amendment_offers
+			(id, lease_request_id, proposed_by, kind, new_amount_cents, new_interval,
+			 status, expires_at, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'open', NOW() + $6, NOW(), NOW())
+		ON CONFLICT (lease_request_id) WHERE status = 'open' DO NOTHING
+		RETURNING `+amendmentColumns,
+		leaseID, proposedBy, kind, newAmountCents, newInterval, ttl)
+	a, err := scanAmendment(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create amendment offer: %w", err)
+	}
+	return a, nil
+}
+
+func (r *BillingRepository) GetAmendment(ctx context.Context, id uuid.UUID) (*models.BillingAmendmentOffer, error) {
+	row := r.db.Pool.QueryRow(ctx, `SELECT `+amendmentColumns+` FROM billing_amendment_offers WHERE id = $1`, id)
+	a, err := scanAmendment(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return a, err
+}
+
+// GetOpenAmendmentForLease returns the lease's live offer, if any.
+func (r *BillingRepository) GetOpenAmendmentForLease(ctx context.Context, leaseID uuid.UUID) (*models.BillingAmendmentOffer, error) {
+	row := r.db.Pool.QueryRow(ctx, `
+		SELECT `+amendmentColumns+` FROM billing_amendment_offers
+		WHERE lease_request_id = $1 AND status = 'open'`, leaseID)
+	a, err := scanAmendment(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return a, err
+}
+
+// CloseAmendment moves an open, unexpired offer to declined/withdrawn
+// (claimed-once). Acceptance goes through AcceptAmendment instead — it
+// must swap the consent in the same transaction.
+func (r *BillingRepository) CloseAmendment(ctx context.Context, id uuid.UUID, to string) (bool, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE billing_amendment_offers
+		SET status = $2, acted_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status = 'open' AND expires_at > NOW()
+	`, id, to)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ExpireAmendments sweeps lapsed offers, returning them for notification.
+func (r *BillingRepository) ExpireAmendments(ctx context.Context, limit int) ([]*models.BillingAmendmentOffer, error) {
+	rows, err := r.db.Pool.Query(ctx, `
+		UPDATE billing_amendment_offers
+		SET status = 'expired', acted_at = NOW(), updated_at = NOW()
+		WHERE id IN (SELECT id FROM billing_amendment_offers
+		             WHERE status = 'open' AND expires_at <= NOW() LIMIT $1)
+		RETURNING `+amendmentColumns, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.BillingAmendmentOffer
+	for rows.Next() {
+		a, serr := scanAmendment(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AcceptAmendment is the ONE transaction the amendment model leans on:
+// claim the offer, re-verify no open cycle (an in-dunning week must
+// finish at ITS agreed amount — the charge assert would strand it
+// otherwise), supersede the active consent, and mint the successor with
+// fresh acceptance evidence — same PM, new amount/interval, the new
+// disclosure recorded verbatim. No window exists where the lease has no
+// active consent (the mint phase would halt consent_revoked in it).
+// Returns the new consent; sentinel errors: ErrAmendmentGone (lost the
+// claim / expired), ErrAmendmentCycleOpen, ErrAmendmentNoMandate.
+func (r *BillingRepository) AcceptAmendment(ctx context.Context, offerID uuid.UUID, termsVersion, disclosureText string) (*models.BillingConsent, error) {
+	tx, err := r.db.Pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	offer := &models.BillingAmendmentOffer{}
+	err = tx.QueryRow(ctx, `
+		UPDATE billing_amendment_offers
+		SET status = 'accepted', acted_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status = 'open' AND expires_at > NOW()
+		RETURNING `+amendmentColumns, offerID).Scan(
+		&offer.ID, &offer.LeaseRequestID, &offer.ProposedBy, &offer.Kind, &offer.NewAmountCents,
+		&offer.NewInterval, &offer.Status, &offer.ExpiresAt, &offer.ActedAt, &offer.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAmendmentGone
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim amendment: %w", err)
+	}
+
+	var openCycles int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM billing_cycles
+		WHERE lease_request_id = $1
+		  AND status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final')`,
+		offer.LeaseRequestID).Scan(&openCycles); err != nil {
+		return nil, fmt.Errorf("amendment open-cycle guard: %w", err)
+	}
+	if openCycles > 0 {
+		return nil, ErrAmendmentCycleOpen
+	}
+
+	var pm, brand, last4, fingerprint *string
+	var activatedAt *time.Time
+	var driverID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		UPDATE lease_billing_consents
+		SET revoked_at = NOW(), revoked_reason = 'superseded: amendment ' || $2
+		WHERE lease_request_id = $1 AND revoked_at IS NULL
+		RETURNING driver_id, stripe_payment_method_id, card_brand, card_last4, card_fingerprint, activated_at`,
+		offer.LeaseRequestID, offerID).Scan(&driverID, &pm, &brand, &last4, &fingerprint, &activatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAmendmentNoMandate
+	}
+	if err != nil {
+		return nil, fmt.Errorf("supersede consent: %w", err)
+	}
+	if pm == nil || *pm == "" || activatedAt == nil {
+		return nil, ErrAmendmentNoMandate // never amend an unactivated mandate
+	}
+
+	row := tx.QueryRow(ctx, `
+		INSERT INTO lease_billing_consents
+			(id, lease_request_id, driver_id, amount_cents, billing_interval,
+			 terms_version, disclosure_text, stripe_payment_method_id,
+			 card_brand, card_last4, card_fingerprint, activated_at, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+		RETURNING `+billingConsentColumns,
+		offer.LeaseRequestID, driverID, offer.NewAmountCents, offer.NewInterval,
+		termsVersion, disclosureText, pm, brand, last4, fingerprint)
+	consent, err := scanBillingConsent(row)
+	if err != nil {
+		return nil, fmt.Errorf("mint successor consent: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return consent, nil
 }

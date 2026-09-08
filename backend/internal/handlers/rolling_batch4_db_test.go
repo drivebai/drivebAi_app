@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -303,5 +304,187 @@ func TestBatch4_ReviewFix_SecondChargeOnWrittenOffCycle(t *testing.T) {
 	}
 	if e.leaseH.handleArrearsPaid(ctx, c2, "pi_second") {
 		t.Errorf("second distinct charge on waived cycle ACKed — silently kept")
+	}
+}
+
+// ─── Amendment batch ────────────────────────────────────────────────────────
+
+// The full amendment lifecycle at the DB level: propose → accept swaps the
+// consent atomically (old revoked 'superseded', successor active at the
+// new amount, same card), the offer claims once, and the next mint uses
+// the new amount. Decline/withdraw/expiry leave the mandate untouched.
+func TestAmendments_AcceptSwapsConsentAtomically(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	billingRepo := repository.NewBillingRepository(e.db)
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+
+	f := seedRollingLease(t, e, "am1", 3, 7)
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM billing_amendment_offers WHERE lease_request_id=$1`, f.leaseID)
+	})
+	if _, err := billingRepo.CreateConsent(ctx, &models.BillingConsent{
+		LeaseRequestID: f.leaseID, DriverID: f.driver, AmountCents: 15000,
+		TermsVersion: models.TermsVersionRollingV2, DisclosureText: models.RollingDriverDisclosureV2(15000),
+	}); err != nil {
+		t.Fatalf("consent: %v", err)
+	}
+	if ok, err := billingRepo.ActivateConsent(ctx, f.leaseID, "pm_am1", "visa", "4242", "fp"); err != nil || !ok {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Owner proposes via the endpoint (guards exercised end to end).
+	rr := httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, f.owner, f.leaseID, `{"kind":"price","new_amount_cents":17500}`))
+	if rr.Code != 201 {
+		t.Fatalf("propose: %d (%s)", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Amendment models.BillingAmendmentOffer `json:"amendment"`
+	}
+	mustDecode(t, rr.Body.Bytes(), &created)
+
+	// A second proposal is refused while one is open.
+	rr = httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, f.owner, f.leaseID, `{"kind":"price","new_amount_cents":20000}`))
+	if rr.Code != 409 {
+		t.Errorf("second propose = %d, want 409 OFFER_OPEN", rr.Code)
+	}
+	// Interval proposals are gated until the monthly bounds ship.
+	rr = httptest.NewRecorder()
+	e.leaseH.WithdrawAmendment(rr, returnReq(t, f.owner, created.Amendment.ID, `{}`))
+	if rr.Code != 200 {
+		t.Fatalf("withdraw: %d (%s)", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, f.owner, f.leaseID, `{"kind":"interval","new_amount_cents":52000,"new_interval":"monthly"}`))
+	if rr.Code != 409 {
+		t.Errorf("interval propose = %d, want 409 INTERVAL_CHANGE_NOT_READY", rr.Code)
+	}
+
+	// Fresh price proposal → driver accepts.
+	rr = httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, f.owner, f.leaseID, `{"kind":"price","new_amount_cents":17500}`))
+	if rr.Code != 201 {
+		t.Fatalf("re-propose: %d (%s)", rr.Code, rr.Body.String())
+	}
+	mustDecode(t, rr.Body.Bytes(), &created)
+	// Owner cannot accept their own offer.
+	rr = httptest.NewRecorder()
+	e.leaseH.AcceptAmendment(rr, returnReq(t, f.owner, created.Amendment.ID, `{}`))
+	if rr.Code != 403 {
+		t.Errorf("owner accept = %d, want 403", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	e.leaseH.AcceptAmendment(rr, returnReq(t, f.driver, created.Amendment.ID, `{}`))
+	if rr.Code != 200 {
+		t.Fatalf("accept: %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	// Consent swapped: successor active at 17500 with the SAME card, old
+	// row revoked 'superseded', disclosure re-rendered at the new amount.
+	fresh, _ := billingRepo.GetActiveConsent(ctx, f.leaseID)
+	if fresh == nil || fresh.AmountCents != 17500 || fresh.ActivatedAt == nil ||
+		fresh.StripePaymentMethodID == nil || *fresh.StripePaymentMethodID != "pm_am1" {
+		t.Fatalf("successor consent wrong: %+v", fresh)
+	}
+	if fresh.DisclosureText != models.RollingDriverDisclosureV2(17500) {
+		t.Errorf("successor disclosure not re-rendered at new amount")
+	}
+	var revoked int
+	var reason string
+	e.db.Pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(max(revoked_reason), '') FROM lease_billing_consents
+		WHERE lease_request_id=$1 AND revoked_at IS NOT NULL`, f.leaseID).Scan(&revoked, &reason)
+	if revoked != 1 || len(reason) < 10 {
+		t.Errorf("old consent not superseded: n=%d reason=%q", revoked, reason)
+	}
+	// Accept is claimed-once.
+	rr = httptest.NewRecorder()
+	e.leaseH.AcceptAmendment(rr, returnReq(t, f.driver, created.Amendment.ID, `{}`))
+	if rr.Code != 409 {
+		t.Errorf("double accept = %d, want 409 AMENDMENT_GONE", rr.Code)
+	}
+}
+
+// Acceptance refuses while a cycle is in flight — the in-dunning week must
+// finish at ITS agreed amount.
+func TestAmendments_AcceptRefusedWithOpenCycle(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	billingRepo := repository.NewBillingRepository(e.db)
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+
+	f := seedRollingLease(t, e, "am2", 3, 7)
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM billing_amendment_offers WHERE lease_request_id=$1`, f.leaseID)
+	})
+	if _, err := billingRepo.CreateConsent(ctx, &models.BillingConsent{
+		LeaseRequestID: f.leaseID, DriverID: f.driver, AmountCents: 15000,
+		TermsVersion: models.TermsVersionRollingV2, DisclosureText: "d",
+	}); err != nil {
+		t.Fatalf("consent: %v", err)
+	}
+	if ok, _ := billingRepo.ActivateConsent(ctx, f.leaseID, "pm_am2", "visa", "4242", "fp"); !ok {
+		t.Fatalf("activate")
+	}
+	rr := httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, f.owner, f.leaseID, `{"kind":"price","new_amount_cents":17500}`))
+	if rr.Code != 201 {
+		t.Fatalf("propose: %d (%s)", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Amendment models.BillingAmendmentOffer `json:"amendment"`
+	}
+	mustDecode(t, rr.Body.Bytes(), &created)
+	seedCycleRow(t, e, f.leaseID, 2, f.pickup.AddDate(0, 0, 7), f.pickup.AddDate(0, 0, 14), 15000, "retrying", strPtr("pi_am2"), nil, 0)
+
+	rr = httptest.NewRecorder()
+	e.leaseH.AcceptAmendment(rr, returnReq(t, f.driver, created.Amendment.ID, `{}`))
+	if rr.Code != 409 {
+		t.Fatalf("accept with open cycle = %d, want 409 CYCLE_IN_FLIGHT (%s)", rr.Code, rr.Body.String())
+	}
+	// Offer survives the refusal (still open) and the mandate is untouched.
+	still, _ := billingRepo.GetOpenAmendmentForLease(ctx, f.leaseID)
+	if still == nil {
+		t.Errorf("offer consumed by a refused accept")
+	}
+	consent, _ := billingRepo.GetActiveConsent(ctx, f.leaseID)
+	if consent == nil || consent.AmountCents != 15000 {
+		t.Errorf("mandate disturbed by refused accept: %+v", consent)
+	}
+}
+
+// Amendment endpoints refuse fixed-term leases by predicate, and the
+// advance-by-period_end change keeps weekly arithmetic exact.
+func TestAmendments_FixedTermRefusedAndAdvanceExact(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	billingRepo := repository.NewBillingRepository(e.db)
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+
+	owner := e.seedUser(t, "car_owner", "am_ft_o_"+uuid.New().String()[:8]+"@example.com")
+	driver := e.seedUser(t, "driver", "am_ft_d_"+uuid.New().String()[:8]+"@example.com")
+	e.seedLicense(t, driver)
+	ftLease, _ := e.seedActiveRental(t, owner, driver)
+	e.cleanupLedger(t, ftLease)
+	rr := httptest.NewRecorder()
+	e.leaseH.ProposeAmendment(rr, returnReq(t, owner, ftLease, `{"kind":"price","new_amount_cents":17500}`))
+	if rr.Code != 409 {
+		t.Errorf("propose on fixed-term = %d, want 409 NOT_ROLLING", rr.Code)
+	}
+
+	// Advance: a paid rolling cycle advances rental_ends_at to exactly the
+	// cycle's period_end (weekly equivalence of the old +7d arithmetic).
+	f := seedRollingLease(t, e, "am3", 8, 7)
+	pe := f.pickup.AddDate(0, 0, 14)
+	c2 := seedCycleRow(t, e, f.leaseID, 2, f.pickup.AddDate(0, 0, 7), pe, 15000, "charging", strPtr("pi_am3"), nil, 0)
+	if _, advanced, err := billingRepo.AdvanceOnCyclePaid(ctx, c2); err != nil || !advanced {
+		t.Fatalf("advance: advanced=%v err=%v", advanced, err)
+	}
+	var endsAt time.Time
+	e.db.Pool.QueryRow(ctx, `SELECT rental_ends_at FROM lease_requests WHERE id=$1`, f.leaseID).Scan(&endsAt)
+	if !endsAt.Equal(pe) {
+		t.Errorf("advance = %v, want the cycle's period_end %v", endsAt, pe)
 	}
 }

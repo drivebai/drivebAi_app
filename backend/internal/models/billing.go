@@ -103,3 +103,34 @@ type BillingConsent struct {
 func (c *BillingConsent) Active() bool {
 	return c.RevokedAt == nil && c.ActivatedAt != nil && c.StripePaymentMethodID != nil
 }
+
+// --- Amendments (price / interval offers) ---
+
+// AmendmentOfferTTL bounds how long an owner's proposal stays open.
+const AmendmentOfferTTL = 7 * 24 * time.Hour
+
+// BillingAmendmentOffer is an owner's proposed change to a rolling
+// mandate. Nothing changes until the DRIVER accepts — the recorded
+// disclosure promises "this amount never changes without a new agreement
+// from you", so a unilateral write would be a card-network violation.
+type BillingAmendmentOffer struct {
+	ID             uuid.UUID  `json:"id"`
+	LeaseRequestID uuid.UUID  `json:"lease_request_id"`
+	ProposedBy     uuid.UUID  `json:"proposed_by"`
+	Kind           string     `json:"kind"` // 'price' | 'interval'
+	NewAmountCents int64      `json:"new_amount_cents"`
+	NewInterval    string     `json:"new_interval"`
+	Status         string     `json:"status"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	ActedAt        *time.Time `json:"acted_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// BillingIntervalLength maps a consent's interval to its cycle length.
+// Month = 4 weeks (28d) platform-wide, per RentMonthWeeks.
+func BillingIntervalLength(interval string) time.Duration {
+	if interval == "monthly" {
+		return 28 * 24 * time.Hour
+	}
+	return BillingCycleLength
+}

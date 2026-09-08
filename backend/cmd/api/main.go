@@ -513,6 +513,13 @@ func main() {
 			r.Post("/lease-requests/{id}/billing/pay-now", leaseHandler.PayNow)
 			r.Post("/lease-requests/{id}/billing/card-update", leaseHandler.CardUpdateStart)
 			r.Post("/lease-requests/{id}/billing/card-update/complete", leaseHandler.CardUpdateComplete)
+
+			// Rolling amendments: owner proposes, driver accepts/declines,
+			// new consent applies from the next cycle.
+			r.Post("/lease-requests/{id}/billing/amendments", leaseHandler.ProposeAmendment)
+			r.Post("/billing/amendments/{id}/accept", leaseHandler.AcceptAmendment)
+			r.Post("/billing/amendments/{id}/decline", leaseHandler.DeclineAmendment)
+			r.Post("/billing/amendments/{id}/withdraw", leaseHandler.WithdrawAmendment)
 			r.Post("/lease-requests/{id}/pickup-confirm", leaseHandler.ConfirmPickup)
 			r.Post("/lease-requests/{id}/pickup-deadline/extend", leaseHandler.ExtendPickupDeadline)
 

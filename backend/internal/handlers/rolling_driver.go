@@ -127,6 +127,10 @@ func (h *LeaseRequestHandler) GetBillingStatus(w http.ResponseWriter, r *http.Re
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	// A pending amendment is part of the billing picture for BOTH parties.
+	if amendment, aerr := h.billingRepo.GetOpenAmendmentForLease(ctx, lr.ID); aerr == nil && amendment != nil {
+		resp["pending_amendment"] = amendment
+	}
 	// Post-return arrears (its own bucket — the open-cycle query excludes it).
 	if latest, lerr := h.billingRepo.GetOpenOrLatestPaidCycle(ctx, lr.ID); lerr == nil && latest != nil &&
 		latest.Status == models.CycleArrearsDue {

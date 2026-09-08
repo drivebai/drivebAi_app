@@ -379,8 +379,14 @@ func TestBatch2_RollingEngineMechanics(t *testing.T) {
 	var delinquent *time.Time
 	var overdueNotified *time.Time
 	e.db.Pool.QueryRow(ctx, `SELECT rental_ends_at, delinquent_since, overdue_notified_at FROM lease_requests WHERE id=$1`, leaseID).Scan(&endsAfter, &delinquent, &overdueNotified)
-	if got := endsAfter.Sub(endsBefore); got != 7*24*time.Hour {
-		t.Fatalf("advance moved %v, want 168h (anchor arithmetic)", got)
+	// The advance lands exactly ON the paid cycle's period_end (amendment
+	// batch: interval-agnostic; for a weekly cycle minted from the current
+	// paid-through this IS the old +168h anchor arithmetic, drift-free).
+	if !endsAfter.Equal(paid.PeriodEnd) {
+		t.Fatalf("advance = %v, want the cycle's period_end %v", endsAfter, paid.PeriodEnd)
+	}
+	if got := endsAfter.Sub(endsBefore).Round(time.Second); got != 7*24*time.Hour {
+		t.Fatalf("advance moved %v, want ~168h (anchor arithmetic)", got)
 	}
 	if delinquent != nil || overdueNotified != nil {
 		t.Fatal("advance did not clear delinquency/term flags")

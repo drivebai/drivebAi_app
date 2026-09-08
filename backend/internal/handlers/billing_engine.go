@@ -50,6 +50,7 @@ func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
 	h.runStuckChargingPhase(ctx, now)
 	h.billingNeedsActionPhase(ctx, now)
 	h.billingReturnedLeaseCloserPhase(ctx, now)
+	h.billingAmendmentExpiryPhase(ctx, now)
 	h.billingPromotePhase(ctx, now)
 }
 
@@ -124,7 +125,7 @@ func (h *LeaseRequestHandler) billingMintPhase(ctx context.Context, now time.Tim
 		}
 		periodStart := *lr.RentalEndsAt
 		cycle, merr := h.billingRepo.MintCycle(ctx, lr.ID, next, periodStart,
-			periodStart.Add(models.BillingCycleLength), consent.AmountCents, now)
+			periodStart.Add(models.BillingIntervalLength(consent.BillingInterval)), consent.AmountCents, now)
 		if merr != nil || cycle == nil {
 			h.logger.Error("billing mint: mint", "error", merr, "lease_request_id", lr.ID)
 			continue
@@ -1133,5 +1134,37 @@ func (h *LeaseRequestHandler) openArrearsTicket(ctx context.Context, lr *models.
 		c.PeriodStart.Format("Jan 2"), c.PeriodEnd.Format("Jan 2, 2006"), lr.ID)
 	if _, terr := h.ticketRepo.CreateSystemTicket(ctx, lr.DriverID, models.TicketCategoryPayments, subject, desc, &leaseRef, nil); terr != nil {
 		h.logger.Error("arrears ticket failed", "error", terr, "cycle_id", c.ID)
+	}
+}
+
+// billingAmendmentExpiryPhase closes lapsed offers and tells both sides
+// plainly what continues: the rental, at the terms already agreed.
+func (h *LeaseRequestHandler) billingAmendmentExpiryPhase(ctx context.Context, now time.Time) {
+	expired, err := h.billingRepo.ExpireAmendments(ctx, 20)
+	if err != nil {
+		h.logger.Error("amendment expiry: sweep", "error", err)
+		return
+	}
+	for _, a := range expired {
+		lr, gerr := h.leaseRepo.GetByID(ctx, a.LeaseRequestID)
+		if gerr != nil || lr == nil {
+			continue
+		}
+		consent, _ := h.billingRepo.GetActiveConsent(ctx, lr.ID)
+		cur := ""
+		if consent != nil {
+			cur = fmt.Sprintf(" at $%.2f", float64(consent.AmountCents)/100)
+		}
+		chatID := lr.ChatID
+		leaseRef := lr.ID
+		go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
+			"Price proposal expired",
+			fmt.Sprintf("The driver didn't respond to your proposed $%.2f — the rental continues%s. You can propose again, or end auto-renew from the rental card.",
+				float64(a.NewAmountCents)/100, cur),
+			&chatID, &leaseRef)
+		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypeLeaseRequest,
+			"Price proposal expired",
+			fmt.Sprintf("The owner's proposed $%.2f lapsed — your rental continues unchanged%s.", float64(a.NewAmountCents)/100, cur),
+			&chatID, &leaseRef)
 	}
 }
