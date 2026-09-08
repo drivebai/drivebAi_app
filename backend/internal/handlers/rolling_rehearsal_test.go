@@ -50,6 +50,11 @@ import (
 const (
 	rehearsalWebhookSecret = "whsec_rehearsal_local_only"
 	rehearsalWeeklyCents   = 15000
+	// Stated here in cents, INDEPENDENTLY of models.ComputeReturnRefund, so
+	// the rehearsal has its own arithmetic to check the engine against
+	// (harness review: expectations computed by the function under test
+	// prove nothing). $150.00 / 7 days = $21.42 per day, integer cents.
+	rehearsalPerDayCents = 2142
 
 	// Stripe TEST TOKENS, not raw PANs: this account (like most) has raw
 	// card data APIs disabled, and tokens are the supported way to pick a
@@ -433,7 +438,9 @@ func (e *rehearsalEnv) sweepAndSettle(t *testing.T, leaseID uuid.UUID) *models.B
 	if latest.StripePaymentIntentID != nil && *latest.StripePaymentIntentID != "" {
 		pi := e.call(t, "GET", "payment_intents/"+*latest.StripePaymentIntentID, nil)
 		if str(pi, "status") == "succeeded" {
-			e.deliverWebhook(t, "payment_intent.succeeded", pi)
+			if code := e.deliverWebhook(t, "payment_intent.succeeded", pi); code != 200 {
+				t.Fatalf("webhook route rejected a real success event: %d", code)
+			}
 		}
 	}
 	fresh, _ := e.billingRepo.GetCycle(ctx, latest.ID)

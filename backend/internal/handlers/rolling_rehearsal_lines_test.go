@@ -268,10 +268,8 @@ func TestBatch5_Line4_MidWeekReturn(t *testing.T) {
 		t.Fatalf("initiate return: %d (%s)", rr.Code, rr.Body.String())
 	}
 	ret, _ := e.returnRepo.GetByLeaseRequestID(ctx, L.leaseID)
-	fresh, _ := e.billingRepo.GetCycle(ctx, cycle.ID)
-	want := models.ComputeReturnRefund(fresh.AmountCents, 1, fresh.PeriodStart, ret.ReturnedAt)
-	t.Logf("return initiated %d days into week 2: preview refund $%.2f of $%.2f (used %d days)",
-		3, float64(ret.RefundAmountCents)/100, float64(ret.PaidAmountCents)/100, ret.UsedDays)
+	t.Logf("return initiated 3 days into week 2: preview refund $%.2f of $%.2f (used %d days)",
+		float64(ret.RefundAmountCents)/100, float64(ret.PaidAmountCents)/100, ret.UsedDays)
 
 	rr = httptest.NewRecorder()
 	e.returnH.OwnerConfirm(rr, returnReq(t, L.owner, ret.ID, `{}`))
@@ -280,6 +278,29 @@ func TestBatch5_Line4_MidWeekReturn(t *testing.T) {
 	}
 	ret, _ = e.returnRepo.GetByLeaseRequestID(ctx, L.leaseID)
 	after, _ := e.billingRepo.GetCycle(ctx, cycle.ID)
+
+	// The week under test must be the shape we think it is BEFORE any
+	// arithmetic is judged (harness review: a drifted mint window would
+	// otherwise feed a correct formula the wrong inputs, undetected).
+	if after.AmountCents != rehearsalWeeklyCents {
+		t.Fatalf("week 2 charged %d, expected the agreed %d", after.AmountCents, rehearsalWeeklyCents)
+	}
+	if span := after.PeriodEnd.Sub(after.PeriodStart); span != 7*24*time.Hour {
+		t.Fatalf("week 2 spans %v, expected exactly 168h", span)
+	}
+	// INDEPENDENT expectation: 4 used days of a $150.00 week at $21.42/day
+	// leaves $64.32 refundable and $85.68 kept. Written out, not computed
+	// by models.ComputeReturnRefund — that is the function on trial.
+	const wantUsedDays = 4
+	wantRefund := int64(rehearsalWeeklyCents - wantUsedDays*rehearsalPerDayCents) // 6432
+	wantKept := int64(wantUsedDays * rehearsalPerDayCents)                        // 8568
+	if ret.UsedDays != wantUsedDays {
+		t.Errorf("used days = %d, want %d (returned 3 days + change into the week)", ret.UsedDays, wantUsedDays)
+	}
+	if cross := models.ComputeReturnRefund(after.AmountCents, 1, after.PeriodStart, ret.ReturnedAt); cross.RefundAmountCents != wantRefund {
+		t.Errorf("engine formula says %d, independent arithmetic says %d — they disagree",
+			cross.RefundAmountCents, wantRefund)
+	}
 
 	// What Stripe actually returned to the driver.
 	refunds := e.call(t, "GET", "refunds?payment_intent="+strOrEmpty(after.StripePaymentIntentID), nil)
@@ -299,11 +320,25 @@ func TestBatch5_Line4_MidWeekReturn(t *testing.T) {
 		ret.Status, after.Status, refundCount, float64(refundTotal)/100,
 		float64(kept)/100, float64(after.AmountCents)/100, payoutStatus, payoutSource)
 
-	if refundCount != 1 || refundTotal != want.RefundAmountCents {
-		t.Errorf("stripe refunded %d refund(s) totalling %d, want exactly 1 of %d", refundCount, refundTotal, want.RefundAmountCents)
+	if refundCount != 1 || refundTotal != wantRefund {
+		t.Errorf("stripe refunded %d refund(s) totalling %d, want exactly 1 of %d", refundCount, refundTotal, wantRefund)
 	}
-	if kept != after.AmountCents-want.RefundAmountCents {
-		t.Errorf("owner kept %d, want %d (charge − refund)", kept, after.AmountCents-want.RefundAmountCents)
+	if kept != wantKept {
+		t.Errorf("owner kept %d, want %d", kept, wantKept)
+	}
+	// The number shown to the driver must be the number Stripe returned.
+	if ret.RefundAmountCents != refundTotal {
+		t.Errorf("driver was told %d but stripe returned %d", ret.RefundAmountCents, refundTotal)
+	}
+
+	// Cardinal invariant: a returned lease is never charged again.
+	beforeCycles := e.cycleCount(t, L.leaseID)
+	e.ageLease(t, L.leaseID, 8*24*time.Hour)
+	e.leaseH.runBillingSweep(ctx)
+	afterCycles := e.cycleCount(t, L.leaseID)
+	t.Logf("post-return sweep: cycles %d → %d (a returned lease must never be charged again)", beforeCycles, afterCycles)
+	if afterCycles != beforeCycles {
+		t.Errorf("sweep minted %d new cycle(s) on a RETURNED lease", afterCycles-beforeCycles)
 	}
 	var legacy int
 	e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM owner_payouts WHERE lease_request_id=$1 AND billing_cycle_id IS NULL`, L.leaseID).Scan(&legacy)
@@ -369,6 +404,13 @@ func TestBatch5_Line5_CrashInsideEveryIdempotencyWindow(t *testing.T) {
 		UPDATE vehicle_returns SET status='owner_confirmed', refund_id=NULL, refund_status='pending' WHERE id=$1`, done.ID); err != nil {
 		t.Fatalf("simulate crash W3: %v", err)
 	}
+	// The CYCLE must also look un-refunded, or the replay short-circuits on
+	// its own record and never reaches Stripe — which is what made this
+	// window's idempotency key untested (harness review).
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles SET status='paid', refund_id=NULL, refunded_cents=0 WHERE id=$1`, c2.ID); err != nil {
+		t.Fatalf("simulate crash W3 (cycle): %v", err)
+	}
 	replay, _ := e.returnRepo.GetByID(ctx, done.ID)
 	e.returnH.issueRefund(ctx, replay)
 	cycleAfter, _ := e.billingRepo.GetCycle(ctx, c2.ID)
@@ -415,6 +457,73 @@ func TestBatch5_Line5_CrashInsideEveryIdempotencyWindow(t *testing.T) {
 	t.Logf("W5 bootstrap mint→accrue crash: week-1 owner share rebuilt by the next sweep (rows=%d)", healedRows)
 	if healedRows != 1 {
 		t.Errorf("W5: week-1 accrual not healed (rows=%d)", healedRows)
+	}
+
+	// W6/W7 need a live lease; the one above has been returned.
+	M := e.startRollingRental(t, "crash2", cardSuccess, clock, now)
+	e.ageLease(t, M.leaseID, 7*24*time.Hour)
+	e.leaseH.runBillingSweep(ctx) // mints + charges week 2
+	mCycles, _ := e.billingRepo.ListCyclesForLease(ctx, M.leaseID)
+	mc := mCycles[len(mCycles)-1]
+
+	// W6 — the process died mid-confirm, leaving the cycle in 'charging'.
+	// Nothing in the rehearsal had ever produced this state, so the
+	// stuck-charging phase had never executed once (harness review).
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles SET status='charging', updated_at = NOW() - interval '10 minutes' WHERE id=$1`, mc.ID); err != nil {
+		t.Fatalf("simulate crash W6: %v", err)
+	}
+	e.leaseH.runBillingSweep(ctx)
+	recovered, _ := e.billingRepo.GetCycle(ctx, mc.ID)
+	nIntents := e.countPIsForCycle(t, M.customerID, mc.ID)
+	t.Logf("W6 crash mid-confirm ('charging'): stuck-charging phase re-read the intent → cycle=%s, stripe intents still %d",
+		recovered.Status, nIntents)
+	if recovered.Status != models.CyclePaid {
+		t.Errorf("W6: cycle stuck at %s — a crash mid-charge has no exit", recovered.Status)
+	}
+	if nIntents != 1 {
+		t.Errorf("W6: %d intents — recovery created a second charge", nIntents)
+	}
+
+	// W7 — make the WEBHOOK the settling actor, not the inline charge
+	// outcome. Every delivery so far landed on an already-settled cycle, so
+	// the production route (metadata → handleCyclePaid → advance) was never
+	// load-bearing in the rehearsal (harness review).
+	e.ageLease(t, M.leaseID, 7*24*time.Hour)
+	e.leaseH.runBillingSweep(ctx)
+	mCycles, _ = e.billingRepo.ListCyclesForLease(ctx, M.leaseID)
+	wk := mCycles[len(mCycles)-1]
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE billing_cycles SET status='charging' WHERE id=$1`, wk.ID); err != nil {
+		t.Fatalf("simulate W7: %v", err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET rental_ends_at = $2 WHERE id=$1`, M.leaseID, wk.PeriodStart); err != nil {
+		t.Fatalf("simulate W7 (rewind): %v", err)
+	}
+	// Measured from the crash state, not from before it.
+	beforeThrough := e.paidThrough(t, M.leaseID)
+	if _, err := e.db.Pool.Exec(ctx, `DELETE FROM owner_payouts WHERE billing_cycle_id=$1`, wk.ID); err != nil {
+		t.Fatalf("simulate W7 (accrual): %v", err)
+	}
+	code := e.deliverPIEvent(t, "payment_intent.succeeded", strOrEmpty(wk.StripePaymentIntentID))
+	settledByHook, _ := e.billingRepo.GetCycle(ctx, wk.ID)
+	afterThrough := e.paidThrough(t, M.leaseID)
+	var hookAccruals int
+	e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM owner_payouts WHERE billing_cycle_id=$1`, wk.ID).Scan(&hookAccruals)
+	t.Logf("W7 webhook as the settling actor: http=%d cycle=%s paid-through %s → %s, owner accrual rows=%d",
+		code, settledByHook.Status, beforeThrough.Format(time.RFC3339), afterThrough.Format(time.RFC3339), hookAccruals)
+	if code != 200 {
+		t.Errorf("W7: webhook route returned %d", code)
+	}
+	if settledByHook.Status != models.CyclePaid {
+		t.Errorf("W7: webhook did not settle the cycle (%s)", settledByHook.Status)
+	}
+	if !afterThrough.After(beforeThrough) {
+		t.Errorf("W7: webhook did not advance paid-through (%v → %v)", beforeThrough, afterThrough)
+	}
+	if hookAccruals != 1 {
+		t.Errorf("W7: owner accrual rows = %d, want 1", hookAccruals)
 	}
 }
 
@@ -537,8 +646,8 @@ func TestBatch5_Line7_ArrearsPayNowAfterReturn(t *testing.T) {
 			t.Logf("    existing ticket on this lease: %q [%s]", subj, st)
 		}
 	}
-	t.Logf("after return on an uncollected week: cycle=%s owed $%.2f (pro-rata for %d used days), open collection tickets=%d",
-		latest.Status, float64(latest.AmountCents)/100, 3, tickets)
+	t.Logf("after return on an uncollected week: cycle=%s owed $%.2f (pro-rata, not the full $%.2f week), open collection tickets=%d",
+		latest.Status, float64(latest.AmountCents)/100, float64(rehearsalWeeklyCents)/100, tickets)
 	if latest.Status != models.CycleArrearsDue {
 		t.Fatalf("expected arrears_due, got %s", latest.Status)
 	}
@@ -557,8 +666,21 @@ func TestBatch5_Line7_ArrearsPayNowAfterReturn(t *testing.T) {
 	}
 	mustDecode(t, rr.Body.Bytes(), &pay)
 	t.Logf("pay-now minted arrears intent %s for $%.2f (on-session)", pay.PaymentIntentID, float64(pay.Amount)/100)
-	if pay.Amount != latest.AmountCents {
-		t.Errorf("pay-now amount %d != arrears owed %d", pay.Amount, latest.AmountCents)
+	// INDEPENDENT expectation: the car was held 3 days + change into the
+	// week, which is 4 chargeable days at $21.42 = $85.68 owed — NOT the
+	// full week, and not a number this test asked the engine for. It is
+	// the SAME figure line 4 proves the owner keeps on a paid week, so the
+	// two lines must agree or one of them is wrong.
+	wantOwed := int64(4 * rehearsalPerDayCents) // 8568
+	if latest.AmountCents != wantOwed {
+		t.Errorf("arrears recorded %d, independent arithmetic says %d owed for the used days",
+			latest.AmountCents, wantOwed)
+	}
+	if pay.Amount != wantOwed {
+		t.Errorf("driver was asked for %d, want %d", pay.Amount, wantOwed)
+	}
+	if pay.Amount >= rehearsalWeeklyCents {
+		t.Errorf("driver charged a FULL week (%d) for a partly-used one", pay.Amount)
 	}
 	// Idempotency window: a driver who taps twice (or retries after a
 	// dropped response) must not create a second chargeable intent.
