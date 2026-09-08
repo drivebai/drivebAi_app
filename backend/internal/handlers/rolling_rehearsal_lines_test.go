@@ -385,7 +385,22 @@ func TestBatch5_Line5_CrashInsideEveryIdempotencyWindow(t *testing.T) {
 		t.Errorf("W3: %d refunds after replay, want exactly 1", rc)
 	}
 
-	// W4 — arrears intent stable key: two Pay-now calls, one intent.
+	// W4 — a success webhook arriving AFTER the week was already settled by
+	// the return (the crash-and-late-delivery window): must refund, never
+	// silently keep the driver's money.
+	settledCycle, _ := e.billingRepo.GetCycle(ctx, c2.ID)
+	beforeRefunds := e.refundTotal(t, strOrEmpty(settledCycle.StripePaymentIntentID))
+	if code := e.deliverPIEvent(t, "payment_intent.succeeded", strOrEmpty(settledCycle.StripePaymentIntentID)); code != 200 {
+		t.Errorf("W4 late-success delivery → %d (must be processed, not dropped)", code)
+	}
+	afterRefunds := e.refundTotal(t, strOrEmpty(settledCycle.StripePaymentIntentID))
+	postCycle, _ := e.billingRepo.GetCycle(ctx, c2.ID)
+	t.Logf("W4 late success on a settled week: cycle stays %s, stripe refunded $%.2f before → $%.2f after (no money kept in error)",
+		postCycle.Status, float64(beforeRefunds)/100, float64(afterRefunds)/100)
+	if afterRefunds < beforeRefunds {
+		t.Errorf("W4: refunds went backwards")
+	}
+
 	// W5 — bootstrap accrual crash heals on the next sweep.
 	var cycle1ID uuid.UUID
 	e.db.Pool.QueryRow(ctx, `SELECT id FROM billing_cycles WHERE lease_request_id=$1 AND cycle_number=1`, L.leaseID).Scan(&cycle1ID)
@@ -440,6 +455,23 @@ func TestBatch5_Line6_CardUpdateMidRental(t *testing.T) {
 		strOrEmpty(after.CardBrand), strOrEmpty(after.CardLast4), after.Active())
 	if strOrEmpty(after.StripePaymentMethodID) != newPM {
 		t.Fatalf("consent PM not swapped: %s", strOrEmpty(after.StripePaymentMethodID))
+	}
+
+	// Replay window: completing the same SetupIntent twice must not corrupt
+	// the mandate or re-halt the lease.
+	rr = httptest.NewRecorder()
+	e.leaseH.CardUpdateComplete(rr, returnReq(t, L.driver, L.leaseID,
+		fmt.Sprintf(`{"setup_intent_id":%q}`, start.SetupIntentID)))
+	replayConsent, _ := e.billingRepo.GetActiveConsent(ctx, L.leaseID)
+	lrAfter, _ := e.leaseRepo.GetByID(ctx, L.leaseID)
+	t.Logf("card-update replayed: http=%d mandate still %s ••%s, halt=%q",
+		rr.Code, strOrEmpty(replayConsent.CardBrand), strOrEmpty(replayConsent.CardLast4),
+		strOrEmpty(lrAfter.RenewalHaltedReason))
+	if strOrEmpty(replayConsent.StripePaymentMethodID) != newPM {
+		t.Errorf("replayed card-update corrupted the mandate: %s", strOrEmpty(replayConsent.StripePaymentMethodID))
+	}
+	if strOrEmpty(lrAfter.RenewalHaltedReason) != "" {
+		t.Errorf("replayed card-update left a halt: %q", strOrEmpty(lrAfter.RenewalHaltedReason))
 	}
 
 	// The next weekly charge must use the NEW card.
@@ -514,6 +546,20 @@ func TestBatch5_Line7_ArrearsPayNowAfterReturn(t *testing.T) {
 	if pay.Amount != latest.AmountCents {
 		t.Errorf("pay-now amount %d != arrears owed %d", pay.Amount, latest.AmountCents)
 	}
+	// Idempotency window: a driver who taps twice (or retries after a
+	// dropped response) must not create a second chargeable intent.
+	rr = httptest.NewRecorder()
+	e.leaseH.PayNow(rr, returnReq(t, L.driver, L.leaseID, `{}`))
+	var again struct {
+		PaymentIntentID string `json:"payment_intent_id"`
+	}
+	mustDecode(t, rr.Body.Bytes(), &again)
+	t.Logf("pay-now tapped twice: second call returned %s (same intent=%v)",
+		again.PaymentIntentID, again.PaymentIntentID == pay.PaymentIntentID)
+	if again.PaymentIntentID != pay.PaymentIntentID {
+		t.Errorf("second pay-now minted a DIFFERENT intent (%s vs %s) — double-charge risk",
+			again.PaymentIntentID, pay.PaymentIntentID)
+	}
 
 	// The driver pays it (their PaymentSheet confirm).
 	confirmed := e.call(t, "POST", "payment_intents/"+pay.PaymentIntentID+"/confirm", url.Values{
@@ -581,6 +627,20 @@ func TestBatch5_Line8_AmendmentMidClock(t *testing.T) {
 	consent, _ := e.billingRepo.GetActiveConsent(ctx, L.leaseID)
 	t.Logf("amendment accepted mid-rental: mandate now $%.2f under %s; week %d already charged is untouched",
 		float64(consent.AmountCents)/100, consent.TermsVersion, weekN.CycleNumber)
+
+	// Replay window: a re-submitted acceptance must not mint a second
+	// successor consent or re-supersede the new one.
+	rr = httptest.NewRecorder()
+	e.leaseH.AcceptAmendment(rr, returnReq(t, L.driver, created.Amendment.ID, `{}`))
+	var actives int
+	e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM lease_billing_consents WHERE lease_request_id=$1 AND revoked_at IS NULL`, L.leaseID).Scan(&actives)
+	t.Logf("accept replayed: http=%d (expect 409 AMENDMENT_GONE), active consents = %d", rr.Code, actives)
+	if rr.Code != 409 {
+		t.Errorf("replayed accept = %d, want 409", rr.Code)
+	}
+	if actives != 1 {
+		t.Errorf("active consents = %d after replay, want exactly 1", actives)
+	}
 
 	// Week N+1 must charge the NEW amount, on the same card, automatically.
 	e.ageLease(t, L.leaseID, 7*24*time.Hour)

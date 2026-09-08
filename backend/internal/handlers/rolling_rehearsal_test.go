@@ -434,3 +434,20 @@ func (e *rehearsalEnv) countPIsForCycle(t *testing.T, cycleID uuid.UUID) int {
 	}
 	return -1
 }
+
+// refundTotal asks Stripe what has actually been returned to the driver
+// for an intent — the independent check behind every refund assertion.
+func (e *rehearsalEnv) refundTotal(t *testing.T, intentID string) int64 {
+	t.Helper()
+	if intentID == "" {
+		return 0
+	}
+	out := e.call(t, "GET", "refunds?payment_intent="+intentID, nil)
+	var total int64
+	if data, ok := out["data"].([]interface{}); ok {
+		for _, r := range data {
+			total += num(r.(map[string]interface{}), "amount")
+		}
+	}
+	return total
+}
