@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -375,6 +376,16 @@ func main() {
 		// Protected routes
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(jwtSvc, blockList))
+			// Client-visible feature switches. The app asks before it
+			// offers a weekly rental, so a flag that is off means the
+			// option is never shown rather than shown and then refused.
+			r.Get("/config", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"rolling_rentals_enabled": cfg.RollingRentalsEnabled,
+				})
+			})
 			r.Get("/me", userHandler.GetCurrentUser)
 			r.Patch("/profile", userHandler.UpdateProfile)
 			// OTP-confirmed email/phone change (batch items 7+8): nothing

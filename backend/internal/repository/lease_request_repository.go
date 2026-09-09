@@ -164,6 +164,8 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			lr.pickup_deadline_at, lr.pickup_confirmed_at,
 			lr.refund_id, lr.refunded_at, lr.refund_status,
 			lr.pickup_extension_total_minutes, lr.pickup_extension_count, lr.pickup_last_extended_at,
+			lr.billing_mode, lr.rental_ends_at, lr.renewal_stopped_at, lr.renewal_halted_reason,
+			lr.delinquent_since, lr.vehicle_returned_at,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.driver_id) AS driver_name,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
 			(SELECT title FROM cars WHERE id = lr.listing_id) AS car_title,
@@ -196,6 +198,12 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 		var refundStatus *string
 		var pickupExtTotal, pickupExtCount int
 		var pickupLastExtendedAt *time.Time
+		// Rolling billing (build 35). The chat card branches on
+		// billing_mode — without it in THIS query every rolling lease
+		// reads as fixed-term in the chat and the driver never reaches
+		// the weekly authorization screen.
+		var rentalEndsAt, renewalStoppedAt, delinquentSince, vehicleReturnedAt *time.Time
+		var renewalHaltedReason *string
 		// Payment fields (nullable from LEFT JOIN)
 		var paymentID *uuid.UUID
 		var paymentIntentID *string
@@ -211,6 +219,8 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			&pickupDeadlineAt, &pickupConfirmedAt,
 			&refundID, &refundedAt, &refundStatus,
 			&pickupExtTotal, &pickupExtCount, &pickupLastExtendedAt,
+			&resp.BillingMode, &rentalEndsAt, &renewalStoppedAt, &renewalHaltedReason,
+			&delinquentSince, &vehicleReturnedAt,
 			&resp.DriverName, &resp.OwnerName, &resp.CarTitle,
 			&paymentID, &paymentIntentID, &paymentAmount,
 			&platformFee, &paymentCurrency, &paymentStatus,
@@ -219,6 +229,29 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			return nil, fmt.Errorf("scan lease request: %w", err)
 		}
 		resp.Message = message
+		// A row written before rolling existed has no mode: report the
+		// mode it actually behaves as rather than an empty string the
+		// client would have to guess about.
+		if resp.BillingMode == "" {
+			resp.BillingMode = models.BillingModeFixedTerm
+		}
+		if rentalEndsAt != nil {
+			t := models.RFC3339Time(*rentalEndsAt)
+			resp.RentalEndsAt = &t
+		}
+		if renewalStoppedAt != nil {
+			t := models.RFC3339Time(*renewalStoppedAt)
+			resp.RenewalStoppedAt = &t
+		}
+		if delinquentSince != nil {
+			t := models.RFC3339Time(*delinquentSince)
+			resp.DelinquentSince = &t
+		}
+		if vehicleReturnedAt != nil {
+			t := models.RFC3339Time(*vehicleReturnedAt)
+			resp.VehicleReturnedAt = &t
+		}
+		resp.RenewalHaltedReason = renewalHaltedReason
 		if priceChangeActedAt != nil {
 			t := models.RFC3339Time(*priceChangeActedAt)
 			resp.PriceChangeActedAt = &t

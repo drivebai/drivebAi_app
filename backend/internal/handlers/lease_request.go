@@ -2280,6 +2280,41 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 		t := models.RFC3339Time(*lr.VehicleReturnedAt)
 		resp.VehicleReturnedAt = &t
 	}
+	// Most mutation queries RETURN a narrow column list that predates
+	// rolling billing, so the lease handed to this builder often carries no
+	// billing_mode at all. Serving "" would tell the app a rolling lease is
+	// fixed-term — and the app would then take a payment without ever
+	// showing the weekly authorization screen. Read the row's real mode
+	// instead; billing_mode is immutable after INSERT (migration 000054).
+	if resp.BillingMode == "" {
+		if h.leaseRepo != nil {
+			if full, ferr := h.leaseRepo.GetByID(ctx, lr.ID); ferr == nil && full != nil {
+				resp.BillingMode = full.BillingMode
+				resp.RenewalHaltedReason = full.RenewalHaltedReason
+				if full.RentalEndsAt != nil {
+					t := models.RFC3339Time(*full.RentalEndsAt)
+					resp.RentalEndsAt = &t
+				}
+				if full.RenewalStoppedAt != nil {
+					t := models.RFC3339Time(*full.RenewalStoppedAt)
+					resp.RenewalStoppedAt = &t
+				}
+				if full.DelinquentSince != nil {
+					t := models.RFC3339Time(*full.DelinquentSince)
+					resp.DelinquentSince = &t
+				}
+				if full.VehicleReturnedAt != nil {
+					t := models.RFC3339Time(*full.VehicleReturnedAt)
+					resp.VehicleReturnedAt = &t
+				}
+			}
+		}
+		// Never serve an empty mode: a lease always behaves as one or the
+		// other, and the client would have to guess which.
+		if resp.BillingMode == "" {
+			resp.BillingMode = models.BillingModeFixedTerm
+		}
+	}
 	if lr.PriceChangeActedAt != nil {
 		t := models.RFC3339Time(*lr.PriceChangeActedAt)
 		resp.PriceChangeActedAt = &t
