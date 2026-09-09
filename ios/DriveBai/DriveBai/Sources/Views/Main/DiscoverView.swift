@@ -767,6 +767,10 @@ struct ListingDetailView: View {
     @State private var navigateToChat: ChatNavigationData?
     @State private var isRequestingLease = false
     @State private var leaseRequestError: String?
+    /// Whether the server currently allows weekly recurring rentals. The
+    /// app asks rather than assumes, so the option is simply absent when
+    /// the feature is off instead of failing after the driver picks it.
+    @State private var weeklyRentalsAvailable = false
     /// Present the "Buy this car" offer sheet.  Non-nil while it's on
     /// screen so we can hand the Car through by identity binding.
     @State private var buyRequestCar: Car?
@@ -949,6 +953,7 @@ struct ListingDetailView: View {
             // purchase for this car. Re-runs on every appearance, so returning
             // from the offer sheet / chat re-reconciles the button state.
             await loadActivePurchase()
+            await loadWeeklyAvailability()
             await runPendingGuestActionIfNeeded()
             // Count a guest's car-detail opens so the engagement nudge can
             // fire only after real browsing. Guests only — never during the
@@ -1039,6 +1044,15 @@ struct ListingDetailView: View {
         }
     }
 
+    /// Ask once per listing view whether weekly rentals are on. Failure is
+    /// silent and conservative: no answer means the option stays hidden.
+    private func loadWeeklyAvailability() async {
+        guard authStore.state.user != nil else { return }
+        if let config = try? await APIClient.shared.fetchAppConfig() {
+            weeklyRentalsAvailable = config.rollingRentals
+        }
+    }
+
     private func requestLease() {
         guard authStore.state.user != nil else {
             // Guest: the prime conversion moment — they found a car they
@@ -1055,14 +1069,32 @@ struct ListingDetailView: View {
         }
     }
 
-    private func sendLeaseRequest() {
+    /// The weekly-rental entry point. Same ceremony as the fixed-term CTA —
+    /// the explainer still gates the POST — but it asks for a rental that
+    /// renews until the car goes back.
+    private func requestWeeklyLease() {
+        guard authStore.state.user != nil else {
+            deepLinkRouter.promptGuestSignIn(.rent(car.id))
+            return
+        }
+        guard !isRequestingLease else { return }
+        ProductTourCoordinator.shared.startOrRun(.driverPreRequest) {
+            sendLeaseRequest(billingMode: "rolling")
+        }
+    }
+
+    /// - Parameter billingMode: nil (fixed term, the historical behaviour)
+    ///   or "rolling" for weekly recurring. The server defaults to fixed
+    ///   term when the field is absent, so nothing can drift into rolling
+    ///   by accident.
+    private func sendLeaseRequest(billingMode: String? = nil) {
         guard let user = authStore.state.user, !isRequestingLease else { return }
         isRequestingLease = true
 
         Task {
             defer { isRequestingLease = false }
             do {
-                let request = CreateLeaseRequestAPIRequest(weeks: 1, message: nil)
+                let request = CreateLeaseRequestAPIRequest(weeks: 1, message: nil, billingMode: billingMode)
                 let response = try await APIClient.shared.createLeaseRequest(listingId: car.id, request: request)
 
                 // A real domain milestone: the request exists on the server.
@@ -1084,7 +1116,11 @@ struct ListingDetailView: View {
                 // Refresh chats list
                 await ChatsListViewModel.shared.fetchChats()
             } catch let apiError as APIError {
-                leaseRequestError = apiError.errorDescription
+                if apiError.errorCode == RollingBillingErrorCode.rollingDisabled {
+                    leaseRequestError = "Weekly rentals aren't available right now. You can still rent this car for a fixed week."
+                } else {
+                    leaseRequestError = apiError.errorDescription
+                }
             } catch {
                 leaseRequestError = error.localizedDescription
             }
@@ -1294,6 +1330,27 @@ struct ListingDetailView: View {
                         }
                         .disabled(isRequestingLease)
                         .onboardingTarget(.requestLeaseCTA)
+
+                        // Weekly recurring rental. Shown only when the
+                        // server says the feature is live, so it can never
+                        // be an option that only fails.
+                        if weeklyRentalsAvailable {
+                            Button(action: requestWeeklyLease) {
+                                VStack(spacing: 2) {
+                                    Text("Rent weekly instead")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("Renews every 7 days until you return the car")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .foregroundColor(.driveBaiPrimary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color.driveBaiPrimary.opacity(0.08))
+                                .cornerRadius(12)
+                            }
+                            .disabled(isRequestingLease)
+                        }
                     }
                 }
 

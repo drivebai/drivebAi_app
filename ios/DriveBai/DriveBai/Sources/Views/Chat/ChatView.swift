@@ -26,6 +26,14 @@ struct ChatView: View {
     @State private var showPaymentSheet = false
     @State private var paymentIntentResponse: PaymentIntentAPIResponse?
     @State private var paymentLeaseRequestId: UUID?
+    /// Drives the weekly-rental authorization screen. A rolling lease can
+    /// only reach PaymentSheet through this: the mandate has to be agreed
+    /// to before the card is charged, not after.
+    @State private var rollingConsent: RollingConsentContext?
+    /// Carried out of the consent sheet so the Stripe sheet is presented
+    /// only once the consent sheet has finished dismissing — presenting a
+    /// UIKit modal over a dismissing SwiftUI sheet drops it silently.
+    @State private var authorizedConsent: RollingConsentContext?
     @State private var adjustPriceLeaseRequest: LeaseRequest?
     /// Owner-side vehicle-return dispute target. Bound to a sheet so the
     /// owner can type the reason before we round-trip to the backend.
@@ -298,6 +306,37 @@ struct ChatView: View {
                 Text(error)
             }
         }
+        .sheet(item: $rollingConsent, onDismiss: {
+            guard let authorized = authorizedConsent else { return }
+            authorizedConsent = nil
+            // The card form needs both of these. Without them the sheet
+            // below never presents, and a driver who just authorized a
+            // weekly mandate would watch nothing happen.
+            guard let customerId = authorized.intent.customerId, !customerId.isEmpty,
+                  let ephemeralKey = authorized.intent.ephemeralKeySecret, !ephemeralKey.isEmpty else {
+                viewModel.error = "We couldn't open the payment form, so nothing was charged. Please try again, or contact support if it keeps happening."
+                return
+            }
+            paymentIntentResponse = authorized.intent
+            paymentLeaseRequestId = authorized.leaseRequestId
+            showPaymentSheet = true
+        }) { context in
+            RollingConsentSheet(
+                disclosureText: context.disclosureText,
+                termsVersion: context.termsVersion,
+                amountCents: context.intent.amount,
+                currencyCode: context.intent.currency,
+                carTitle: context.carTitle,
+                onAuthorize: {
+                    authorizedConsent = context
+                    rollingConsent = nil
+                },
+                onCancel: {
+                    authorizedConsent = nil
+                    rollingConsent = nil
+                }
+            )
+        }
         .background {
             // Zero-size overlay that presents Stripe PaymentSheet natively (no double-modal)
             if showPaymentSheet,
@@ -494,6 +533,28 @@ struct ChatView: View {
     /// the inferred type past the compiler's complexity limit.
     @ViewBuilder
     private func leaseRequestCard(for leaseReq: LeaseRequest) -> some View {
+        VStack(spacing: 12) {
+            leaseRequestCardBody(for: leaseReq)
+
+            // The weekly-billing card lives beside the lease card for the
+            // DRIVER of a rolling rental. It is the only surface that
+            // survives the return, which is where a leftover balance has
+            // to be payable from.
+            if leaseReq.isRolling,
+               currentUserId == leaseReq.driverId,
+               leaseReq.status == .paid {
+                RollingBillingCard(
+                    leaseRequestId: leaseReq.id,
+                    hasOpenReturn: viewModel.vehicleReturnsByLease[leaseReq.id].map { !$0.status.isTerminal } ?? false
+                ) {
+                    Task { await viewModel.loadLeaseRequests() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func leaseRequestCardBody(for leaseReq: LeaseRequest) -> some View {
         LeaseRequestCardView(
             leaseRequest: leaseReq,
             currentUserId: currentUserId,
@@ -665,6 +726,27 @@ struct ChatView: View {
 
     private func handlePayment(for leaseRequest: LeaseRequest) async {
         guard let response = await viewModel.createPaymentIntent(leaseRequestId: leaseRequest.id) else { return }
+
+        if leaseRequest.isRolling {
+            // The authorization text comes back with the intent because the
+            // server has just recorded it. No text means no proof of what
+            // was agreed to, so there is no version of this flow that
+            // charges the card anyway.
+            guard let disclosure = response.disclosureText, !disclosure.isEmpty else {
+                viewModel.error = "We couldn't load the weekly rental terms, so we haven't charged anything. Please try again."
+                return
+            }
+            authorizedConsent = nil
+            rollingConsent = RollingConsentContext(
+                leaseRequestId: leaseRequest.id,
+                carTitle: leaseRequest.carTitle,
+                disclosureText: disclosure,
+                termsVersion: response.termsVersion,
+                intent: response
+            )
+            return
+        }
+
         paymentIntentResponse = response
         paymentLeaseRequestId = leaseRequest.id
         showPaymentSheet = true
@@ -706,6 +788,26 @@ struct ChatView: View {
             viewModel.error = "Payment failed: \(error.localizedDescription)"
             Task { await viewModel.loadLeaseRequests() }
         }
+    }
+}
+
+/// Everything the weekly-rental authorization screen needs, captured at the
+/// moment the intent was created. Kept in this file deliberately: a new
+/// Swift file needs manual pbxproj registration in four places.
+struct RollingConsentContext: Identifiable, Equatable {
+    let leaseRequestId: UUID
+    let carTitle: String
+    /// The exact text the server recorded on the consent row.
+    let disclosureText: String
+    let termsVersion: String?
+    let intent: PaymentIntentAPIResponse
+
+    var id: UUID { leaseRequestId }
+
+    static func == (lhs: RollingConsentContext, rhs: RollingConsentContext) -> Bool {
+        lhs.leaseRequestId == rhs.leaseRequestId
+            && lhs.disclosureText == rhs.disclosureText
+            && lhs.intent.paymentIntentId == rhs.intent.paymentIntentId
     }
 }
 

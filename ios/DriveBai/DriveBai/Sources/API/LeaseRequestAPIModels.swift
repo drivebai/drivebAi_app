@@ -37,6 +37,15 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
     let priceChangePending: Bool?
     let previousOfferedWeeklyPrice: Double?
     let priceChangeActedAt: Date?
+    // Rolling weekly billing (backend batch 2-4). All optional: a backend
+    // that predates rolling simply omits them and every lease decodes as
+    // fixed_term, exactly as before.
+    let billingMode: String?
+    let rentalEndsAt: Date?
+    let renewalStoppedAt: Date?
+    let renewalHaltedReason: String?
+    let delinquentSince: Date?
+    let vehicleReturnedAt: Date?
     let createdAt: Date
     let updatedAt: Date
 
@@ -67,6 +76,12 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
         case priceChangePending = "price_change_pending"
         case previousOfferedWeeklyPrice = "previous_offered_weekly_price"
         case priceChangeActedAt = "price_change_acted_at"
+        case billingMode = "billing_mode"
+        case rentalEndsAt = "rental_ends_at"
+        case renewalStoppedAt = "renewal_stopped_at"
+        case renewalHaltedReason = "renewal_halted_reason"
+        case delinquentSince = "delinquent_since"
+        case vehicleReturnedAt = "vehicle_returned_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -94,7 +109,16 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
             priceChangePending: priceChangePending ?? false,
             previousOfferedWeeklyPrice: previousOfferedWeeklyPrice,
             priceChangeActedAt: priceChangeActedAt,
-            createdAt: createdAt, updatedAt: updatedAt
+            createdAt: createdAt, updatedAt: updatedAt,
+            // Empty is treated as absent: a backend that scans the column
+            // but never wrote it sends "", and a lease that silently reads
+            // as neither mode would render the wrong card entirely.
+            billingMode: (billingMode?.isEmpty == false) ? billingMode! : "fixed_term",
+            rentalEndsAt: rentalEndsAt,
+            renewalStoppedAt: renewalStoppedAt,
+            renewalHaltedReason: renewalHaltedReason,
+            delinquentSince: delinquentSince,
+            vehicleReturnedAt: vehicleReturnedAt
         )
     }
 }
@@ -151,6 +175,12 @@ struct PaymentIntentAPIResponse: Codable {
     let ephemeralKeySecret: String?
     let amount: Int64
     let currency: String
+    /// Rolling leases only: the EXACT authorization text the server just
+    /// recorded on the consent row, plus the version string it recorded it
+    /// under. The consent screen renders this verbatim — rendering a
+    /// locally-held copy instead would make the stored evidence unprovable.
+    let disclosureText: String?
+    let termsVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case paymentIntentClientSecret = "payment_intent_client_secret"
@@ -159,6 +189,8 @@ struct PaymentIntentAPIResponse: Codable {
         case customerId = "customer_id"
         case ephemeralKeySecret = "ephemeral_key_secret"
         case amount, currency
+        case disclosureText = "disclosure_text"
+        case termsVersion = "terms_version"
     }
 }
 
@@ -167,6 +199,21 @@ struct PaymentIntentAPIResponse: Codable {
 struct CreateLeaseRequestAPIRequest: Codable {
     let weeks: Int?
     let message: String?
+    /// "rolling" opts this request into weekly recurring billing. Omitted
+    /// (nil) means fixed_term — the server defaults the same way, so an
+    /// older client can never create a rolling lease by accident.
+    let billingMode: String?
+
+    init(weeks: Int?, message: String?, billingMode: String? = nil) {
+        self.weeks = weeks
+        self.message = message
+        self.billingMode = billingMode
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case weeks, message
+        case billingMode = "billing_mode"
+    }
 }
 
 struct UpdateLeaseRequestPriceAPIRequest: Codable {

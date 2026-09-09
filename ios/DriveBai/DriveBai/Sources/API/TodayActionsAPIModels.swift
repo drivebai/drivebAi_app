@@ -78,6 +78,12 @@ struct ActiveRentalAPIModel: Codable {
     /// "pickup" (the key-handover meeting point — return where you picked
     /// up) vs "listing" (only the owner's listed location is known).
     let returnLocationSource: String?
+    // Rolling weekly billing. Optional so a backend that predates rolling
+    // decodes every rental as fixed_term, exactly as before.
+    let billingMode: String?
+    let renewalHaltedReason: String?
+    let delinquentSince: Date?
+    let renewalStoppedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case leaseRequestId = "lease_request_id"
@@ -96,6 +102,10 @@ struct ActiveRentalAPIModel: Codable {
         case paidAmountCents = "paid_amount_cents"
         case returnLocationArea = "return_location_area"
         case returnLocationSource = "return_location_source"
+        case billingMode = "billing_mode"
+        case renewalHaltedReason = "renewal_halted_reason"
+        case delinquentSince = "delinquent_since"
+        case renewalStoppedAt = "renewal_stopped_at"
     }
 }
 
@@ -122,6 +132,19 @@ struct ActiveRental: Identifiable, Equatable {
     let paidAmountCents: Int64
     let returnLocationArea: String?
     let returnLocationSource: String?
+    let billingMode: String
+    let renewalHaltedReason: String?
+    let delinquentSince: Date?
+    let renewalStoppedAt: Date?
+
+    /// True when this rental bills every 7 days with no fixed end date.
+    var isRolling: Bool { billingMode == "rolling" }
+
+    /// Renewals are still running: nobody stopped them and the engine
+    /// hasn't halted them.
+    var rollingRenewalsRunning: Bool {
+        isRolling && renewalStoppedAt == nil && renewalHaltedReason == nil
+    }
 
     /// "Returns Fri, 22 Aug · 4 days left" — the deadline stated absolutely
     /// AND relatively, so neither timezone confusion nor mental math can
@@ -131,6 +154,15 @@ struct ActiveRental: Identifiable, Equatable {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE, d MMM"
         let day = formatter.string(from: rentalEndsAt)
+        // A weekly rental has no return deadline while it keeps renewing —
+        // calling its paid-through date a due date would read as "bring the
+        // car back" every single week.
+        if isRolling && rollingRenewalsRunning {
+            return termState == .overdue
+                ? "Paid through \(day) · renewal pending"
+                : "Paid through \(day) · renews weekly"
+        }
+
         switch termState {
         case .overdue:
             // Calendar days in the DEVICE's timezone, not the server's
@@ -179,7 +211,11 @@ extension ActiveRentalAPIModel {
             weeklyPriceCents: weeklyPriceCents,
             paidAmountCents: paidAmountCents,
             returnLocationArea: returnLocationArea,
-            returnLocationSource: returnLocationSource
+            returnLocationSource: returnLocationSource,
+            billingMode: (billingMode?.isEmpty == false) ? billingMode! : "fixed_term",
+            renewalHaltedReason: renewalHaltedReason,
+            delinquentSince: delinquentSince,
+            renewalStoppedAt: renewalStoppedAt
         )
     }
 }

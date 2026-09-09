@@ -800,59 +800,19 @@ final class ChatViewModel: ObservableObject {
         if let idx = leaseRequests.firstIndex(where: { $0.id == leaseRequestId }) {
             var lr = leaseRequests[idx]
             // Update the local payment status to succeeded so the card shows "Payment Complete"
+            // Mutate the copy rather than rebuilding it field-by-field: a
+            // memberwise rebuild silently drops any field added later (the
+            // rolling billing fields would have reverted to fixed_term
+            // defaults here the instant a payment completed).
+            lr.status = .paid
             if let payment = lr.payment {
-                let updatedPayment = PaymentSummary(
+                lr.payment = PaymentSummary(
                     id: payment.id,
                     paymentIntentId: payment.paymentIntentId,
                     amount: payment.amount,
                     platformFeeAmount: payment.platformFeeAmount,
                     currency: payment.currency,
                     status: .succeeded
-                )
-                lr = LeaseRequest(
-                    id: lr.id, chatId: lr.chatId, listingId: lr.listingId,
-                    ownerId: lr.ownerId, driverId: lr.driverId,
-                    driverName: lr.driverName, ownerName: lr.ownerName,
-                    status: .paid, weeklyPrice: lr.weeklyPrice, offeredWeeklyPrice: lr.offeredWeeklyPrice,
-                    totalAmount: lr.totalAmount,
-                    currency: lr.currency, weeks: lr.weeks, message: lr.message,
-                    carTitle: lr.carTitle, payment: updatedPayment,
-                    pickupDeadlineAt: lr.pickupDeadlineAt,
-                    pickupConfirmedAt: lr.pickupConfirmedAt,
-                    refundId: lr.refundId,
-                    refundedAt: lr.refundedAt,
-                    refundStatus: lr.refundStatus,
-                    pickupExtensionTotalMinutes: lr.pickupExtensionTotalMinutes,
-                    pickupExtensionCount: lr.pickupExtensionCount,
-                    pickupExtensionRemainingMinutes: lr.pickupExtensionRemainingMinutes,
-                    pickupLastExtendedAt: lr.pickupLastExtendedAt,
-                    priceChangePending: lr.priceChangePending,
-                    previousOfferedWeeklyPrice: lr.previousOfferedWeeklyPrice,
-                    priceChangeActedAt: lr.priceChangeActedAt,
-                    createdAt: lr.createdAt, updatedAt: lr.updatedAt
-                )
-            } else {
-                lr = LeaseRequest(
-                    id: lr.id, chatId: lr.chatId, listingId: lr.listingId,
-                    ownerId: lr.ownerId, driverId: lr.driverId,
-                    driverName: lr.driverName, ownerName: lr.ownerName,
-                    status: .paid, weeklyPrice: lr.weeklyPrice, offeredWeeklyPrice: lr.offeredWeeklyPrice,
-                    totalAmount: lr.totalAmount,
-                    currency: lr.currency, weeks: lr.weeks, message: lr.message,
-                    carTitle: lr.carTitle, payment: lr.payment,
-                    pickupDeadlineAt: lr.pickupDeadlineAt,
-                    pickupConfirmedAt: lr.pickupConfirmedAt,
-                    refundId: lr.refundId,
-                    refundedAt: lr.refundedAt,
-                    refundStatus: lr.refundStatus,
-                    pickupExtensionTotalMinutes: lr.pickupExtensionTotalMinutes,
-                    pickupExtensionCount: lr.pickupExtensionCount,
-                    pickupExtensionRemainingMinutes: lr.pickupExtensionRemainingMinutes,
-                    pickupLastExtendedAt: lr.pickupLastExtendedAt,
-                    priceChangePending: lr.priceChangePending,
-                    previousOfferedWeeklyPrice: lr.previousOfferedWeeklyPrice,
-                    priceChangeActedAt: lr.priceChangeActedAt,
-                    createdAt: lr.createdAt, updatedAt: lr.updatedAt
                 )
             }
             leaseRequests[idx] = lr

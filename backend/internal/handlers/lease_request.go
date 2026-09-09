@@ -2287,8 +2287,17 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 	// showing the weekly authorization screen. Read the row's real mode
 	// instead; billing_mode is immutable after INSERT (migration 000054).
 	if resp.BillingMode == "" {
+		readFailed := true
 		if h.leaseRepo != nil {
-			if full, ferr := h.leaseRepo.GetByID(ctx, lr.ID); ferr == nil && full != nil {
+			full, ferr := h.leaseRepo.GetByID(ctx, lr.ID)
+			if ferr != nil {
+				// Never silent: a read failure here is the one way this
+				// function can end up asserting a mode it did not read.
+				h.logger.Error("lease response: billing_mode read failed",
+					"error", ferr, "lease_request_id", lr.ID)
+			}
+			if ferr == nil && full != nil {
+				readFailed = false
 				resp.BillingMode = full.BillingMode
 				resp.RenewalHaltedReason = full.RenewalHaltedReason
 				if full.RentalEndsAt != nil {
@@ -2309,9 +2318,14 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 				}
 			}
 		}
-		// Never serve an empty mode: a lease always behaves as one or the
-		// other, and the client would have to guess which.
-		if resp.BillingMode == "" {
+		// Only a mode we actually READ may be asserted. When the read
+		// succeeded, an empty value means the row really is fixed-term.
+		// When it failed, say nothing: the client treats an absent mode as
+		// "don't know yet" and asks again, which is the safe answer —
+		// claiming fixed_term here would send a rolling driver to the card
+		// form with no authorization screen, the exact failure this
+		// function exists to prevent.
+		if resp.BillingMode == "" && !readFailed {
 			resp.BillingMode = models.BillingModeFixedTerm
 		}
 	}

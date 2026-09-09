@@ -234,26 +234,42 @@ struct DriverTodayView: View {
                     .padding(.horizontal, TodayLayout.horizontalPadding)
 
                 ForEach(viewModel.activeRentals) { rental in
-                    ActiveRentalCard(
-                        rental: rental,
-                        // The return CTA yields to an in-flight return —
-                        // once one exists, the VehicleReturnCard below owns
-                        // that conversation.
-                        hasOpenReturn: viewModel.vehicleReturns.contains {
-                            $0.leaseRequestId == rental.id && !$0.status.isTerminal
-                        },
-                        onReturn: {
-                            viewModel.submitVehicleReturn(leaseRequestId: rental.id)
-                        },
-                        onChat: {
-                            guard let chatId = rental.chatId else { return }
-                            rentalChatTarget = DeepLinkPickupTarget(
-                                chatId: chatId,
-                                counterpartyId: rental.ownerId,
-                                counterpartyName: rental.ownerName
-                            )
+                    VStack(spacing: 12) {
+                        ActiveRentalCard(
+                            rental: rental,
+                            // The return CTA yields to an in-flight return —
+                            // once one exists, the VehicleReturnCard below owns
+                            // that conversation.
+                            hasOpenReturn: viewModel.vehicleReturns.contains {
+                                $0.leaseRequestId == rental.id && !$0.status.isTerminal
+                            },
+                            onReturn: {
+                                viewModel.submitVehicleReturn(leaseRequestId: rental.id)
+                            },
+                            onChat: {
+                                guard let chatId = rental.chatId else { return }
+                                rentalChatTarget = DeepLinkPickupTarget(
+                                    chatId: chatId,
+                                    counterpartyId: rental.ownerId,
+                                    counterpartyName: rental.ownerName
+                                )
+                            }
+                        )
+
+                        // Weekly rentals carry their own billing surface: what
+                        // is charged next, what to do when a charge needs the
+                        // driver, and how to stop renewing.
+                        if rental.isRolling {
+                            RollingBillingCard(
+                                leaseRequestId: rental.id,
+                                hasOpenReturn: viewModel.vehicleReturns.contains {
+                                    $0.leaseRequestId == rental.id && !$0.status.isTerminal
+                                }
+                            ) {
+                                Task { await viewModel.refresh() }
+                            }
                         }
-                    )
+                    }
                     .padding(.horizontal, TodayLayout.horizontalPadding)
                 }
             }
@@ -574,7 +590,10 @@ struct ActiveRentalCard: View {
                 .foregroundColor(stateColor)
                 .monospacedDigit()
 
-            if rental.termState == .overdue {
+            // On a weekly rental that is still renewing, a lapsed
+            // paid-through date means a charge is in flight, not that the
+            // car is late back — the billing card below explains it.
+            if rental.termState == .overdue && !rental.rollingRenewalsRunning {
                 // No refund promise: past the end, used days equal paid days
                 // and the computed refund is $0 — the true incentive is
                 // closing out the rental, and saying anything else would lie.
@@ -599,7 +618,9 @@ struct ActiveRentalCard: View {
                 .foregroundColor(.secondary)
             }
 
-            Text("Rented from \(rental.ownerName) · \(rental.weeks) week\(rental.weeks == 1 ? "" : "s")")
+            Text(rental.isRolling
+                 ? "Rented from \(rental.ownerName) · weekly"
+                 : "Rented from \(rental.ownerName) · \(rental.weeks) week\(rental.weeks == 1 ? "" : "s")")
                 .font(.caption)
                 .foregroundColor(.secondary)
 

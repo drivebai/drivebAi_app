@@ -255,6 +255,27 @@ protocol APIClientProtocol {
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
 
+    /// Server-side feature switches. Asked before offering a weekly
+    /// rental so the app never shows an option the server would refuse.
+    func fetchAppConfig() async throws -> AppConfigAPIResponse
+
+    // Rolling weekly billing (driver surface)
+    /// The billing card's source of truth: mandate, next charge, the open
+    /// cycle and any post-return balance.
+    func fetchBillingStatus(leaseRequestId: UUID) async throws -> BillingStatusAPIResponse
+    /// On-session recovery. On a live lease this returns the OPEN CYCLE's
+    /// own intent (confirming it settles the week through the normal
+    /// webhook path); after a return it mints an arrears intent.
+    func payNowForBilling(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
+    /// Starts a card replacement — a SetupIntent for PaymentSheet's setup mode.
+    func startCardUpdate(leaseRequestId: UUID) async throws -> CardUpdateStartAPIResponse
+    /// Finishes it. The server re-verifies the SetupIntent at Stripe before
+    /// swapping the mandate's card, so the client's word is never evidence.
+    func completeCardUpdate(leaseRequestId: UUID, setupIntentId: String) async throws -> CardUpdateCompleteAPIResponse
+    /// Driver ends auto-renew: no further weekly charges; the rental runs
+    /// out the week already paid for.
+    func stopRenewal(leaseRequestId: UUID) async throws -> OKAPIResponse
+
     // Pickup confirmation (driver presses "I picked up the car" within the deadline)
     func confirmPickup(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
 
@@ -863,6 +884,34 @@ final class APIClient: APIClientProtocol {
 
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse {
         try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/payments/sync", authenticated: true)
+    }
+
+    func fetchAppConfig() async throws -> AppConfigAPIResponse {
+        try await get(path: "config", authenticated: true)
+    }
+
+    // MARK: - Rolling weekly billing
+
+    func fetchBillingStatus(leaseRequestId: UUID) async throws -> BillingStatusAPIResponse {
+        try await get(path: "lease-requests/\(leaseRequestId.uuidString)/billing", authenticated: true)
+    }
+
+    func payNowForBilling(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse {
+        try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/billing/pay-now", authenticated: true)
+    }
+
+    func startCardUpdate(leaseRequestId: UUID) async throws -> CardUpdateStartAPIResponse {
+        try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/billing/card-update", authenticated: true)
+    }
+
+    func completeCardUpdate(leaseRequestId: UUID, setupIntentId: String) async throws -> CardUpdateCompleteAPIResponse {
+        let body = CardUpdateCompleteAPIRequest(setupIntentId: setupIntentId)
+        return try await post(path: "lease-requests/\(leaseRequestId.uuidString)/billing/card-update/complete",
+                              body: body, authenticated: true)
+    }
+
+    func stopRenewal(leaseRequestId: UUID) async throws -> OKAPIResponse {
+        try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/stop-renewal", authenticated: true)
     }
 
     func confirmPickup(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse {

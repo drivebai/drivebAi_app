@@ -56,6 +56,37 @@ struct LeaseRequestCardView: View {
     /// actually needs (decide to accept, decide to pay, retry payment).
     /// Hidden once the lease is paid, declined, cancelled, expired, or
     /// refunded so the line doesn't become noise on terminal cards.
+    /// Rolling copy has to stop promising renewals the moment renewals
+    /// stop — a card still saying "renews weekly" after the driver ended
+    /// auto-renew, or after the car went back, is simply false.
+    private var rollingStillRenewing: Bool {
+        leaseRequest.isRolling
+            && leaseRequest.renewalStoppedAt == nil
+            && leaseRequest.renewalHaltedReason == nil
+            && leaseRequest.vehicleReturnedAt == nil
+    }
+
+    private var rollingDurationLine: String? {
+        guard leaseRequest.isRolling else { return nil }
+        if leaseRequest.vehicleReturnedAt != nil { return "Weekly rental — car returned" }
+        if rollingStillRenewing { return "Renews weekly until returned" }
+        return "Weekly rental — not renewing"
+    }
+
+    private func rollingAmountLine(_ formatted: String) -> String? {
+        guard leaseRequest.isRolling else { return nil }
+        // Before the first payment the amount IS the first week's charge.
+        // After it, quoting a "first week" would misdescribe history.
+        switch leaseRequest.status {
+        case .requested, .accepted, .paymentPending:
+            return "First week: \(formatted), then the same every 7 days"
+        default:
+            return rollingStillRenewing
+                ? "\(formatted) per week"
+                : "\(formatted) per week — no further charges"
+        }
+    }
+
     private var showsUnusedDaysDisclaimer: Bool {
         switch leaseRequest.status {
         case .requested, .accepted, .paymentPending:
@@ -174,19 +205,23 @@ struct LeaseRequestCardView: View {
                         .foregroundColor(.secondary)
                 }
 
-                Text("\(leaseRequest.weeks) \(leaseRequest.weeks == 1 ? "week" : "weeks")")
+                Text(rollingDurationLine
+                     ?? "\(leaseRequest.weeks) \(leaseRequest.weeks == 1 ? "week" : "weeks")")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
 
-            // Total amount
+            // Amount. A rolling rental has no total to quote — there is no
+            // last week — so it states the first charge instead of implying
+            // a figure that will keep growing.
             if let totalFormatted = leaseRequest.formattedTotalAmount {
                 HStack(spacing: 4) {
                     Image(systemName: "banknote")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("Total: \(totalFormatted)")
+                    Text(rollingAmountLine(totalFormatted) ?? "Total: \(totalFormatted)")
                         .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -779,7 +814,9 @@ struct LeaseRequestCardView: View {
             Button(action: onPay) {
                 HStack(spacing: 6) {
                     Image(systemName: "creditcard.fill")
-                    Text(isRetry ? "Retry Payment" : "Pay Now")
+                    Text(leaseRequest.isRolling
+                         ? "Review weekly terms & pay"
+                         : (isRetry ? "Retry Payment" : "Pay Now"))
                 }
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity)

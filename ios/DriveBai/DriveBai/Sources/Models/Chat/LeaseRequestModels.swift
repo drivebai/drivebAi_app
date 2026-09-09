@@ -81,7 +81,7 @@ struct LeaseRequest: Identifiable, Equatable {
     let driverId: UUID
     let driverName: String
     let ownerName: String
-    let status: LeaseRequestStatus
+    var status: LeaseRequestStatus
     let weeklyPrice: Double
     let offeredWeeklyPrice: Double?
     let totalAmount: Double
@@ -89,7 +89,7 @@ struct LeaseRequest: Identifiable, Equatable {
     let weeks: Int
     let message: String?
     let carTitle: String
-    let payment: PaymentSummary?
+    var payment: PaymentSummary?
     /// Pickup deadline lifecycle (backend migration 000024). Only present
     /// once `status == .paid`; cleared by `confirmPickup`/refund flows.
     let pickupDeadlineAt: Date?
@@ -117,12 +117,45 @@ struct LeaseRequest: Identifiable, Equatable {
     let createdAt: Date
     let updatedAt: Date
 
+    // MARK: - Rolling weekly billing (backend migrations 000049+)
+
+    /// "fixed_term" (pay N weeks up front) or "rolling" (charged every 7
+    /// days until the car goes back). Defaults to fixed_term so payloads
+    /// from older backends — and every existing construction site — keep
+    /// the exact behaviour they had before rolling existed.
+    var billingMode: String = "fixed_term"
+    /// Paid-through instant on a rolling lease: the moment the currently
+    /// paid week runs out. The next charge fires 24h before it.
+    var rentalEndsAt: Date? = nil
+    /// Set once either side ends auto-renew. The rental still runs to
+    /// `rentalEndsAt`; no further weeks are charged.
+    var renewalStoppedAt: Date? = nil
+    /// Why the engine stopped renewing by itself: "payment_failed",
+    /// "consent_revoked", "dispute", "return_initiated". nil = healthy.
+    var renewalHaltedReason: String? = nil
+    /// First moment a weekly charge went uncollected. Cleared on payment.
+    var delinquentSince: Date? = nil
+    /// Stamped when the car is handed back; settlement follows.
+    var vehicleReturnedAt: Date? = nil
+
     /// Hard cap kept in sync with the Go layer's `PickupMaxExtensionMinutes`.
     /// Used as the fallback default when decoding older API payloads.
     static let maxPickupExtensionMinutes: Int = 120
 
     /// Preset increments matching the backend's `AllowedPickupExtensionMinutes`.
     static let allowedPickupExtensionMinutes: [Int] = [15, 30, 60]
+
+    /// True when this lease bills weekly with no fixed end date.
+    var isRolling: Bool { billingMode == "rolling" }
+
+    /// The weekly amount a rolling driver is actually charged.
+    var formattedRollingWeekly: String? { formattedEffectiveWeeklyPrice }
+
+    /// Renewals are no longer running: either side stopped them, or the
+    /// engine halted them. Either way the rental has an end date now.
+    var rollingRenewalEnded: Bool {
+        isRolling && (renewalStoppedAt != nil || renewalHaltedReason != nil)
+    }
 
     /// The price actually in effect: owner's offer when set, otherwise the base listing price.
     var effectiveWeeklyPrice: Double { offeredWeeklyPrice ?? weeklyPrice }
