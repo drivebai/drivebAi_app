@@ -298,6 +298,11 @@ type DriverActiveRentalRow struct {
 	ListingArea       *string
 	ListingLat        *float64
 	ListingLng        *float64
+	// Rolling billing (build 35).
+	BillingMode         string
+	RenewalHaltedReason *string
+	DelinquentSince     *time.Time
+	RenewalStoppedAt    *time.Time
 }
 
 // ListActiveRentalsForDriver returns the driver's rentals in progress (paid,
@@ -318,7 +323,8 @@ func (r *LeaseRequestRepository) ListActiveRentalsForDriver(ctx context.Context,
 		       COALESCE(lr.offered_weekly_price, lr.weekly_price),
 		       p.amount,
 		       kh.pickup_area, kh.pickup_latitude, kh.pickup_longitude,
-		       c.area, c.latitude, c.longitude
+		       c.area, c.latitude, c.longitude,
+		       lr.billing_mode, lr.renewal_halted_reason, lr.delinquent_since, lr.renewal_stopped_at
 		FROM lease_requests lr
 		JOIN cars c ON c.id = lr.listing_id
 		JOIN users o ON o.id = lr.owner_id
@@ -340,7 +346,8 @@ func (r *LeaseRequestRepository) ListActiveRentalsForDriver(ctx context.Context,
 			&d.OwnerID, &d.OwnerName, &d.ChatID, &d.PickupConfirmedAt, &d.RentalEndsAt,
 			&d.Weeks, &d.WeeklyPriceDollar, &d.PaidAmountCents,
 			&d.PickupArea, &d.PickupLat, &d.PickupLng,
-			&d.ListingArea, &d.ListingLat, &d.ListingLng); err != nil {
+			&d.ListingArea, &d.ListingLat, &d.ListingLng,
+			&d.BillingMode, &d.RenewalHaltedReason, &d.DelinquentSince, &d.RenewalStoppedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

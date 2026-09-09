@@ -656,6 +656,13 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 
 			h.logger.Info("returning existing payment intent", "lease_request_id", leaseID, "payment_intent_id", *existingPayment.PaymentIntentID)
 
+			// A rolling retry must still show the recorded consent text.
+			existingDisclosure, existingTerms := "", ""
+			if lr.BillingMode == models.BillingModeRolling && h.billingRepo != nil {
+				if c, gerr := h.billingRepo.GetActiveConsent(r.Context(), leaseID); gerr == nil && c != nil {
+					existingDisclosure, existingTerms = c.DisclosureText, c.TermsVersion
+				}
+			}
 			httputil.WriteJSON(w, http.StatusOK, models.PaymentIntentResponse{
 				PaymentIntentClientSecret: *existingPayment.ClientSecret,
 				PaymentIntentID:           *existingPayment.PaymentIntentID,
@@ -664,6 +671,8 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 				EphemeralKeySecret:        ephemeralKeySecret,
 				Amount:                    existingPayment.Amount,
 				Currency:                  existingPayment.Currency,
+				DisclosureText:            existingDisclosure,
+				TermsVersion:              existingTerms,
 			})
 			return
 		}
@@ -743,6 +752,7 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 	// and save the card under the stored-credential framework. The consent
 	// row is the amount authority for every later off-session charge.
 	piOpts := stripeService.PaymentIntentOptions{}
+	var recordedDisclosure, recordedTerms string
 	if lr.BillingMode == models.BillingModeRolling {
 		if !h.rollingEnabled || h.billingRepo == nil {
 			revertWindow()
@@ -750,7 +760,7 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 				"Weekly rentals aren't available right now"))
 			return
 		}
-		if _, cerr := h.billingRepo.CreateConsent(r.Context(), &models.BillingConsent{
+		consentRow, cerr := h.billingRepo.CreateConsent(r.Context(), &models.BillingConsent{
 			LeaseRequestID: leaseID,
 			DriverID:       lr.DriverID,
 			AmountCents:    totalCents,
@@ -758,12 +768,16 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 			// screen shows exactly this text and the row records it.
 			TermsVersion:   models.TermsVersionRollingV2,
 			DisclosureText: models.RollingDriverDisclosureV2(totalCents),
-		}); cerr != nil {
+		})
+		if cerr != nil || consentRow == nil {
 			h.logger.Error("rolling consent: create", "error", cerr, "lease_request_id", leaseID)
 			revertWindow()
 			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 			return
 		}
+		// Serve the ROW's text, not a re-render: if an unactivated row
+		// already existed, what it holds is what the driver must see.
+		recordedDisclosure, recordedTerms = consentRow.DisclosureText, consentRow.TermsVersion
 		piOpts.SetupFutureUsage = "off_session"
 	}
 	pi, err := h.stripe.CreatePaymentIntentWithOptions(totalCents, lr.Currency, customer.ID, platformFeeCents, piIdemKey, piOpts)
@@ -845,6 +859,8 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		EphemeralKeySecret:        ephemeralKey.Secret,
 		Amount:                    totalCents,
 		Currency:                  lr.Currency,
+		DisclosureText:            recordedDisclosure,
+		TermsVersion:              recordedTerms,
 	})
 }
 
@@ -2245,6 +2261,24 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 		PickupExtensionRemainingMin: lr.RemainingExtensionMinutes(),
 		PriceChangePending:          lr.PriceChangePending,
 		PreviousOfferedWeeklyPrice:  lr.PreviousOfferedWeeklyPrice,
+		BillingMode:                 lr.BillingMode,
+		RenewalHaltedReason:         lr.RenewalHaltedReason,
+	}
+	if lr.RentalEndsAt != nil {
+		t := models.RFC3339Time(*lr.RentalEndsAt)
+		resp.RentalEndsAt = &t
+	}
+	if lr.RenewalStoppedAt != nil {
+		t := models.RFC3339Time(*lr.RenewalStoppedAt)
+		resp.RenewalStoppedAt = &t
+	}
+	if lr.DelinquentSince != nil {
+		t := models.RFC3339Time(*lr.DelinquentSince)
+		resp.DelinquentSince = &t
+	}
+	if lr.VehicleReturnedAt != nil {
+		t := models.RFC3339Time(*lr.VehicleReturnedAt)
+		resp.VehicleReturnedAt = &t
 	}
 	if lr.PriceChangeActedAt != nil {
 		t := models.RFC3339Time(*lr.PriceChangeActedAt)

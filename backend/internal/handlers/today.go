@@ -149,7 +149,20 @@ func (h *TodayHandler) buildActiveRentals(r *http.Request, userID uuid.UUID) []m
 			source = "listing"
 		}
 
+		var delinquentSince, renewalStoppedAt *models.RFC3339Time
+		if row.DelinquentSince != nil {
+			t := models.RFC3339Time(*row.DelinquentSince)
+			delinquentSince = &t
+		}
+		if row.RenewalStoppedAt != nil {
+			t := models.RFC3339Time(*row.RenewalStoppedAt)
+			renewalStoppedAt = &t
+		}
 		out = append(out, models.DriverActiveRental{
+			BillingMode:          row.BillingMode,
+			RenewalHaltedReason:  row.RenewalHaltedReason,
+			DelinquentSince:      delinquentSince,
+			RenewalStoppedAt:     renewalStoppedAt,
 			LeaseRequestID:       row.LeaseRequestID,
 			CarID:                row.ListingID,
 			CarTitle:             row.CarTitle,

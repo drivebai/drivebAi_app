@@ -123,21 +123,21 @@ type LeaseRequest struct {
 	// these columns are NOT in the shared scan lists — they are populated
 	// only by the term-scanner queries and the active-rental reads, so do
 	// not rely on them being set on a lease loaded via GetByID.
-	RentalEndsAt          *time.Time `json:"rental_ends_at,omitempty"`
-	VehicleReturnedAt     *time.Time `json:"vehicle_returned_at,omitempty"`
+	RentalEndsAt      *time.Time `json:"rental_ends_at,omitempty"`
+	VehicleReturnedAt *time.Time `json:"vehicle_returned_at,omitempty"`
 	// Rolling-billing fields (batch 2; NULL/default on every fixed-term row).
-	BillingMode         LeaseBillingMode `json:"billing_mode"`
-	RenewalStoppedAt    *time.Time       `json:"renewal_stopped_at,omitempty"`
-	RenewalStoppedBy    *string          `json:"renewal_stopped_by,omitempty"`
-	DelinquentSince     *time.Time       `json:"delinquent_since,omitempty"`
-	RenewalNotifiedFor  *time.Time       `json:"-"`
-	RenewalHaltedReason *string          `json:"renewal_halted_reason,omitempty"`
-	ContinuesLeaseID    *uuid.UUID       `json:"continues_lease_id,omitempty"`
-	TermEndingNotifiedAt  *time.Time `json:"-"`
-	OverdueNotifiedAt     *time.Time `json:"-"`
-	OverdueEscalatedAt    *time.Time `json:"-"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	BillingMode          LeaseBillingMode `json:"billing_mode"`
+	RenewalStoppedAt     *time.Time       `json:"renewal_stopped_at,omitempty"`
+	RenewalStoppedBy     *string          `json:"renewal_stopped_by,omitempty"`
+	DelinquentSince      *time.Time       `json:"delinquent_since,omitempty"`
+	RenewalNotifiedFor   *time.Time       `json:"-"`
+	RenewalHaltedReason  *string          `json:"renewal_halted_reason,omitempty"`
+	ContinuesLeaseID     *uuid.UUID       `json:"continues_lease_id,omitempty"`
+	TermEndingNotifiedAt *time.Time       `json:"-"`
+	OverdueNotifiedAt    *time.Time       `json:"-"`
+	OverdueEscalatedAt   *time.Time       `json:"-"`
+	CreatedAt            time.Time        `json:"created_at"`
+	UpdatedAt            time.Time        `json:"updated_at"`
 }
 
 // ─── Rental term ────────────────────────────────────────────────────────────
@@ -376,8 +376,17 @@ type LeaseRequestResponse struct {
 	PriceChangePending         bool         `json:"price_change_pending"`
 	PreviousOfferedWeeklyPrice *float64     `json:"previous_offered_weekly_price,omitempty"`
 	PriceChangeActedAt         *RFC3339Time `json:"price_change_acted_at,omitempty"`
-	CreatedAt                  RFC3339Time  `json:"created_at"`
-	UpdatedAt                  RFC3339Time  `json:"updated_at"`
+	// Rolling billing (build 35). BillingMode is always present so the app
+	// can branch by predicate, exactly as the backend does; the rest are
+	// omitted for fixed-term leases, which never set them.
+	BillingMode         LeaseBillingMode `json:"billing_mode"`
+	RentalEndsAt        *RFC3339Time     `json:"rental_ends_at,omitempty"`
+	RenewalStoppedAt    *RFC3339Time     `json:"renewal_stopped_at,omitempty"`
+	RenewalHaltedReason *string          `json:"renewal_halted_reason,omitempty"`
+	DelinquentSince     *RFC3339Time     `json:"delinquent_since,omitempty"`
+	VehicleReturnedAt   *RFC3339Time     `json:"vehicle_returned_at,omitempty"`
+	CreatedAt           RFC3339Time      `json:"created_at"`
+	UpdatedAt           RFC3339Time      `json:"updated_at"`
 }
 
 type PaymentSummary struct {
@@ -406,4 +415,9 @@ type PaymentIntentResponse struct {
 	EphemeralKeySecret        string `json:"ephemeral_key_secret,omitempty"`
 	Amount                    int64  `json:"amount"`
 	Currency                  string `json:"currency"`
+	// Rolling only: the EXACT text the consent row recorded, and its
+	// version, so the consent screen renders the sentence that is the
+	// evidence — never a copy the app carries on its own.
+	DisclosureText string `json:"disclosure_text,omitempty"`
+	TermsVersion   string `json:"terms_version,omitempty"`
 }

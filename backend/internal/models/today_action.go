@@ -80,6 +80,12 @@ type DriverActiveRental struct {
 	ReturnLocationLat    *float64 `json:"return_location_lat,omitempty"`
 	ReturnLocationLng    *float64 `json:"return_location_lng,omitempty"`
 	ReturnLocationSource string   `json:"return_location_source"`
+	// Rolling billing (build 35): lets the driver's card branch by predicate
+	// and show the paused/delinquent banner the billing status confirms.
+	BillingMode         string       `json:"billing_mode"`
+	RenewalHaltedReason *string      `json:"renewal_halted_reason,omitempty"`
+	DelinquentSince     *RFC3339Time `json:"delinquent_since,omitempty"`
+	RenewalStoppedAt    *RFC3339Time `json:"renewal_stopped_at,omitempty"`
 }
 
 // TodayActionsResponse is the API response for GET /today/actions.
