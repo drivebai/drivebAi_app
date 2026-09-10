@@ -167,11 +167,22 @@ func (r *PayoutRepository) ListExecutable(ctx context.Context, failedRetryBefore
 		SELECT `+prefixCols(ownerPayoutColumns, "op")+`
 		FROM owner_payouts op
 		JOIN users u ON u.id = op.owner_id
-		WHERE op.status = 'pending'
+		WHERE (op.status = 'pending'
 		   OR (op.status = 'failed' AND op.updated_at <= $1)
-		   OR (op.status = 'awaiting_onboarding' AND u.payout_status = 'ready')
+		   OR (op.status = 'awaiting_onboarding' AND u.payout_status = 'ready'))
+		  -- A SALE payout may only execute for a sale that completed after
+		  -- seller payouts existed. Bounding row CREATION was not enough:
+		  -- rows created before that fix would still execute the moment
+		  -- their seller finished onboarding, transferring platform money
+		  -- against a charge that returns resource_missing. The executor is
+		  -- the last gate before money moves, so the bound belongs here too.
+		  AND (op.purchase_request_id IS NULL OR EXISTS (
+		        SELECT 1 FROM purchase_requests pr
+		        WHERE pr.id = op.purchase_request_id
+		          AND pr.completed_at IS NOT NULL
+		          AND pr.completed_at >= $3::timestamptz))
 		ORDER BY op.created_at ASC
-		LIMIT $2`, failedRetryBefore, limit)
+		LIMIT $2`, failedRetryBefore, limit, models.SellerPayoutsLiveFrom)
 	if err != nil {
 		return nil, fmt.Errorf("list executable payouts: %w", err)
 	}

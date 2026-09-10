@@ -31,6 +31,12 @@ const (
 	VehicleReturnCancelled VehicleReturnStatus = "cancelled"
 )
 
+// StuckReturnHealWindow bounds how far back the stuck-return sweeps will
+// reach. Completing a stuck return settles a full owner payout, so anything
+// older than this is treated as history needing a human rather than a crash
+// to be healed automatically.
+const StuckReturnHealWindow = 30 * 24 * time.Hour
+
 // VehicleReturnRefundStatus mirrors models.RefundStatus but adds
 // `not_applicable` for zero-refund cases (full term used / $0 promo lease).
 type VehicleReturnRefundStatus string

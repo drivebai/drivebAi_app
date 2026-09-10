@@ -600,8 +600,16 @@ func (r *VehicleReturnRepository) ListStuckZeroRefunds(ctx context.Context, stal
 		WHERE status = 'owner_confirmed'
 		  AND refund_amount_cents <= 0
 		  AND updated_at <= $1
+		  -- FLOOR, not just a debounce. This sweep exists to finish a return
+		  -- whose finalize crashed moments ago; completing it settles a FULL
+		  -- owner payout. A row parked for months is not a crash to heal, it
+		  -- is history — and its funding charge may live on a Stripe account
+		  -- we no longer use, so settling it would transfer platform money
+		  -- against a charge that does not exist. Old rows are left for a
+		  -- human. See docs/DESIGN_RECONCILIATION_SWEEPS.md.
+		  AND updated_at >= $3::timestamptz
 		ORDER BY updated_at ASC
-		LIMIT $2`, staleBefore, limit)
+		LIMIT $2`, staleBefore, limit, time.Now().UTC().Add(-models.StuckReturnHealWindow))
 	if err != nil {
 		return nil, fmt.Errorf("list stuck zero refunds: %w", err)
 	}
