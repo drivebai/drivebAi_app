@@ -23,6 +23,18 @@ const (
 	// BillingCycleLength is v1's only cycle: weekly. 28-day cycles are an
 	// explicit v2 with re-derived consent, dunning, and exposure bounds.
 	BillingCycleLength = 7 * 24 * time.Hour
+	// BillingMaxCatchUp bounds how stale a paid-through date may be and
+	// still be billed automatically.
+	//
+	// Without it, a lease resumed after a long park — a 60-75 day dispute,
+	// or a consent_revoked halt lasting until the driver replaces their
+	// card — is back-billed one week per 60-second tick: ten weeks of rent
+	// in ten minutes, off-session, each preceded by a notice quoting a
+	// charge date already in the past. That is also precisely how a card
+	// issuer learns to treat us as fraudulent.
+	//
+	// Beyond this the lease is left for a human rather than charged.
+	BillingMaxCatchUp = 2 * BillingCycleLength
 	// BillingChargeLead: the renewal charge fires this long BEFORE
 	// paid-through lapses — simultaneously the decline-recovery runway,
 	// the driver's stop cutoff, and the owner-termination notice floor.

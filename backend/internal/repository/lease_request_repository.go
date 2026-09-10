@@ -2033,6 +2033,10 @@ func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, d
 		  AND delinquent_since IS NULL
 		  AND renewal_halted_reason IS NULL
 		  AND rental_ends_at <= $1
+		  -- FLOOR. A paid-through older than one cycle means something
+		  -- parked this lease (a halt, an outage) and resuming would
+		  -- back-bill at one week per tick. Those belong to a human.
+		  AND rental_ends_at >= $3
 		  AND NOT EXISTS (
 		      SELECT 1 FROM vehicle_returns vr
 		      WHERE vr.lease_request_id = lease_requests.id
@@ -2042,7 +2046,7 @@ func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, d
 		      WHERE bc.lease_request_id = lease_requests.id
 		        AND bc.status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final', 'arrears_due'))
 		ORDER BY rental_ends_at ASC
-		LIMIT $2`, dueBefore, limit)
+		LIMIT $2`, dueBefore, limit, time.Now().UTC().Add(-models.BillingMaxCatchUp))
 	if err != nil {
 		return nil, fmt.Errorf("list rolling due: %w", err)
 	}
@@ -2138,9 +2142,25 @@ func (r *LeaseRequestRepository) HaltRenewals(ctx context.Context, leaseID uuid.
 	return tag.RowsAffected() == 1, nil
 }
 
+// Resumption bills FORWARD, never backward. A halt freezes paid-through: a
+// dispute can park a lease for 60-75 days, and a consent_revoked halt lasts
+// until the driver replaces their card. Clearing the halt without re-anchoring
+// left rental_ends_at months in the past, and the mint phase would then charge
+// one week per 60-second tick — ten weeks of rent in ten minutes, off-session,
+// each preceded by a notice quoting a charge date already gone.
+//
+// The engine already knows this: AdvanceOnCycleWaived re-anchors for exactly
+// this reason when a week is waived. The halt paths simply never did.
+//
+// The driver is not charged for the halted weeks. They did not agree to a
+// charge we chose not to make at the time, and collecting them in a burst is
+// how a card issuer learns to call us fraudulent.
 func (r *LeaseRequestRepository) ClearRenewalHalt(ctx context.Context, leaseID uuid.UUID, reason string) (bool, error) {
 	tag, err := r.db.Pool.Exec(ctx, `
-		UPDATE lease_requests SET renewal_halted_reason = NULL, updated_at = NOW()
+		UPDATE lease_requests
+		SET renewal_halted_reason = NULL,
+		    rental_ends_at = GREATEST(rental_ends_at, NOW()),
+		    updated_at = NOW()
 		WHERE id = $1 AND renewal_halted_reason = $2
 	`, leaseID, reason)
 	if err != nil {

@@ -38,6 +38,17 @@ func (h *LeaseRequestHandler) SetBillingDependencies(billingRepo *repository.Bil
 // runBillingSweep is the engine tick (rides the pickup-expiry scanner's
 // 60s ticker, after the lease sweeps).
 func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
+	// ROLLING_RENTALS_ENABLED is a KILL SWITCH, not just a creation gate.
+	//
+	// It used to gate only lease creation, so turning it off stopped new
+	// rolling leases and stopped nothing else: the engine kept minting
+	// cycles, confirming off-session charges, marking drivers delinquent and
+	// promoting payouts on every lease that already existed. That is the
+	// exact lever an operator reaches for during a live billing incident,
+	// and it would have done nothing.
+	if !h.rollingEnabled {
+		return
+	}
 	h.runDebtReconcilePhase(ctx)
 	if h.billingRepo == nil {
 		return

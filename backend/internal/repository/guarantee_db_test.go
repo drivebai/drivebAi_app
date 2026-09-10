@@ -140,7 +140,7 @@ func TestExecutorRefusesPreCutoffSalePayouts(t *testing.T) {
 	// The seller is READY, which is what makes an awaiting_onboarding row
 	// executable in the first place.
 	if _, err := db.Pool.Exec(ctx,
-		`UPDATE users SET stripe_account_id = 'acct_test_exec', payout_status = 'ready' WHERE id = $1`, sellerID); err != nil {
+		`UPDATE users SET stripe_account_id = 'acct_test_exec_' || $1::text, payout_status = 'ready' WHERE id = $1`, sellerID); err != nil {
 		t.Fatalf("ready seller: %v", err)
 	}
 

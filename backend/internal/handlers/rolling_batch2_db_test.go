@@ -581,3 +581,53 @@ func TestBatch2_ReviewFixes(t *testing.T) {
 		t.Fatalf("C3: consent not activated by webhook: %+v", consent2)
 	}
 }
+
+// ROLLING_RENTALS_ENABLED must stop the ENGINE, not just lease creation. It
+// is the lever an operator reaches for in a live billing incident, and until
+// this was true it would have stopped nothing that was already running.
+func TestRollingFlagIsAKillSwitch(t *testing.T) {
+	e := newPayoutEnv(t)
+	billingRepo := repository.NewBillingRepository(e.db)
+	ctx := context.Background()
+	owner := e.seedUser(t, "car_owner", "killswitch_owner_"+uuid.NewString()+"@example.com")
+	driver := e.seedUser(t, "driver", "killswitch_driver_"+uuid.NewString()+"@example.com")
+	e.seedLicense(t, driver)
+	leaseID, _ := e.seedActiveRental(t, owner, driver)
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE lease_requests SET billing_mode='rolling', weeks=1,
+		    rental_ends_at = NOW() + interval '20 hours' WHERE id=$1`, leaseID); err != nil {
+		t.Fatalf("to rolling: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.db.Pool.Exec(ctx, `DELETE FROM billing_cycles WHERE lease_request_id=$1`, leaseID)
+	})
+
+	// Flag OFF: the sweep must do nothing at all.
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, false)
+	e.leaseH.runBillingSweep(ctx)
+	var n int
+	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM billing_cycles WHERE lease_request_id=$1`, leaseID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("the engine minted %d cycles with the kill switch OFF", n)
+	}
+
+	// And nothing else moved either: with the switch off the engine must not
+	// touch the lease at all.
+	var halted *string
+	_ = e.db.Pool.QueryRow(ctx, `SELECT renewal_halted_reason FROM lease_requests WHERE id=$1`, leaseID).Scan(&halted)
+	if halted != nil {
+		t.Errorf("the engine halted the lease with the kill switch OFF: %q", *halted)
+	}
+
+	// Flag ON: the engine runs again, so this is a switch and not a permanent
+	// disablement. This fixture has no consent, so the observable is the
+	// consent_revoked halt the engine raises rather than a minted cycle.
+	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+	e.leaseH.runBillingSweep(ctx)
+	_ = e.db.Pool.QueryRow(ctx, `SELECT renewal_halted_reason FROM lease_requests WHERE id=$1`, leaseID).Scan(&halted)
+	if halted == nil {
+		t.Error("with the flag ON the engine did nothing — the guard is an off button, not a switch")
+	} else {
+		t.Logf("  switch on: the engine ran and halted the consent-less lease (%q)", *halted)
+	}
+}
