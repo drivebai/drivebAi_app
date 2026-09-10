@@ -1787,12 +1787,18 @@ func (h *PurchaseRequestHandler) capturePayment(ctx context.Context, p *models.P
 		h.logger.Error("purchase: capture with no payment intent", "id", p.ID)
 		return nil
 	}
-	// Capture hits Stripe BEFORE MarkCaptured, and MarkCaptured is scoped to
-	// inspection_accepted. Calling this on any other state would take the
-	// buyer's money and leave the row behind, where no sweep looks for it —
-	// runCaptureRetry only lists inspection_accepted. Every production
-	// caller sets that state first; refuse rather than trust it.
-	if p.Status != models.PurchaseStatusInspectionAccepted {
+	// Capture hits Stripe BEFORE MarkCaptured, so calling this on a state
+	// MarkCaptured will refuse takes the buyer's money and leaves the row
+	// behind. Admit exactly the states MarkCaptured admits, no more:
+	//   inspection_accepted — the buyer accepted, or the window closed.
+	//   rejected_upheld     — support ruled for the seller; this IS the
+	//                         capture path for an upheld rejection.
+	// An earlier version of this guard admitted only the first, which
+	// silently disabled every upheld rejection: no capture, the hold lapsed
+	// after 7 days, and the seller who had handed over the car was paid
+	// nothing while both parties were told the sale completed.
+	if p.Status != models.PurchaseStatusInspectionAccepted &&
+		p.Status != models.PurchaseStatusRejectedUpheld {
 		h.logger.Error("purchase: refusing to capture from an unexpected state",
 			"id", p.ID, "status", p.Status)
 		return nil
@@ -2396,6 +2402,15 @@ func (h *PurchaseRequestHandler) HandleStripeEvent(ctx context.Context, eventTyp
 			// guard we'd fire a duplicate "Payment captured" pair.
 			priorStatus := p.Status
 			if updated, err := h.repo.MarkCaptured(ctx, p.ID); err == nil {
+				// Pay the seller HERE too. This branch is the only thing
+				// that completes a sale whose synchronous MarkCaptured died
+				// after Stripe had already captured; without this the sale
+				// reads completed, both parties are told the seller has been
+				// paid, and 100% of the money stays in the platform balance
+				// with no sweep looking for it. Idempotent on the purchase.
+				if h.payoutH != nil {
+					h.payoutH.SettleSalePayout(ctx, updated.ID, updated.SellerID, updated.OfferAmountCents, nil)
+				}
 				h.broadcast("purchase_payment_updated", updated, map[string]any{"payment_status": "succeeded"})
 				// (23) Sale completion must always emit purchase_request_updated
 				// with the completed status so both clients settle their UI even
@@ -2467,6 +2482,7 @@ func (h *PurchaseRequestHandler) StartExpiryScanner(ctx context.Context, interva
 			h.runAuthExpiry(ctx)
 			h.runInspectionExpiry(ctx)
 			h.runCaptureRetry(ctx)
+			h.runSellerPayoutReconcile(ctx)
 		}
 	}
 }
@@ -2790,4 +2806,28 @@ func parsePageAdmin(s string) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// runSellerPayoutReconcile settles sales that completed with no ledger row.
+//
+// Completion arrives by three routes — the buyer's accept, the inspection
+// window closing, and the payment_intent.succeeded webhook — and settling is
+// best-effort in each. None of the capture sweeps looks at a row that is
+// already 'completed', so without this a crash between the capture and the
+// ledger write left the buyer's money taken and the seller never paid, with
+// nothing anywhere looking for it.
+func (h *PurchaseRequestHandler) runSellerPayoutReconcile(ctx context.Context) {
+	if h.payoutH == nil || h.payoutRepo == nil {
+		return
+	}
+	unpaid, err := h.payoutRepo.ListCompletedSalesWithoutPayout(ctx, 50)
+	if err != nil {
+		h.logger.Error("sale payout reconcile: list", "error", err)
+		return
+	}
+	for _, u := range unpaid {
+		h.logger.Warn("sale payout reconcile: completed sale had no payout row, settling it",
+			"purchase_request_id", u.PurchaseID, "amount_cents", u.AmountCents)
+		h.payoutH.SettleSalePayout(ctx, u.PurchaseID, u.SellerID, u.AmountCents, nil)
+	}
 }

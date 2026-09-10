@@ -77,3 +77,63 @@ func RollingAmendmentDisclosure(newAmountCents, oldAmountCents int64) string {
 			"Terms: %s.",
 		float64(newAmountCents)/100, float64(oldAmountCents)/100, TermsVersionRollingAmendV1)
 }
+
+// ─── Guarantee amendment (2026-09-10) ───────────────────────────────────────
+//
+// DriveBai now covers up to one week of uncollected rent for the owner. The
+// trigger is the rental being CLOSED OUT on the platform by any route we
+// recognise — including a car that was never recovered, because a guarantee
+// that pays when an owner loses a week's rent and pays nothing when they lose
+// the car is backwards for a policy whose purpose is keeping owners.
+//
+// RollingOwnerTermsSentence above is preserved BYTE-IDENTICAL as the v1
+// record. It was never written to a row and no owner terms page exists yet,
+// but it is the text that was approved on 2026-09-07 and it stays untouched.
+
+// TermsVersionOwnerRollingV2 identifies the owner-facing package that
+// replaces the owner-bears-everything term.
+const TermsVersionOwnerRollingV2 = "owner-rolling-v2 (2026-09-10)"
+
+// RollingOwnerTermsV2 is the owner-facing risk allocation under the capped
+// guarantee. Shown on the owner terms page and recorded against the owner's
+// acceptance.
+const RollingOwnerTermsV2 = "How you get paid. DriveBai collects the weekly rent from the driver's saved card and pays your share after each rental week completes. Your share is that week's rent less the DriveBai fee.\n\n" +
+	"If we can't collect. If a weekly payment cannot be collected from the driver after all retries, DriveBai will pay you for up to one week of that unpaid rent, at your normal share, once the rental has been closed out on DriveBai. A rental is closed out when the driver returns the car through the app and the return is completed, or when DriveBai support records a settlement that ends the rental — including where the car was not recovered. Nothing is paid before the rental is closed out, and never more than one week per rental, however long the unpaid period ran.\n\n" +
+	"This payment takes the place of the driver's payment; it is not in addition to it. If DriveBai later recovers the money from the driver, DriveBai keeps that recovery and you keep the payment already made to you.\n\n" +
+	"What this does not cover. Unpaid time beyond that one week is not covered. The vehicle itself is not covered. DriveBai does not insure your car, does not guarantee its return, and this payment is not an insurance policy. If a driver does not return your car, DriveBai will pursue the driver and support you, but recovering the vehicle is a matter for you, your insurer and law enforcement.\n\n" +
+	"Terms: " + TermsVersionOwnerRollingV2 + "."
+
+// TermsVersionRollingV3 is the driver consent package that describes the
+// persistent balance. NOTE the reason it exists: the guarantee changes
+// NOTHING for the driver — they still owe what they owe, and a payment we
+// make to their owner does not discharge it. What changed is that the debt is
+// now a visible, payable balance that blocks new rentals, and that closing an
+// account does not clear it. A driver must be told those before agreeing.
+//
+// The guarantee is deliberately NOT mentioned: "the owner gets paid anyway"
+// weakens the urgency to pay a debt we intend to pursue, and invites the
+// belief that the debt is settled.
+const TermsVersionRollingV3 = "rolling-billing-v3 (2026-09-10)"
+
+// RollingDriverDisclosureV3 renders the v3 consent text. Paragraphs one and
+// two are BYTE-IDENTICAL to v2 — the pickup-day example survives, per
+// standing client instruction. Only the failure paragraph changes.
+func RollingDriverDisclosureV3(amountCents int64) string {
+	amt := float64(amountCents) / 100
+	return fmt.Sprintf(
+		"You're authorizing an automatic weekly charge. $%.2f will be charged now, for your first week. "+
+			"After that, DriveBai will charge your card $%.2f every 7 days for as long as you keep the car — there is no fixed end date. "+
+			"Each new week is charged one day before it starts, counted from your pickup day and time "+
+			"(pick up Tuesday at 3 PM, and you're charged every Monday around 3 PM), so your next charge comes 6 days after pickup. "+
+			"We'll remind you before every charge, and this amount never changes without a new agreement from you.\n\n"+
+			"Returning the car in the app stops the charges — that's the exit, any day, no notice needed. "+
+			"You can also turn off auto-renew instead: your rental then ends when your paid week runs out. "+
+			"Return mid-week and we refund the days you didn't use.\n\n"+
+			"If a weekly payment fails, we'll retry your card over the next two days and notify you each time; you keep the car while we retry. "+
+			"If it still can't be collected, weekly billing stops and your rental ends when your paid time runs out. "+
+			"Any days you used but didn't pay for are still owed. They're added to a balance you can see and pay off in the app at any time. "+
+			"Until that balance is cleared you won't be able to start a new rental, and we'll contact you about it. "+
+			"Closing your DriveBai account doesn't clear what you owe.\n\n"+
+			"Terms: %s.",
+		amt, amt, TermsVersionRollingV3)
+}

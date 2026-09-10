@@ -68,6 +68,11 @@ func newSalesEnv(t *testing.T) *salesEnv {
 		e.stripe, ws.NewHub(logger), notifH, nil, t.TempDir(), logger)
 	ph.SetPayoutHandler(payoutH)
 	ph.SetPayoutRepository(e.payoutRepo)
+	// The shared Stripe webhook enters through the LEASE handler and
+	// dispatches PIs whose metadata says kind=purchase. Without this wiring
+	// a purchase event is simply ignored, exactly as it would be in a
+	// misconfigured deployment.
+	e.leaseH.SetPurchaseHandler(ph)
 	return &salesEnv{rehearsalEnv: e, purchaseH: ph, purchaseRepo: purchaseRepo}
 }
 
@@ -188,6 +193,14 @@ func (e *salesEnv) startSale(t *testing.T, tag string, cardToken string) *saleFi
 		RETURNING id`, carID, sellerID, buyerID, chatID, saleRehearsalCents, intentID).Scan(&purchaseID); err != nil {
 		t.Fatalf("seed purchase: %v", err)
 	}
+	// The shared webhook routes by PI METADATA. Without kind=purchase the
+	// event goes to the lease path and the purchase never hears about it —
+	// exactly as production stamps it at CreatePaymentIntent.
+	e.call(t, "POST", "payment_intents/"+intentID, url.Values{
+		"metadata[kind]":                {"purchase"},
+		"metadata[purchase_request_id]": {purchaseID.String()},
+	})
+
 	t.Cleanup(func() {
 		_, _ = e.db.Pool.Exec(ctx, `DELETE FROM owner_payouts WHERE purchase_request_id = $1`, purchaseID)
 		_, _ = e.db.Pool.Exec(ctx, `DELETE FROM purchase_requests WHERE id = $1`, purchaseID)
@@ -594,4 +607,117 @@ func TestSalesRehearsalLine7_KillSwitchLetsInFlightSalesLand(t *testing.T) {
 		t.Fatalf("in-flight sale did not pay its seller: %v", row)
 	}
 	t.Logf("  switch on: in-flight sale completed and paid the seller %d¢", row.OwnerAmountCents)
+}
+
+// ─── Line 8: an upheld rejection pays the seller ────────────────────────────
+//
+// Support ruling FOR the seller is a capture path. A guard added during this
+// batch admitted only inspection_accepted, which silently disabled every
+// upheld rejection: no capture, the hold lapsed after 7 days, and the seller
+// who had already handed over the car was paid nothing while both parties
+// were told the sale had completed.
+func TestSalesRehearsalLine8_UpheldRejectionCapturesAndPays(t *testing.T) {
+	e := newSalesEnv(t)
+	f := e.startSale(t, "l8", "tok_visa")
+	ctx := context.Background()
+
+	// Buyer rejects; support upholds the sale.
+	if _, err := e.db.Pool.Exec(ctx,
+		`UPDATE purchase_requests SET status = 'rejected_upheld' WHERE id = $1`, f.purchaseID); err != nil {
+		t.Fatalf("uphold: %v", err)
+	}
+	updated := e.purchaseH.capturePayment(ctx, e.purchaseRow(t, f.purchaseID))
+	if updated == nil {
+		t.Fatal("an upheld rejection did not capture — the seller handed over the car and is paid nothing")
+	}
+	if updated.Status != models.PurchaseStatusCompleted {
+		t.Errorf("status = %s, want completed", updated.Status)
+	}
+
+	pi := e.call(t, "GET", "payment_intents/"+f.intentID, nil)
+	if got, _ := pi["amount_received"].(float64); int64(got) != saleRehearsalCents {
+		t.Errorf("amount_received = %v, want %d — the buyer was never charged", got, saleRehearsalCents)
+	}
+	row := e.salePayout(t, f.purchaseID)
+	if row == nil || row.Status != models.PayoutPaid {
+		t.Fatalf("seller not paid on an upheld rejection: %v", row)
+	}
+	t.Logf("  uphold captured %d¢ and paid the seller %d¢", saleRehearsalCents, row.OwnerAmountCents)
+}
+
+// ─── Line 9: a sale completed by the webhook still pays the seller ──────────
+//
+// Settling is best-effort at completion. If MarkCaptured dies after Stripe has
+// captured, the payment_intent.succeeded webhook completes the sale instead —
+// and used to do so without ever creating a payout row, telling both parties
+// "the seller has been paid" while 100% of the money stayed with the platform.
+func TestSalesRehearsalLine9_WebhookCompletionPaysTheSeller(t *testing.T) {
+	e := newSalesEnv(t)
+	f := e.startSale(t, "l9", "tok_visa")
+	ctx := context.Background()
+
+	// Capture at Stripe directly, exactly as the handler would, then leave
+	// the row where a crash before MarkCaptured leaves it.
+	e.call(t, "POST", "payment_intents/"+f.intentID+"/capture", nil)
+	e.acceptInspection(t, f.purchaseID)
+	if row := e.salePayout(t, f.purchaseID); row != nil {
+		t.Fatal("a payout exists before any settlement ran")
+	}
+
+	// The webhook arrives and completes the sale.
+	if code := e.deliverPIEvent(t, "payment_intent.succeeded", f.intentID); code != 200 {
+		t.Fatalf("webhook rejected: %d", code)
+	}
+	after := e.purchaseRow(t, f.purchaseID)
+	if after.Status != models.PurchaseStatusCompleted {
+		t.Fatalf("webhook did not complete the sale: %s", after.Status)
+	}
+	row := e.salePayout(t, f.purchaseID)
+	if row == nil {
+		t.Fatal("sale completed by webhook with NO payout row — the seller is never paid")
+	}
+	t.Logf("  webhook completed the sale and settled %d¢ to the seller (status %s)",
+		row.OwnerAmountCents, row.Status)
+
+	// And the reconcile sweep must not create a second one.
+	e.purchaseH.runSellerPayoutReconcile(ctx)
+	again := e.salePayout(t, f.purchaseID)
+	if again.ID != row.ID {
+		t.Error("reconcile created a duplicate payout for an already-settled sale")
+	}
+}
+
+// ─── Line 10: the reconcile sweep rescues a sale nothing settled ────────────
+
+func TestSalesRehearsalLine10_ReconcileRescuesAnUnpaidSale(t *testing.T) {
+	e := newSalesEnv(t)
+	f := e.startSale(t, "l10", "tok_visa")
+	ctx := context.Background()
+
+	completed := e.purchaseH.capturePayment(ctx, e.acceptInspection(t, f.purchaseID))
+	if completed == nil {
+		t.Fatal("capture failed")
+	}
+	row := e.salePayout(t, f.purchaseID)
+	if row == nil {
+		t.Fatal("no payout to remove")
+	}
+	// Delete the ledger row, simulating the settle never having happened.
+	if _, err := e.db.Pool.Exec(ctx, `DELETE FROM owner_payouts WHERE id = $1`, row.ID); err != nil {
+		t.Fatalf("remove payout: %v", err)
+	}
+	if e.salePayout(t, f.purchaseID) != nil {
+		t.Fatal("payout row still present")
+	}
+
+	e.purchaseH.runSellerPayoutReconcile(ctx)
+
+	healed := e.salePayout(t, f.purchaseID)
+	if healed == nil {
+		t.Fatal("reconcile did not settle a completed sale with no payout — the seller stays unpaid forever")
+	}
+	if healed.OwnerAmountCents != row.OwnerAmountCents {
+		t.Errorf("reconcile settled %d¢, want %d¢", healed.OwnerAmountCents, row.OwnerAmountCents)
+	}
+	t.Logf("  reconcile rescued the sale: %d¢ settled to the seller", healed.OwnerAmountCents)
 }

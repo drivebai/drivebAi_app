@@ -1707,6 +1707,9 @@ func (r *PurchaseRequestRepository) ResolveRejection(ctx context.Context, reject
 // capture and MarkCaptured), and nothing retried — both parties sat on
 // "Completing payment…" forever. olderThan keeps the scanner from racing a
 // capture that is happening right now on the request path.
+// Includes 'rejected_upheld': support ruling for the seller is a capture
+// path too, and a capture that fails there used to have no retry at all —
+// the status is terminal, so no other sweep would ever look at it again.
 func (r *PurchaseRequestRepository) ListStuckCaptures(ctx context.Context, olderThan time.Duration, limit int) ([]models.PurchaseRequest, error) {
 	if limit <= 0 {
 		limit = 50
@@ -1714,7 +1717,7 @@ func (r *PurchaseRequestRepository) ListStuckCaptures(ctx context.Context, older
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT `+purchaseRequestColumns+`
 		FROM purchase_requests
-		WHERE status = 'inspection_accepted'
+		WHERE status IN ('inspection_accepted', 'rejected_upheld')
 		  AND payment_intent_id IS NOT NULL
 		  AND payment_status IS DISTINCT FROM 'succeeded'
 		  AND updated_at < NOW() - $1::interval

@@ -740,3 +740,211 @@ func (r *PayoutRepository) WithholdUnpaidByChargeID(ctx context.Context, chargeI
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// ─── Owner guarantee (migration 000061) ─────────────────────────────────────
+
+// GuaranteeExposure is what the admin Payouts page shows: what the platform
+// has paid out of its own pocket against debt it has not collected.
+type GuaranteeExposure struct {
+	OwnerID          *uuid.UUID `json:"owner_id,omitempty"`
+	OwnerName        string     `json:"owner_name,omitempty"`
+	PaidCents        int64      `json:"paid_cents"`
+	RecoveredCents   int64      `json:"recovered_cents"`
+	OutstandingCents int64      `json:"outstanding_cents"`
+	Count            int        `json:"count"`
+}
+
+// GuaranteeExposureTotal is the single number: everything we have fronted,
+// less everything we have since recovered from the drivers who owed it.
+func (r *PayoutRepository) GuaranteeExposureTotal(ctx context.Context) (*GuaranteeExposure, error) {
+	var g GuaranteeExposure
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(owner_amount_cents), 0),
+		       COALESCE(SUM(guarantee_recovered_cents), 0),
+		       COALESCE(SUM(owner_amount_cents - guarantee_recovered_cents), 0),
+		       COUNT(*)
+		FROM owner_payouts
+		WHERE funding_source = 'platform_guarantee'
+		  AND status IN ('pending', 'paid', 'awaiting_onboarding')
+	`).Scan(&g.PaidCents, &g.RecoveredCents, &g.OutstandingCents, &g.Count)
+	if err != nil {
+		return nil, fmt.Errorf("guarantee exposure: %w", err)
+	}
+	return &g, nil
+}
+
+// GuaranteeExposureByOwner breaks the same figure down per owner, worst first
+// — the view that answers "who is costing us this".
+func (r *PayoutRepository) GuaranteeExposureByOwner(ctx context.Context, limit int) ([]GuaranteeExposure, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT op.owner_id,
+		       COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.email),
+		       COALESCE(SUM(op.owner_amount_cents), 0),
+		       COALESCE(SUM(op.guarantee_recovered_cents), 0),
+		       COALESCE(SUM(op.owner_amount_cents - op.guarantee_recovered_cents), 0),
+		       COUNT(*)
+		FROM owner_payouts op
+		JOIN users u ON u.id = op.owner_id
+		WHERE op.funding_source = 'platform_guarantee'
+		  AND op.status IN ('pending', 'paid', 'awaiting_onboarding')
+		GROUP BY op.owner_id, u.first_name, u.last_name, u.email
+		ORDER BY 5 DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("guarantee exposure by owner: %w", err)
+	}
+	defer rows.Close()
+	out := make([]GuaranteeExposure, 0)
+	for rows.Next() {
+		var g GuaranteeExposure
+		if serr := rows.Scan(&g.OwnerID, &g.OwnerName, &g.PaidCents, &g.RecoveredCents,
+			&g.OutstandingCents, &g.Count); serr != nil {
+			return nil, serr
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// GuaranteeFailureRate is the trailing rate over the last N TERMINAL weekly
+// cycles. The denominator is cycles, not rentals, because the guarantee
+// triggers per week: each completed week is one opportunity to fail, and a
+// per-rental rate does not predict cost.
+//
+// Every guaranteed week is funded by nine collected weeks of platform fee, so
+// the scheme goes underwater at a 10% rate. That is the number the bands on
+// the admin page are drawn against.
+func (r *PayoutRepository) GuaranteeFailureRate(ctx context.Context, lastN int) (guaranteed, terminal int, err error) {
+	if lastN <= 0 {
+		lastN = 200
+	}
+	err = r.db.Pool.QueryRow(ctx, `
+		WITH recent AS (
+			SELECT id FROM billing_cycles
+			WHERE status IN ('paid', 'waived', 'arrears_due', 'refunded', 'partially_refunded')
+			ORDER BY updated_at DESC
+			LIMIT $1
+		)
+		SELECT COUNT(*) FILTER (
+		         WHERE EXISTS (
+		           SELECT 1 FROM owner_payouts op
+		           WHERE op.guarantee_for_cycle_id = recent.id
+		             AND op.funding_source = 'platform_guarantee')),
+		       COUNT(*)
+		FROM recent`, lastN).Scan(&guaranteed, &terminal)
+	if err != nil {
+		return 0, 0, fmt.Errorf("guarantee failure rate: %w", err)
+	}
+	return guaranteed, terminal, nil
+}
+
+// CreateGuarantee records a payment DriveBai makes out of its own pocket for
+// a week it could not collect. Claimed-once on the cycle, so a sweep that
+// retries cannot pay an owner twice for the same week.
+func (r *PayoutRepository) CreateGuarantee(ctx context.Context, p *models.OwnerPayout, cycleID uuid.UUID) (*models.OwnerPayout, bool, error) {
+	if p.LeaseRequestID == nil {
+		return nil, false, fmt.Errorf("create guarantee: lease id required")
+	}
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO owner_payouts
+			(id, lease_request_id, owner_id, stripe_account_id,
+			 gross_kept_cents, fee_bps, fee_cents, owner_amount_cents, currency,
+			 status, source, note, funding_source, guarantee_for_cycle_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+			 'platform_guarantee', $13, NOW(), NOW())
+		ON CONFLICT (guarantee_for_cycle_id) WHERE guarantee_for_cycle_id IS NOT NULL DO NOTHING
+		RETURNING `+ownerPayoutColumns,
+		uuid.New(), p.LeaseRequestID, p.OwnerID, p.StripeAccountID,
+		p.GrossKeptCents, p.FeeBPS, p.FeeCents, p.OwnerAmountCents, p.Currency,
+		p.Status, p.Source, p.Note, cycleID)
+	created, err := scanOwnerPayout(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, gerr := r.GetGuaranteeForCycle(ctx, cycleID)
+		return existing, false, gerr
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("create guarantee: %w", err)
+	}
+	return created, true, nil
+}
+
+// GetGuaranteeForCycle returns the guarantee raised for one week, or nil.
+func (r *PayoutRepository) GetGuaranteeForCycle(ctx context.Context, cycleID uuid.UUID) (*models.OwnerPayout, error) {
+	p, err := scanOwnerPayout(r.db.Pool.QueryRow(ctx,
+		`SELECT `+ownerPayoutColumns+` FROM owner_payouts WHERE guarantee_for_cycle_id = $1`, cycleID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// ApplyGuaranteeRecovery credits money recovered from the driver against what
+// the platform fronted. The OWNER keeps what they were paid — this reimburses
+// the platform, and nothing here pays anyone a second time.
+func (r *PayoutRepository) ApplyGuaranteeRecovery(ctx context.Context, cycleID uuid.UUID, cents int64) (bool, error) {
+	if cents <= 0 {
+		return false, nil
+	}
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET guarantee_recovered_cents = LEAST(guarantee_recovered_cents + $2, owner_amount_cents),
+		    updated_at = NOW()
+		WHERE guarantee_for_cycle_id = $1 AND funding_source = 'platform_guarantee'
+	`, cycleID, cents)
+	if err != nil {
+		return false, fmt.Errorf("apply guarantee recovery: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ListCompletedSalesWithoutPayout finds sales that completed with no ledger
+// row — money captured from a buyer and nothing recorded for the seller.
+//
+// Settling is best-effort at completion, and completion can arrive by three
+// routes (the buyer's accept, the inspection window closing, and the
+// payment_intent.succeeded webhook). Any of them can die between the capture
+// and the ledger write, and none of the capture sweeps looks at a row that is
+// already 'completed'. This is the reconciliation that makes "the seller was
+// never paid" a recoverable state instead of a permanent one.
+func (r *PayoutRepository) ListCompletedSalesWithoutPayout(ctx context.Context, limit int) ([]struct {
+	PurchaseID  uuid.UUID
+	SellerID    uuid.UUID
+	AmountCents int64
+}, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT pr.id, pr.seller_id, pr.offer_amount_cents
+		FROM purchase_requests pr
+		LEFT JOIN owner_payouts op ON op.purchase_request_id = pr.id
+		WHERE pr.status = 'completed'
+		  AND pr.payment_status = 'succeeded'
+		  AND op.id IS NULL
+		ORDER BY pr.updated_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unpaid completed sales: %w", err)
+	}
+	defer rows.Close()
+	out := make([]struct {
+		PurchaseID  uuid.UUID
+		SellerID    uuid.UUID
+		AmountCents int64
+	}, 0)
+	for rows.Next() {
+		var v struct {
+			PurchaseID  uuid.UUID
+			SellerID    uuid.UUID
+			AmountCents int64
+		}
+		if serr := rows.Scan(&v.PurchaseID, &v.SellerID, &v.AmountCents); serr != nil {
+			return nil, serr
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
