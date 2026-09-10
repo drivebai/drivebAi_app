@@ -44,6 +44,9 @@ type OwnerPayoutSource string
 const (
 	PayoutSourceReturnCompleted OwnerPayoutSource = "return_completed"
 	PayoutSourceAdminSettlement OwnerPayoutSource = "admin_settlement"
+	// PayoutSourceSaleCompleted: a car sale completed — the inspection window
+	// closed without an upheld rejection and the money was captured.
+	PayoutSourceSaleCompleted OwnerPayoutSource = "sale_completed"
 	// PayoutSourceCycleConsumed: a rolling cycle's week completed (arrears
 	// promotion) — the normal weekly payout source.
 	PayoutSourceCycleConsumed OwnerPayoutSource = "cycle_consumed"
@@ -64,7 +67,11 @@ const (
 // OwnerPayout is the ledger row.
 type OwnerPayout struct {
 	ID               uuid.UUID         `json:"id"`
-	LeaseRequestID   uuid.UUID         `json:"lease_request_id"`
+	// Exactly one of LeaseRequestID / PurchaseRequestID is set — enforced by
+	// the owner_payouts_one_source CHECK (migration 000060). A sale has no
+	// lease row and never will.
+	LeaseRequestID    *uuid.UUID `json:"lease_request_id,omitempty"`
+	PurchaseRequestID *uuid.UUID `json:"purchase_request_id,omitempty"`
 	OwnerID          uuid.UUID         `json:"owner_id"`
 	StripeAccountID  *string           `json:"-"`
 	GrossKeptCents   int64             `json:"gross_kept_cents"`

@@ -556,7 +556,7 @@ func (h *LeaseRequestHandler) handleArrearsPaid(ctx context.Context, cycleID uui
 	fee, ownerShare := models.ComputePayoutSplit(cycle.AmountCents, h.billingFeeBPS)
 	cycleRef, ps, pe := cycle.ID, cycle.PeriodStart, cycle.PeriodEnd
 	if perr := h.payoutRepo.FinalizeCyclePayoutRow(ctx, &models.OwnerPayout{
-		LeaseRequestID:   lr.ID,
+		LeaseRequestID:   &lr.ID,
 		OwnerID:          lr.OwnerID,
 		GrossKeptCents:   cycle.AmountCents,
 		FeeBPS:           h.billingFeeBPS,

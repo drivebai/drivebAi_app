@@ -401,7 +401,7 @@ func TestBatch2_RollingEngineMechanics(t *testing.T) {
 	ps := time.Now().UTC().Add(-8 * 24 * time.Hour)
 	pe := time.Now().UTC().Add(-1 * time.Hour)
 	if _, _, err := e.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
-		LeaseRequestID: leaseID, OwnerID: owner, GrossKeptCents: 15000,
+		LeaseRequestID: &leaseID, OwnerID: owner, GrossKeptCents: 15000,
 		FeeBPS: payoutTestFeeBPS, FeeCents: 1500, OwnerAmountCents: 13500,
 		Currency: "USD", BillingCycleID: &cycleRef, PeriodStart: &ps, PeriodEnd: &pe,
 	}); err != nil {
@@ -535,7 +535,7 @@ func TestBatch2_ReviewFixes(t *testing.T) {
 	ps2 := time.Now().UTC().Add(-8 * 24 * time.Hour)
 	pe2 := time.Now().UTC().Add(-1 * time.Hour)
 	if _, _, err := e.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
-		LeaseRequestID: leaseID, OwnerID: owner, GrossKeptCents: 15000,
+		LeaseRequestID: &leaseID, OwnerID: owner, GrossKeptCents: 15000,
 		FeeBPS: payoutTestFeeBPS, FeeCents: 1500, OwnerAmountCents: 13500,
 		Currency: "USD", BillingCycleID: &cycRef2, PeriodStart: &ps2, PeriodEnd: &pe2,
 	}); err != nil {

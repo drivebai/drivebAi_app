@@ -25,7 +25,7 @@ func NewPayoutRepository(db *database.DB) *PayoutRepository {
 }
 
 const ownerPayoutColumns = `
-	id, lease_request_id, owner_id, stripe_account_id,
+	id, lease_request_id, purchase_request_id, owner_id, stripe_account_id,
 	gross_kept_cents, fee_bps, fee_cents, owner_amount_cents, currency,
 	status, source, source_charge_id, stripe_transfer_id, failure_reason, note,
 	reminder_count, last_reminder_at, escalated_at, paid_at,
@@ -34,7 +34,7 @@ const ownerPayoutColumns = `
 func scanOwnerPayout(row scanRow) (*models.OwnerPayout, error) {
 	var p models.OwnerPayout
 	err := row.Scan(
-		&p.ID, &p.LeaseRequestID, &p.OwnerID, &p.StripeAccountID,
+		&p.ID, &p.LeaseRequestID, &p.PurchaseRequestID, &p.OwnerID, &p.StripeAccountID,
 		&p.GrossKeptCents, &p.FeeBPS, &p.FeeCents, &p.OwnerAmountCents, &p.Currency,
 		&p.Status, &p.Source, &p.SourceChargeID, &p.StripeTransferID, &p.FailureReason, &p.Note,
 		&p.ReminderCount, &p.LastReminderAt, &p.EscalatedAt, &p.PaidAt,
@@ -64,7 +64,10 @@ func (r *PayoutRepository) Create(ctx context.Context, p *models.OwnerPayout) (*
 		p.Status, p.Source, p.SourceChargeID, p.Note)
 	created, err := scanOwnerPayout(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		existing, gerr := r.GetByLeaseRequestID(ctx, p.LeaseRequestID)
+		if p.LeaseRequestID == nil {
+			return nil, false, fmt.Errorf("create owner payout: rental path requires a lease id")
+		}
+		existing, gerr := r.GetByLeaseRequestID(ctx, *p.LeaseRequestID)
 		return existing, false, gerr
 	}
 	if err != nil {
@@ -669,4 +672,51 @@ func (r *PayoutRepository) FinalizeCyclePayoutRow(ctx context.Context, p *models
 		return fmt.Errorf("finalize cycle payout row: %w", err)
 	}
 	return nil
+}
+
+// CreateForSale records the seller's split of a completed car sale.
+// Claimed-once by the unique index on purchase_request_id, so a capture that
+// retries — or two instances racing — produce exactly one payout row.
+//
+// Mirrors Create() deliberately: same ledger, same statuses, same escrow
+// behaviour. A separate seller_payouts table would mean a second
+// implementation of split, transfer, escrow and reversal, each free to drift
+// from the rental one that has already moved real money correctly.
+func (r *PayoutRepository) CreateForSale(ctx context.Context, p *models.OwnerPayout) (*models.OwnerPayout, bool, error) {
+	if p.PurchaseRequestID == nil {
+		return nil, false, fmt.Errorf("create sale payout: purchase id required")
+	}
+	row := r.db.Pool.QueryRow(ctx, `
+		INSERT INTO owner_payouts
+			(id, purchase_request_id, owner_id, stripe_account_id,
+			 gross_kept_cents, fee_bps, fee_cents, owner_amount_cents, currency,
+			 status, source, source_charge_id, note, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+		ON CONFLICT (purchase_request_id) WHERE purchase_request_id IS NOT NULL DO NOTHING
+		RETURNING `+ownerPayoutColumns,
+		uuid.New(), p.PurchaseRequestID, p.OwnerID, p.StripeAccountID,
+		p.GrossKeptCents, p.FeeBPS, p.FeeCents, p.OwnerAmountCents, p.Currency,
+		p.Status, p.Source, p.SourceChargeID, p.Note)
+	created, err := scanOwnerPayout(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, gerr := r.GetByPurchaseRequestID(ctx, *p.PurchaseRequestID)
+		return existing, false, gerr
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("create sale payout: %w", err)
+	}
+	return created, true, nil
+}
+
+// GetByPurchaseRequestID returns the payout row for one sale, or nil.
+func (r *PayoutRepository) GetByPurchaseRequestID(ctx context.Context, purchaseID uuid.UUID) (*models.OwnerPayout, error) {
+	p, err := scanOwnerPayout(r.db.Pool.QueryRow(ctx,
+		`SELECT `+ownerPayoutColumns+` FROM owner_payouts WHERE purchase_request_id = $1`, purchaseID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get sale payout: %w", err)
+	}
+	return p, nil
 }

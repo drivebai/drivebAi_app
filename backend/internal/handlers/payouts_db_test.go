@@ -225,7 +225,7 @@ func TestPayouts_LedgerIdempotentPerLease(t *testing.T) {
 	mk := func(amount int64) *models.OwnerPayout {
 		fee, ownerC := models.ComputePayoutSplit(amount, payoutTestFeeBPS)
 		return &models.OwnerPayout{
-			LeaseRequestID: leaseID, OwnerID: owner,
+			LeaseRequestID: &leaseID, OwnerID: owner,
 			GrossKeptCents: amount, FeeBPS: payoutTestFeeBPS,
 			FeeCents: fee, OwnerAmountCents: ownerC, Currency: "USD",
 			Status: models.PayoutAwaitingOnboarding, Source: models.PayoutSourceReturnCompleted,
@@ -261,7 +261,7 @@ func TestPayouts_EscrowReminderAndEscalation(t *testing.T) {
 
 	fee, ownerC := models.ComputePayoutSplit(15000, payoutTestFeeBPS)
 	row, _, err := e.payoutRepo.Create(ctx, &models.OwnerPayout{
-		LeaseRequestID: leaseID, OwnerID: owner,
+		LeaseRequestID: &leaseID, OwnerID: owner,
 		GrossKeptCents: 15000, FeeBPS: payoutTestFeeBPS,
 		FeeCents: fee, OwnerAmountCents: ownerC, Currency: "USD",
 		Status: models.PayoutAwaitingOnboarding, Source: models.PayoutSourceReturnCompleted,

@@ -326,7 +326,7 @@ func seedAccruing(t *testing.T, e *payoutEnv, f rollingFixture, cycleID uuid.UUI
 	t.Helper()
 	fee, ownerShare := models.ComputePayoutSplit(amount, payoutTestFeeBPS)
 	if _, _, err := e.payoutRepo.CreateCycleAccruing(context.Background(), &models.OwnerPayout{
-		LeaseRequestID:   f.leaseID,
+		LeaseRequestID:   &f.leaseID,
 		OwnerID:          f.owner,
 		GrossKeptCents:   amount,
 		FeeBPS:           payoutTestFeeBPS,

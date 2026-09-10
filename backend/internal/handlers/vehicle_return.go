@@ -1397,7 +1397,7 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 	voidOvershootLedger := func(oc *models.BillingCycle) error {
 		cycleRef, ps, pe := oc.ID, oc.PeriodStart, oc.PeriodEnd
 		return h.billingPayoutRepo.FinalizeCyclePayoutRow(ctx, &models.OwnerPayout{
-			LeaseRequestID: lr.ID,
+			LeaseRequestID: &lr.ID,
 			OwnerID:        lr.OwnerID,
 			FeeBPS:         h.billingFeeBPS,
 			Currency:       "USD",
@@ -1497,7 +1497,7 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 		}
 		cycleRef, ps, pe := cc.ID, cc.PeriodStart, cc.PeriodEnd
 		if uErr := h.billingPayoutRepo.FinalizeCyclePayoutRow(ctx, &models.OwnerPayout{
-			LeaseRequestID:   lr.ID,
+			LeaseRequestID:   &lr.ID,
 			OwnerID:          lr.OwnerID,
 			GrossKeptCents:   kept,
 			FeeBPS:           h.billingFeeBPS,

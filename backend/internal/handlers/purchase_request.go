@@ -45,6 +45,26 @@ type PurchaseRequestHandler struct {
 	// salesDisabled refuses new purchase offers while the sale flow is
 	// switched off (no seller payout path yet — audit M1).
 	salesDisabled bool
+	// payoutH pays the SELLER when a sale completes. Optional: nil means the
+	// sale still completes and the ledger row is simply never written, which
+	// is the pre-seller-payout behaviour.
+	payoutH *PayoutHandler
+	// payoutRepo gates acceptance on the seller being able to receive money.
+	// Optional: nil disables the gate, which is the pre-seller-payout
+	// behaviour.
+	payoutRepo *repository.PayoutRepository
+}
+
+// SetPayoutRepository wires the payout account lookup used by the
+// acceptance-time onboarding gate.
+func (h *PurchaseRequestHandler) SetPayoutRepository(p *repository.PayoutRepository) {
+	h.payoutRepo = p
+}
+
+// SetPayoutHandler wires the payout engine so a completed sale pays its
+// seller. Setter, per the house pattern.
+func (h *PurchaseRequestHandler) SetPayoutHandler(p *PayoutHandler) {
+	h.payoutH = p
 }
 
 // SetSalesDisabled wires the DISABLE_CAR_SALES kill switch (house setter
@@ -664,6 +684,29 @@ func (h *PurchaseRequestHandler) Accept(w http.ResponseWriter, r *http.Request) 
 		}
 		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidPurchaseAction)
 		return
+	}
+
+	// Payout readiness, gated HERE and nowhere else.
+	//
+	// Not at listing: that would kill supply for sellers who are still
+	// deciding. Not at completion: by then the buyer has paid and taken the
+	// car, and escrowing tens of thousands of dollars with no timeline is a
+	// far worse failure than a week's rent sitting in escrow. Accepting an
+	// offer is the moment the seller commits to sell, and it is before the
+	// buyer has paid anything — so "you must be able to receive money before
+	// you agree to sell" costs nobody anything but the seller's own setup.
+	if h.payoutRepo != nil {
+		accountID, status, aerr := h.payoutRepo.GetPayoutAccount(r.Context(), userID)
+		if aerr != nil {
+			h.logger.Error("purchase.accept: payout account lookup", "error", aerr, "seller_id", userID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if accountID == nil || status != models.PayoutAccountReady {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("PAYOUT_SETUP_REQUIRED",
+				"Finish payout setup before accepting an offer — otherwise we'd take the buyer's money with no way to pay you. Open Earnings & payouts in your profile."))
+			return
+		}
 	}
 
 	// Seller-side reservation guard (mirror of Create's): accepting offer B
@@ -1763,6 +1806,16 @@ func (h *PurchaseRequestHandler) capturePayment(ctx context.Context, p *models.P
 		},
 		TargetUserIDs: []uuid.UUID{updated.SellerID, updated.BuyerID},
 	})
+
+	// Pay the seller. This is the settlement point: the money is captured,
+	// the rejection window has closed and the handover is recorded, so the
+	// sale will not in the ordinary course move backwards. Idempotent on the
+	// purchase id, so a capture retry cannot pay twice. Never fatal — a
+	// failure here leaves the ledger row for the payout sweeps, and the sale
+	// itself is already complete.
+	if h.payoutH != nil {
+		h.payoutH.SettleSalePayout(ctx, updated.ID, updated.SellerID, updated.OfferAmountCents, nil)
+	}
 	return updated
 }
 

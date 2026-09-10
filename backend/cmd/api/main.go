@@ -283,12 +283,17 @@ func main() {
 	// week's own charge, cycle-ledger rewrite instead of the legacy row.
 	vehicleReturnHandler.SetBillingDependencies(repository.NewBillingRepository(db), payoutRepo, cfg.PlatformFeeBPS)
 	vehicleReturnHandler.SetDebtRepository(driverDebtRepo)
+	payoutHandler.SetPurchaseRepository(repository.NewPurchaseRequestRepository(db))
 
 	// Purchase (buy the car) — mirrors the lease flow but with manual capture
 	// held until buyer inspection accept. See DESIGN SPEC for the state
 	// machine.
 	purchaseRepo := repository.NewPurchaseRequestRepository(db)
 	purchaseHandler := handlers.NewPurchaseRequestHandler(purchaseRepo, carRepo, userRepo, chatRepo, leaseRepo, stripeSvc, wsHub, notifHandler, privateURLSigner, uploadDir, logger)
+	// A completed sale pays its seller through the same ledger and the same
+	// transfer machinery that has already moved real money for rentals.
+	purchaseHandler.SetPayoutHandler(payoutHandler)
+	purchaseHandler.SetPayoutRepository(payoutRepo)
 	purchaseHandler.SetSalesDisabled(cfg.DisableCarSales)
 	leaseHandler.SetPurchaseHandler(purchaseHandler)
 	todayHandler.SetPurchaseRepository(purchaseRepo)

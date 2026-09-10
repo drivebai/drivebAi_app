@@ -38,6 +38,16 @@ type PayoutHandler struct {
 	notifHandler *NotificationHandler
 	feeBPS       int
 	logger       *slog.Logger
+	// purchaseRepo lets a SALE payout find its funding charge. Optional:
+	// nil simply means the transfer comes from the platform balance rather
+	// than being traced to the specific charge.
+	purchaseRepo *repository.PurchaseRequestRepository
+}
+
+// SetPurchaseRepository wires the purchase side so a completed car sale can
+// pay its seller. Setter, per the house pattern.
+func (h *PayoutHandler) SetPurchaseRepository(p *repository.PurchaseRequestRepository) {
+	h.purchaseRepo = p
 }
 
 func NewPayoutHandler(
@@ -439,7 +449,7 @@ func (h *PayoutHandler) SettleRentalPayout(ctx context.Context, leaseID, ownerID
 	}
 
 	row, created, err := h.payoutRepo.Create(ctx, &models.OwnerPayout{
-		LeaseRequestID:   leaseID,
+		LeaseRequestID:   &leaseID,
 		OwnerID:          ownerID,
 		StripeAccountID:  accountID,
 		GrossKeptCents:   keptCents,
@@ -468,12 +478,11 @@ func (h *PayoutHandler) SettleRentalPayout(ctx context.Context, leaseID, ownerID
 				"attempted_kept_cents", keptCents,
 				"existing_status", row.Status)
 			if h.ticketRepo != nil {
-				leaseRef := leaseID
 				desc := fmt.Sprintf(
 					"Payout ledger row for lease %s holds gross_kept %d¢ but a settlement just recomputed kept as %d¢ (existing status %q). One charge may be funding both an owner payout and a driver refund — reconcile against the Stripe dashboard before any further payout action.",
 					leaseID, row.GrossKeptCents, keptCents, row.Status)
 				if _, terr := h.ticketRepo.CreateSystemTicket(ctx, ownerID, models.TicketCategoryPayments,
-					"Payout ledger mismatch needs reconciliation", desc, &leaseRef, nil); terr != nil {
+					"Payout ledger mismatch needs reconciliation", desc, &leaseID, nil); terr != nil {
 					h.logger.Error("payout: mismatch ticket", "error", terr, "lease_request_id", leaseID)
 				}
 			}
@@ -515,24 +524,50 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	// chargeback can target exactly this row (review CRITICAL: the column
 	// was never written before, making the clawback dead code).
 	sourceCharge := ""
-	if row.BillingCycleID != nil {
+	switch {
+	case row.PurchaseRequestID != nil:
+		// A sale funds its transfer from the captured purchase charge.
+		if h.purchaseRepo != nil {
+			if pr, perr := h.purchaseRepo.GetByID(ctx, *row.PurchaseRequestID); perr == nil && pr != nil && pr.PaymentIntentID != nil {
+				if chargeID, cerr := h.stripe.GetLatestChargeID(*pr.PaymentIntentID); cerr == nil {
+					sourceCharge = chargeID
+				} else {
+					h.logger.Warn("payout: sale charge lookup failed, transferring from balance",
+						"error", cerr, "purchase_request_id", *row.PurchaseRequestID)
+				}
+			}
+		}
+	case row.BillingCycleID != nil:
 		// Rolling cycle rows carry their funding charge from accrual time.
 		if row.SourceChargeID != nil {
 			sourceCharge = *row.SourceChargeID
 		}
-	} else if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
-		if chargeID, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID); cerr == nil {
-			sourceCharge = chargeID
-		} else {
-			h.logger.Warn("payout: charge lookup failed, transferring from balance", "error", cerr, "lease_request_id", row.LeaseRequestID)
+	case row.LeaseRequestID != nil:
+		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, *row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
+			if chargeID, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID); cerr == nil {
+				sourceCharge = chargeID
+			} else {
+				h.logger.Warn("payout: charge lookup failed, transferring from balance", "error", cerr, "lease_request_id", row.LeaseRequestID)
+			}
 		}
 	}
 
-	transferGroup := "lease-" + row.LeaseRequestID.String()
-	if row.BillingCycleID != nil {
+	// The transfer group is the adoption key: it must identify THIS payout
+	// uniquely, or a crash between transfer and MarkPaid could adopt somebody
+	// else's transfer.
+	var transferGroup string
+	switch {
+	case row.PurchaseRequestID != nil:
+		transferGroup = "sale-" + row.PurchaseRequestID.String()
+	case row.BillingCycleID != nil && row.LeaseRequestID != nil:
 		// Per-cycle group: FindTransferByGroup adoption stays exact for
 		// every cycle independently; legacy rows keep the lease-wide group.
 		transferGroup = "lease-" + row.LeaseRequestID.String() + "-cycle-" + row.BillingCycleID.String()
+	case row.LeaseRequestID != nil:
+		transferGroup = "lease-" + row.LeaseRequestID.String()
+	default:
+		h.logger.Error("payout: row has no source, refusing to transfer", "payout_id", row.ID)
+		return
 	}
 	if existing, ferr := h.stripe.FindTransferByGroup(transferGroup); ferr == nil && existing != nil {
 		h.logger.Info("payout: adopting existing transfer", "payout_id", row.ID, "transfer_id", existing.ID)
@@ -540,8 +575,8 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 			leaseRef := paid.LeaseRequestID
 			go h.notifHandler.Notify(paid.OwnerID, models.NotificationTypePayment,
 				fmt.Sprintf("%s sent to your bank", formatMoney(paid.OwnerAmountCents)),
-				fmt.Sprintf("Your rental payout of %s is on its way (platform fee %s).", formatMoney(paid.OwnerAmountCents), formatMoney(paid.FeeCents)),
-				nil, &leaseRef)
+				fmt.Sprintf("Your %s payout of %s is on its way (platform fee %s).", payoutKindWord(paid), formatMoney(paid.OwnerAmountCents), formatMoney(paid.FeeCents)),
+				nil, leaseRef)
 		}
 		return
 	}
@@ -571,7 +606,7 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	go h.notifHandler.Notify(paid.OwnerID, models.NotificationTypePayment,
 		fmt.Sprintf("%s sent to your bank", formatMoney(paid.OwnerAmountCents)),
 		fmt.Sprintf("Your rental payout of %s is on its way (platform fee %s).", formatMoney(paid.OwnerAmountCents), formatMoney(paid.FeeCents)),
-		nil, &leaseRef)
+		nil, leaseRef)
 	h.logger.Info("payout: paid", "payout_id", paid.ID, "transfer_id", tr.ID, "amount_cents", paid.OwnerAmountCents)
 }
 
@@ -644,7 +679,7 @@ func (h *PayoutHandler) runPayoutSweep(ctx context.Context) {
 			fmt.Sprintf("%s still waiting for you", formatMoney(p.OwnerAmountCents)),
 			fmt.Sprintf("Your rental earnings of %s have been waiting %d days. Finish payout setup in Earnings & payouts — it takes about five minutes.",
 				formatMoney(p.OwnerAmountCents), int(now.Sub(p.CreatedAt).Hours()/24)),
-			nil, &leaseRef)
+			nil, leaseRef)
 	}
 
 	// Escalation: stale unclaimed balances become a human's problem.
@@ -662,7 +697,7 @@ func (h *PayoutHandler) runPayoutSweep(ctx context.Context) {
 		description := fmt.Sprintf(
 			"An owner payout has sat unclaimed for %d+ days because payout onboarding was never completed.\n\nOwner: %s\nAmount: %s (fee already carved out: %s)\nLease request: %s\nReminders sent: %d\n\nPolicy beyond this point is a business decision — see the escrow policy. Do not convert or forfeit without an explicit decision.",
 			int(models.PayoutEscrowEscalateAfter.Hours()/24), p.OwnerID, formatMoney(p.OwnerAmountCents), formatMoney(p.FeeCents), p.LeaseRequestID, p.ReminderCount)
-		created, terr := h.ticketRepo.CreateSystemTicket(ctx, p.OwnerID, models.TicketCategoryPayments, subject, description, &leaseRef, nil)
+		created, terr := h.ticketRepo.CreateSystemTicket(ctx, p.OwnerID, models.TicketCategoryPayments, subject, description, leaseRef, nil)
 		if terr != nil {
 			h.logger.Error("payout sweep: escalation ticket failed", "error", terr, "payout_id", p.ID)
 			continue
@@ -688,7 +723,7 @@ func (h *PayoutHandler) AdminWithhold(ctx context.Context, leaseID, ownerID uuid
 	fee, ownerShare := models.ComputePayoutSplit(keptCents, h.feeBPS)
 	accountID, _, _ := h.payoutRepo.GetPayoutAccount(ctx, ownerID)
 	row, created, err := h.payoutRepo.Create(ctx, &models.OwnerPayout{
-		LeaseRequestID:   leaseID,
+		LeaseRequestID:   &leaseID,
 		OwnerID:          ownerID,
 		StripeAccountID:  accountID,
 		GrossKeptCents:   keptCents,
@@ -709,11 +744,10 @@ func (h *PayoutHandler) AdminWithhold(ctx context.Context, leaseID, ownerID uuid
 			return nil, err
 		}
 	}
-	leaseRef := leaseID
 	go h.notifHandler.Notify(ownerID, models.NotificationTypePayment,
 		"A rental payout was withheld",
 		fmt.Sprintf("Support withheld the payout for one of your rentals. Reason: %s. Contact support if you believe this is a mistake.", note),
-		nil, &leaseRef)
+		nil, row.LeaseRequestID)
 	return row, nil
 }
 
@@ -726,7 +760,7 @@ func (h *PayoutHandler) AdminReviveWithheld(ctx context.Context, id uuid.UUID, n
 		return nil, err
 	}
 	h.executePayout(ctx, row)
-	return h.payoutRepo.GetByLeaseRequestID(ctx, row.LeaseRequestID)
+	return h.payoutRepo.GetByLeaseRequestID(ctx, *row.LeaseRequestID)
 }
 
 // ─── Admin ──────────────────────────────────────────────────────────────────
@@ -741,4 +775,91 @@ func (h *PayoutHandler) AdminListPayouts(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"payouts": rows})
+}
+
+// SettleSalePayout pays the SELLER of a completed car sale.
+//
+// Settlement point, argued the same way transfer-at-completion was argued for
+// rentals: money can move backwards on a sale too, so the transfer waits
+// until it practically cannot. Not at authorization (no money exists). Not at
+// capture — capture happens at or before handover while the buyer still holds
+// an inspection-based rejection an admin can uphold days later, and clawing
+// back means reversing a transfer whose funds may already have reached the
+// seller's bank, on amounts far larger than a week's rent. So: at completion,
+// when the rejection window has closed and the handover is recorded.
+//
+// Mirrors the rental path exactly — same ledger, same split, same escrow when
+// the seller is not onboarded, same stable-key transfer.
+func (h *PayoutHandler) SettleSalePayout(ctx context.Context, purchaseID, sellerID uuid.UUID, saleCents int64, note *string) {
+	if saleCents <= 0 {
+		h.logger.Info("sale payout: nothing to pay", "purchase_request_id", purchaseID)
+		return
+	}
+	fee, sellerShare := models.ComputePayoutSplit(saleCents, h.feeBPS)
+
+	accountID, status, aerr := h.payoutRepo.GetPayoutAccount(ctx, sellerID)
+	rowStatus := models.PayoutPending
+	if aerr != nil || accountID == nil || status != models.PayoutAccountReady {
+		// Fails CLOSED, like rentals: a lookup error parks the money rather
+		// than risking a transfer to an account we could not verify.
+		rowStatus = models.PayoutAwaitingOnboarding
+	}
+
+	row, created, err := h.payoutRepo.CreateForSale(ctx, &models.OwnerPayout{
+		PurchaseRequestID: &purchaseID,
+		OwnerID:           sellerID,
+		StripeAccountID:   accountID,
+		GrossKeptCents:    saleCents,
+		FeeBPS:            h.feeBPS,
+		FeeCents:          fee,
+		OwnerAmountCents:  sellerShare,
+		Currency:          "USD",
+		Status:            rowStatus,
+		Source:            models.PayoutSourceSaleCompleted,
+		Note:              note,
+	})
+	if err != nil {
+		h.logger.Error("sale payout: create ledger row", "error", err, "purchase_request_id", purchaseID)
+		return
+	}
+	if !created {
+		if row != nil && row.GrossKeptCents != saleCents {
+			h.logger.Error("sale payout: LEDGER MISMATCH — settlement disagrees with existing row",
+				"purchase_request_id", purchaseID,
+				"existing_gross_kept_cents", row.GrossKeptCents,
+				"attempted_cents", saleCents, "existing_status", row.Status)
+			if h.ticketRepo != nil {
+				desc := fmt.Sprintf(
+					"Sale payout row for purchase %s holds gross_kept %d¢ but completion recomputed %d¢ (existing status %q). Reconcile against Stripe before any further payout action.",
+					purchaseID, row.GrossKeptCents, saleCents, row.Status)
+				if _, terr := h.ticketRepo.CreateSystemTicket(ctx, sellerID, models.TicketCategoryPayments,
+					"Sale payout ledger mismatch needs reconciliation", desc, nil, nil); terr != nil {
+					h.logger.Error("sale payout: mismatch ticket", "error", terr)
+				}
+			}
+			return
+		}
+		h.logger.Info("sale payout: ledger row already exists (idempotent)",
+			"purchase_request_id", purchaseID, "status", row.Status)
+		return
+	}
+
+	if rowStatus == models.PayoutAwaitingOnboarding {
+		go h.notifHandler.Notify(sellerID, models.NotificationTypePayment,
+			fmt.Sprintf("%s from your car sale is waiting", formatMoney(sellerShare)),
+			fmt.Sprintf("Your sale completed and %s is ready. Finish payout setup in Earnings & payouts and it transfers automatically.", formatMoney(sellerShare)),
+			nil, nil)
+		return
+	}
+	h.executePayout(ctx, row)
+}
+
+// payoutKindWord keeps payout copy honest about what was paid for: a seller
+// reading "your rental payout" after selling a car has been told the wrong
+// thing about their own money.
+func payoutKindWord(p *models.OwnerPayout) string {
+	if p != nil && p.PurchaseRequestID != nil {
+		return "sale"
+	}
+	return "rental"
 }

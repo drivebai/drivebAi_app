@@ -624,7 +624,7 @@ func (h *LeaseRequestHandler) handleCyclePaid(ctx context.Context, cycleID uuid.
 	ps := cycle.PeriodStart
 	pe := cycle.PeriodEnd
 	if _, _, aerr := h.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
-		LeaseRequestID:   cycle.LeaseRequestID,
+		LeaseRequestID:   &cycle.LeaseRequestID,
 		OwnerID:          lr.OwnerID,
 		GrossKeptCents:   cycle.AmountCents,
 		FeeBPS:           h.billingFeeBPS,
@@ -897,7 +897,7 @@ func (h *LeaseRequestHandler) billingBootstrapPhase(ctx context.Context, now tim
 		ps := cycle.PeriodStart
 		pe := cycle.PeriodEnd
 		if _, _, aerr := h.payoutRepo.CreateCycleAccruing(ctx, &models.OwnerPayout{
-			LeaseRequestID:   leaseID,
+			LeaseRequestID:   &leaseID,
 			OwnerID:          lr.OwnerID,
 			GrossKeptCents:   cycle.AmountCents,
 			FeeBPS:           h.billingFeeBPS,
