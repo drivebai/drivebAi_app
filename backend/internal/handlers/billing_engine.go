@@ -38,6 +38,7 @@ func (h *LeaseRequestHandler) SetBillingDependencies(billingRepo *repository.Bil
 // runBillingSweep is the engine tick (rides the pickup-expiry scanner's
 // 60s ticker, after the lease sweeps).
 func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
+	h.runDebtReconcilePhase(ctx)
 	if h.billingRepo == nil {
 		return
 	}
@@ -1221,5 +1222,32 @@ func (h *LeaseRequestHandler) billingAmendmentExpiryPhase(ctx context.Context, n
 			"Price proposal expired",
 			fmt.Sprintf("The owner's proposed $%.2f lapsed — your rental continues unchanged%s.", float64(a.NewAmountCents)/100, cur),
 			&chatID, &leaseRef)
+	}
+}
+
+// runDebtReconcilePhase heals uncollected weeks that never reached the debt
+// ledger. Opening a debt is best-effort at the moment arrears is settled —
+// the settlement must not be held hostage to a ledger write — but the window
+// is one-shot, so without this a single dropped connection meant the driver
+// owed money the system could not see: not blocked, balance reading zero.
+func (h *LeaseRequestHandler) runDebtReconcilePhase(ctx context.Context) {
+	if h.debtRepo == nil {
+		return
+	}
+	missing, err := h.debtRepo.ListArrearsCyclesWithoutDebt(ctx, 50)
+	if err != nil {
+		h.logger.Error("debt reconcile: list", "error", err)
+		return
+	}
+	for i := range missing {
+		m := missing[i]
+		lr, lerr := h.leaseRepo.GetByID(ctx, m.LeaseID)
+		if lerr != nil || lr == nil {
+			h.logger.Error("debt reconcile: load lease", "error", lerr, "lease_request_id", m.LeaseID)
+			continue
+		}
+		h.logger.Warn("debt reconcile: arrears week had no debt row, opening it",
+			"cycle_id", m.CycleID, "lease_request_id", m.LeaseID, "amount_cents", m.AmountCents)
+		openDriverDebtLedger(ctx, h.logger, h.debtRepo, h.userRepo, h.billingRepo, lr, m.CycleID, m.AmountCents)
 	}
 }

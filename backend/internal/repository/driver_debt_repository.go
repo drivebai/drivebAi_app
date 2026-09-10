@@ -309,3 +309,52 @@ func (r *DriverDebtRepository) MatchOpenDebtsByFingerprint(
 	}
 	return out, rows.Err()
 }
+
+// ArrearsCycleWithoutDebt is an uncollected week that never got a debt row.
+type ArrearsCycleWithoutDebt struct {
+	CycleID     uuid.UUID
+	LeaseID     uuid.UUID
+	DriverID    uuid.UUID
+	AmountCents int64
+	Currency    string
+}
+
+// ListArrearsCyclesWithoutDebt finds uncollected weeks that have no debt in
+// the ledger.
+//
+// The window in which a debt can be opened is one-shot: SettleArrearsProRata
+// succeeds exactly once, 'arrears_due' is excluded from every other sweep's
+// lister, and the return flow explicitly treats an already-arrears cycle as
+// "the debt is already recorded". So a single failed insert — a dropped
+// connection, a cancelled request context — used to lose the debt forever:
+// the driver owed money, was not blocked, and their balance read zero. This
+// is the reconciliation that makes the ledger self-healing.
+func (r *DriverDebtRepository) ListArrearsCyclesWithoutDebt(ctx context.Context, limit int) ([]ArrearsCycleWithoutDebt, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT bc.id, bc.lease_request_id, lr.driver_id, bc.amount_cents,
+		       COALESCE(NULLIF(lr.currency, ''), 'USD')
+		FROM billing_cycles bc
+		JOIN lease_requests lr ON lr.id = bc.lease_request_id
+		LEFT JOIN driver_debts dd ON dd.billing_cycle_id = bc.id
+		WHERE bc.status = 'arrears_due'
+		  AND dd.id IS NULL
+		  AND bc.amount_cents > 0
+		ORDER BY bc.updated_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list arrears without debt: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ArrearsCycleWithoutDebt, 0)
+	for rows.Next() {
+		var a ArrearsCycleWithoutDebt
+		if serr := rows.Scan(&a.CycleID, &a.LeaseID, &a.DriverID, &a.AmountCents, &a.Currency); serr != nil {
+			return nil, serr
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

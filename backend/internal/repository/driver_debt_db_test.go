@@ -271,3 +271,44 @@ func TestDriverDebt_WaiveRecordsForgivenAmountNotOriginal(t *testing.T) {
 		t.Errorf("waive entry recorded %d, want 6000 (the outstanding amount, not the original 10000)", forgiven)
 	}
 }
+
+// The reconcile query is what makes a lost debt recoverable. An arrears week
+// with no ledger row must be findable; once the row exists it must not be
+// reported again.
+func TestDriverDebt_ReconcileFindsArrearsWithoutDebt(t *testing.T) {
+	_, repo, driverID, leaseID, seedCycle, cleanup := debtTestEnv(t)
+	defer cleanup()
+	ctx := context.Background()
+	cycleA := seedCycle(1, 6426)
+
+	missing, err := repo.ListArrearsCyclesWithoutDebt(ctx, 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for _, m := range missing {
+		if m.CycleID == cycleA {
+			found = true
+			if m.DriverID != driverID || m.AmountCents != 6426 {
+				t.Errorf("reconcile row wrong: driver=%s amount=%d", m.DriverID, m.AmountCents)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("an arrears week with no debt row was not reported — a lost debt would stay lost")
+	}
+
+	// Once the debt exists, the cycle must drop out of the reconcile list.
+	if _, _, err := repo.OpenForCycle(ctx, driverID, leaseID, cycleA, 6426, "USD", models.DriverDebtSnapshot{}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	after, err := repo.ListArrearsCyclesWithoutDebt(ctx, 100)
+	if err != nil {
+		t.Fatalf("list again: %v", err)
+	}
+	for _, m := range after {
+		if m.CycleID == cycleA {
+			t.Error("cycle still reported as missing a debt after one was opened")
+		}
+	}
+}
