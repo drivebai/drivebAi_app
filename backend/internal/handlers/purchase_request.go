@@ -1414,7 +1414,30 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 // ─── Payment ────────────────────────────────────────────────────────────────
 
 // CreatePaymentIntent — POST /api/v1/purchase-requests/{id}/payment-intent
+// refuseIfSalesDisabled guards the points that COMMIT someone further into a
+// sale: making an offer, authorizing money, scheduling the handover, handing
+// over the keys.
+//
+// It deliberately does NOT guard the ways OUT — capture of an
+// already-authorized sale, the buyer's accept or reject, refunds, admin
+// resolution, and the inspection-window sweep. A kill switch that strands a
+// buyer who has already authorized money and taken delivery is worse than the
+// problem it is meant to contain: the hold would lapse after 7 days with the
+// car already gone and nobody paid. So the switch stops sales STARTING and
+// lets in-flight ones land or unwind.
+func (h *PurchaseRequestHandler) refuseIfSalesDisabled(w http.ResponseWriter) bool {
+	if !h.salesDisabled {
+		return false
+	}
+	httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("SALES_PAUSED",
+		"Buying isn't available right now — rentals are unaffected. Check back soon."))
+	return true
+}
+
 func (h *PurchaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http.Request) {
+	if h.refuseIfSalesDisabled(w) {
+		return
+	}
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
 		return
@@ -1530,6 +1553,9 @@ func (h *PurchaseRequestHandler) SyncPayment(w http.ResponseWriter, r *http.Requ
 
 // ScheduleHandover — POST /api/v1/purchase-requests/{id}/schedule-handover
 func (h *PurchaseRequestHandler) ScheduleHandover(w http.ResponseWriter, r *http.Request) {
+	if h.refuseIfSalesDisabled(w) {
+		return
+	}
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
 		return
@@ -1573,6 +1599,9 @@ func (h *PurchaseRequestHandler) ScheduleHandover(w http.ResponseWriter, r *http
 
 // KeysHandedOver — POST /api/v1/purchase-requests/{id}/keys-handed-over
 func (h *PurchaseRequestHandler) KeysHandedOver(w http.ResponseWriter, r *http.Request) {
+	if h.refuseIfSalesDisabled(w) {
+		return
+	}
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
 		return
@@ -2178,6 +2207,12 @@ func (h *PurchaseRequestHandler) AdminResolveRejection(w http.ResponseWriter, r 
 
 // AdminRetryRefund — POST /api/v1/admin/purchase-requests/{id}/retry-refund
 // Admin-triggered kick when refund_status is stuck at 'failed'.
+//
+// It says "retry" and it means it: until this guard existed the endpoint would
+// happily issue a FIRST full refund on any completed sale, at any age, with no
+// check that a refund had ever failed — despite the doc comment claiming
+// otherwise. On a completed car sale that is a five-figure movement one
+// mis-click away, on a row that stays marked sold.
 func (h *PurchaseRequestHandler) AdminRetryRefund(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -2201,6 +2236,22 @@ func (h *PurchaseRequestHandler) AdminRetryRefund(w http.ResponseWriter, r *http
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("refunds are only supported on captured payments"))
 		return
 	}
+	// This is a RETRY. A refund must already have been attempted and failed;
+	// otherwise the caller wants the rejection flow, not this button.
+	if p.RefundStatus == nil || *p.RefundStatus != models.VehicleReturnRefundFailed {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_FAILED_REFUND",
+			"This sale has no failed refund to retry. Resolve the buyer's rejection instead, which issues the refund."))
+		return
+	}
+	// Stripe will not refund a charge older than its own window, and a
+	// months-old sale is a support conversation, not a button. Refuse rather
+	// than fire a request that fails confusingly at the API.
+	if p.CompletedAt != nil && time.Since(*p.CompletedAt) > models.PurchaseRefundMaxAge {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("REFUND_WINDOW_CLOSED",
+			fmt.Sprintf("This sale completed more than %d days ago. Refunds this old have to be handled directly in Stripe.",
+				int(models.PurchaseRefundMaxAge.Hours()/24))))
+		return
+	}
 	idemKey := fmt.Sprintf("purchase-refund-%s", p.ID.String())
 	refund, err := h.stripe.CreateRefund(*p.PaymentIntentID, idemKey, "requested_by_customer", p.OfferAmountCents)
 	if err != nil {
@@ -2216,6 +2267,14 @@ func (h *PurchaseRequestHandler) AdminRetryRefund(w http.ResponseWriter, r *http
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
+	}
+	// The money went back, so the car is not sold. Leaving it 'sold' and
+	// archived stranded the seller's listing with no way back except a
+	// database edit.
+	if status == models.VehicleReturnRefundSucceeded {
+		if rerr := h.repo.UnsellAfterRefund(r.Context(), updated.CarID); rerr != nil {
+			h.logger.Error("purchase: un-sell car after refund", "error", rerr, "car_id", updated.CarID)
+		}
 	}
 	// Only push refund-completion messages when the refund actually settled
 	// synchronously (Stripe returned status=succeeded). Pending-refund kicks
@@ -2336,8 +2395,106 @@ func (h *PurchaseRequestHandler) StartExpiryScanner(ctx context.Context, interva
 			h.runOfferExpiry(ctx)
 			h.runAcceptExpiry(ctx)
 			h.runAuthExpiry(ctx)
+			h.runInspectionExpiry(ctx)
 			h.runCaptureRetry(ctx)
 		}
+	}
+}
+
+// runInspectionExpiry makes the 48-hour inspection window real.
+//
+// Until this existed, inspection_deadline_at was written, returned to clients
+// and read by nothing. The only clock that ended `awaiting_inspection` was
+// the 7-day Stripe authorization lapsing — and the seller has already handed
+// over the keys by then, so the exit was "buyer keeps the car, the hold dies,
+// nobody is paid".
+//
+// Silence now COMPLETES the sale. The reasoning: the buyer has taken delivery,
+// inspection happens at handover in practice, and two full days of silence
+// after driving away is acceptance. Refunding instead would make the seller
+// hostage to a buyer who already holds the vehicle, and there is no mechanism
+// to get a car back.
+//
+// That is only defensible if the silence was INFORMED, so the window warns at
+// T−24h and T−2h and records that it did. The deadline plus two recorded
+// warnings is the evidence if a buyer later says they never had the chance.
+func (h *PurchaseRequestHandler) runInspectionExpiry(ctx context.Context) {
+	now := time.Now().UTC()
+
+	// Phase 1 — the two warnings. Each is claimed once. A row already past
+	// the deadline is skipped by the `> now` bound so we never send
+	// "24 hours left" and "sale completed" in the same tick.
+	for _, w := range []struct {
+		column string
+		within time.Duration
+		title  string
+		body   string
+	}{
+		{"inspection_warned_24h_at", 24 * time.Hour, "24 hours left to inspect",
+			"You have 24 hours left to accept or report a problem with %s. If we don't hear from you, the sale completes automatically and the seller is paid."},
+		{"inspection_warned_2h_at", 2 * time.Hour, "2 hours left to inspect",
+			"Last reminder: 2 hours left to accept or report a problem with %s. If we don't hear from you, the sale completes automatically and the seller is paid."},
+	} {
+		claimed, err := h.repo.ClaimInspectionWarning(ctx, w.column, w.within, now, 50)
+		if err != nil {
+			h.logger.Error("purchase inspection: claim warning", "error", err, "column", w.column)
+			continue
+		}
+		for i := range claimed {
+			p := &claimed[i]
+			carTitle := "the car"
+			if car, cerr := h.carRepo.GetByID(ctx, p.CarID); cerr == nil && car != nil {
+				carTitle = carTitleOr(car.Title)
+			}
+			h.notifyPurchaseParty(p, p.BuyerID, models.NotificationTypePurchaseRequest,
+				w.title, fmt.Sprintf(w.body, carTitle))
+			h.logger.Info("purchase inspection: warning sent",
+				"id", p.ID, "which", w.column, "deadline", p.InspectionDeadlineAt)
+		}
+	}
+
+	// Phase 2 — the deadline itself. Claim each row individually so a buyer
+	// acting in the same second wins, then run the existing capture with its
+	// existing stable idempotency key.
+	expired, err := h.repo.ListInspectionExpired(ctx, now, 50)
+	if err != nil {
+		h.logger.Error("purchase inspection: list expired", "error", err)
+		return
+	}
+	for i := range expired {
+		claimed, cerr := h.repo.ClaimInspectionAutoAccept(ctx, expired[i].ID)
+		if cerr != nil {
+			h.logger.Error("purchase inspection: claim auto-accept", "error", cerr, "id", expired[i].ID)
+			continue
+		}
+		if claimed == nil {
+			continue // the buyer acted first, or another instance claimed it
+		}
+		h.logger.Info("purchase inspection: window expired, completing sale",
+			"id", claimed.ID, "deadline", claimed.InspectionDeadlineAt,
+			"warned_24h", claimed.InspectionWarned24hAt != nil,
+			"warned_2h", claimed.InspectionWarned2hAt != nil)
+
+		updated := h.capturePayment(ctx, claimed)
+		if updated == nil {
+			// capturePayment logs and leaves the row at inspection_accepted;
+			// runCaptureRetry owns it from here, so it still has an exit.
+			continue
+		}
+		h.broadcast("purchase_request_updated", updated, nil)
+
+		carTitle := "the car"
+		if car, cerr := h.carRepo.GetByID(ctx, updated.CarID); cerr == nil && car != nil {
+			carTitle = carTitleOr(car.Title)
+		}
+		h.postSystemMessage(ctx, updated.ChatID, updated.BuyerID,
+			"Inspection window closed — sale completed automatically")
+		h.notifyPurchaseParty(updated, updated.BuyerID, models.NotificationTypePurchaseRequest,
+			"Sale completed",
+			fmt.Sprintf("The 48-hour inspection window for %s closed without a response, so the sale completed and the seller has been paid.", carTitle))
+		h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchaseRequest,
+			"Sale completed",
+			fmt.Sprintf("The buyer's inspection window for %s closed without a response. The sale is complete.", carTitle))
 	}
 }
 

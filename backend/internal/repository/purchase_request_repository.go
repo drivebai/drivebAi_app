@@ -35,6 +35,7 @@ const purchaseRequestColumns = `
 	handover_location, handover_latitude, handover_longitude,
 	handover_scheduled_at, keys_handed_over_at, inspection_deadline_at, inspection_accepted_at, completed_at,
 	accepted_at, accept_expiry_warned_at,
+	inspection_warned_24h_at, inspection_warned_2h_at, inspection_auto_accepted_at,
 	payment_intent_id, payment_status, refund_status, refund_id, refunded_at, refund_failure_reason,
 	cancellation_reason,
 	created_at, updated_at`
@@ -50,6 +51,7 @@ func scanPurchaseRequest(row scanRow) (*models.PurchaseRequest, error) {
 		&p.HandoverLocation, &p.HandoverLatitude, &p.HandoverLongitude,
 		&p.HandoverScheduledAt, &p.KeysHandedOverAt, &p.InspectionDeadlineAt, &p.InspectionAcceptedAt, &p.CompletedAt,
 		&p.AcceptedAt, &p.AcceptExpiryWarnedAt,
+		&p.InspectionWarned24hAt, &p.InspectionWarned2hAt, &p.InspectionAutoAcceptedAt,
 		&p.PaymentIntentID, &paymentStatus, &refundStatus, &p.RefundID, &p.RefundedAt, &p.RefundFailureReason,
 		&p.CancellationReason,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -233,9 +235,10 @@ func (r *PurchaseRequestRepository) MarkPaymentFailed(ctx context.Context, inten
 // Bill-of-Sale row that was seeded blank by the pre-fix Accept bug (C2).
 // The line drawn deliberately narrow:
 //   - each field heals INDEPENDENTLY and only when genuinely blank
-//     ('' / year 0) — a value the seller typed by hand is never overwritten;
+//     (” / year 0) — a value the seller typed by hand is never overwritten;
 //   - rows the seller has already signed are never touched — a signed BoS is
 //     an attested instrument, even if it carries legacy blanks.
+//
 // Copies from the cars row (the same source Accept seeds from). The
 // updated_at trigger fires on change. Returns true when anything changed.
 func (r *PurchaseRequestRepository) HealBlankBOSVehicleFields(ctx context.Context, purchaseRequestID uuid.UUID) (bool, error) {
@@ -2118,4 +2121,137 @@ func (r *PurchaseRequestRepository) ClaimPurchaseAcceptExpiry(ctx context.Contex
 		return nil, fmt.Errorf("claim purchase accept expiry: %w", err)
 	}
 	return p, nil
+}
+
+// ─── Inspection window (migration 000059) ───────────────────────────────────
+
+// ClaimInspectionWarning claims (once) one of the two pre-deadline warnings
+// for purchases sitting in `awaiting_inspection`. `column` is the claim
+// stamp; `within` is how close to the deadline the row must be.
+//
+// Silence completes the sale, so the warnings are not a courtesy — they are
+// the evidence that the silence was informed. Claimed-once via the stamp, and
+// FOR UPDATE SKIP LOCKED so two app instances cannot both send.
+func (r *PurchaseRequestRepository) ClaimInspectionWarning(
+	ctx context.Context, column string, within time.Duration, now time.Time, limit int,
+) ([]models.PurchaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Whitelist: the column name is interpolated, so it may never come from
+	// anywhere but this switch.
+	switch column {
+	case "inspection_warned_24h_at", "inspection_warned_2h_at":
+	default:
+		return nil, fmt.Errorf("claim inspection warning: bad column %q", column)
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		UPDATE purchase_requests pr
+		SET `+column+` = NOW(), updated_at = NOW()
+		FROM (
+			SELECT id AS pid FROM purchase_requests
+			WHERE status = 'awaiting_inspection'
+			  AND inspection_deadline_at IS NOT NULL
+			  AND inspection_deadline_at <= $1
+			  AND inspection_deadline_at > $2
+			  AND `+column+` IS NULL
+			ORDER BY inspection_deadline_at ASC
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		) picked
+		WHERE pr.id = picked.pid
+		RETURNING `+purchaseRequestColumns,
+		now.Add(within), now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim inspection warning: %w", err)
+	}
+	defer rows.Close()
+	var out []models.PurchaseRequest
+	for rows.Next() {
+		p, serr := scanPurchaseRequest(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+// ListInspectionExpired returns purchases whose inspection window has run out
+// with no buyer action. Read-only: the caller claims each row individually
+// through ClaimInspectionAutoAccept so a capture cannot be started twice.
+func (r *PurchaseRequestRepository) ListInspectionExpired(ctx context.Context, now time.Time, limit int) ([]models.PurchaseRequest, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+purchaseRequestColumns+`
+		FROM purchase_requests
+		WHERE status = 'awaiting_inspection'
+		  AND inspection_deadline_at IS NOT NULL
+		  AND inspection_deadline_at <= $1
+		ORDER BY inspection_deadline_at ASC
+		LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list inspection expired: %w", err)
+	}
+	defer rows.Close()
+	var out []models.PurchaseRequest
+	for rows.Next() {
+		p, serr := scanPurchaseRequest(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+// ClaimInspectionAutoAccept moves one silent purchase from
+// `awaiting_inspection` to `inspection_accepted`, exactly as a buyer's own
+// acceptance would, and stamps WHY it moved. Status-scoped, so a buyer who
+// accepts or rejects in the same second wins and this returns nil.
+//
+// The capture that follows is the existing one, with its existing stable
+// idempotency key — this only decides that the sale may proceed.
+func (r *PurchaseRequestRepository) ClaimInspectionAutoAccept(ctx context.Context, id uuid.UUID) (*models.PurchaseRequest, error) {
+	p, err := scanPurchaseRequest(r.db.Pool.QueryRow(ctx, `
+		UPDATE purchase_requests
+		SET status = 'inspection_accepted',
+		    inspection_accepted_at = NOW(),
+		    inspection_auto_accepted_at = NOW(),
+		    updated_at = NOW()
+		WHERE id = $1
+		  AND status = 'awaiting_inspection'
+		  AND inspection_deadline_at IS NOT NULL
+		  AND inspection_deadline_at <= NOW()
+		RETURNING `+purchaseRequestColumns, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim inspection auto-accept: %w", err)
+	}
+	return p, nil
+}
+
+// UnsellAfterRefund reverses the terminal side-effects of a capture when the
+// money goes back to the buyer. Without it a fully refunded sale left the car
+// 'sold', paused and archived forever — the seller's listing stranded with no
+// route back except a database edit.
+//
+// Deliberately conservative: the car returns to 'available' and un-archived,
+// but is NOT re-listed for sale or rent. The seller decides that, not us.
+// Scoped to cars that are actually in the sold state, so it cannot disturb a
+// car that has since been relisted or sold to somebody else.
+func (r *PurchaseRequestRepository) UnsellAfterRefund(ctx context.Context, carID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `
+		UPDATE cars
+		SET status = 'available', is_paused = TRUE, archived_at = NULL, updated_at = NOW()
+		WHERE id = $1 AND status = 'sold'
+	`, carID)
+	if err != nil {
+		return fmt.Errorf("un-sell car after refund: %w", err)
+	}
+	return nil
 }

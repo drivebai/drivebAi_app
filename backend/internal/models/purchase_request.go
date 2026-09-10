@@ -141,6 +141,11 @@ const (
 	// PurchaseInspectionWindow is the buyer's window to accept/reject the
 	// vehicle after keys handed over. DESIGN SPEC §12 assumption #8.
 	PurchaseInspectionWindow = 48 * time.Hour
+
+	// PurchaseRefundMaxAge bounds the admin retry-refund button. Stripe will
+	// not refund a charge indefinitely, and a months-old car sale is a
+	// support conversation rather than a one-click reversal.
+	PurchaseRefundMaxAge = 180 * 24 * time.Hour
 	// PurchaseAuthTTL mirrors the ~7-day Stripe manual-capture auth TTL.
 	// After this point, we transition to `expired_auth` and the auth is
 	// released automatically by Stripe. DESIGN SPEC §12 assumption #2.
@@ -207,6 +212,13 @@ type PurchaseRequest struct {
 	// set_purchase_requests_updated_at trigger makes updated_at unusable.
 	AcceptedAt           *time.Time
 	AcceptExpiryWarnedAt *time.Time
+
+	// Inspection window evidence (000059). Silence completes the sale, so
+	// these record that the silence was informed: two warnings, and whether
+	// the completion came from the buyer or from the window closing.
+	InspectionWarned24hAt    *time.Time
+	InspectionWarned2hAt     *time.Time
+	InspectionAutoAcceptedAt *time.Time
 
 	PaymentIntentID     *string
 	PaymentStatus       *PaymentStatus
@@ -622,14 +634,14 @@ type PurchaseRequestsListResponse struct {
 // ─── Error sentinels ────────────────────────────────────────────────────────
 
 const (
-	ErrCodeCannotBuyOwnCar           = "CANNOT_BUY_OWN_CAR"
-	ErrCodeCarNotForSale             = "CAR_NOT_FOR_SALE"
-	ErrCodeCarSold                   = "CAR_SOLD"
-	ErrCodeDuplicatePurchase         = "DUPLICATE_ACTIVE_REQUEST"
+	ErrCodeCannotBuyOwnCar   = "CANNOT_BUY_OWN_CAR"
+	ErrCodeCarNotForSale     = "CAR_NOT_FOR_SALE"
+	ErrCodeCarSold           = "CAR_SOLD"
+	ErrCodeDuplicatePurchase = "DUPLICATE_ACTIVE_REQUEST"
 	// Another buyer's purchase of this car is past acceptance and not yet
 	// terminal — no new offer may be created and no second offer accepted
 	// until it resolves (completes, or falls through and self-releases).
-	ErrCodeCarSaleInProgress = "CAR_SALE_IN_PROGRESS"
+	ErrCodeCarSaleInProgress         = "CAR_SALE_IN_PROGRESS"
 	ErrCodeInvalidPurchaseAction     = "INVALID_PURCHASE_ACTION"
 	ErrCodeBOSLocked                 = "BOS_LOCKED"
 	ErrCodeBOSNotSigned              = "BOS_NOT_SIGNED"
