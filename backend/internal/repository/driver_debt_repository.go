@@ -342,8 +342,12 @@ func (r *DriverDebtRepository) ListArrearsCyclesWithoutDebt(ctx context.Context,
 		WHERE bc.status = 'arrears_due'
 		  AND dd.id IS NULL
 		  AND bc.amount_cents > 0
+		  -- Never reach back before the ledger existed. An arrears week from
+		  -- before that was never eligible for a debt row, so "missing" is
+		  -- not a state it can be in.
+		  AND bc.created_at >= $2::timestamptz
 		ORDER BY bc.updated_at ASC
-		LIMIT $1`, limit)
+		LIMIT $1`, limit, models.DebtLedgerLiveFrom)
 	if err != nil {
 		return nil, fmt.Errorf("list arrears without debt: %w", err)
 	}

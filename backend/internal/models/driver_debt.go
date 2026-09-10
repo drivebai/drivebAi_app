@@ -6,6 +6,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// DebtLedgerLiveFrom is the instant the driver debt ledger began existing.
+//
+// The debt reconcile selects arrears weeks with no ledger row, which is a
+// timeless pattern: the day rolling billing has history, that query would
+// reach back across all of it. It is safe today only because rolling billing
+// has never run in production — an accident of sequencing, not a property of
+// the design. See docs/DESIGN_RECONCILIATION_SWEEPS.md.
+var DebtLedgerLiveFrom = time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+
 // Debt statuses. A debt is 'open' until the money is collected, waived by an
 // admin, or written off; every one of those is an exit.
 const (
