@@ -242,12 +242,27 @@ func (r *DriverDebtRepository) Close(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The entry records what was actually FORGIVEN — the outstanding amount
+	// at this moment, not the original. A debt half paid off and then waived
+	// would otherwise report a write-off twice its true size. Read it inside
+	// the transaction, before the update, rather than relying on RETURNING
+	// semantics for a value the same statement is overwriting.
 	var remaining int64
 	uerr := tx.QueryRow(ctx, `
+		SELECT outstanding_cents FROM driver_debts
+		WHERE id = $1 AND status = 'open' FOR UPDATE`, debtID).Scan(&remaining)
+	if errors.Is(uerr, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if uerr != nil {
+		return false, fmt.Errorf("close debt: read outstanding: %w", uerr)
+	}
+	var closedID uuid.UUID
+	uerr = tx.QueryRow(ctx, `
 		UPDATE driver_debts
 		SET status = $2, outstanding_cents = 0, closed_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND status = 'open'
-		RETURNING original_amount_cents`, debtID, status).Scan(&remaining)
+		RETURNING id`, debtID, status).Scan(&closedID)
 	if errors.Is(uerr, pgx.ErrNoRows) {
 		return false, nil
 	}

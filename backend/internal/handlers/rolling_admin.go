@@ -135,6 +135,23 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 		return
 	}
 
+	// Forgiving the week must also forgive the DEBT it raised. Without this
+	// the driver's balance stays open, and since a balance blocks new
+	// bookings the waive would leave them stuck with no exit — the opposite
+	// of what an admin pressing "waive" intends.
+	if h.debtRepo != nil {
+		if debt, derr := h.debtRepo.GetByCycle(r.Context(), cycleID); derr != nil {
+			h.logger.Error("admin waive cycle: load debt", "error", derr, "cycle_id", cycleID)
+		} else if debt != nil {
+			if closed, cerr := h.debtRepo.Close(r.Context(), debt.ID, models.DebtWaived, "admin",
+				"admin waive: "+note); cerr != nil {
+				h.logger.Error("admin waive cycle: close debt", "error", cerr, "debt_id", debt.ID)
+			} else if closed {
+				h.logger.Info("driver debt waived with cycle", "debt_id", debt.ID, "cycle_id", cycleID)
+			}
+		}
+	}
+
 	// Forgiving the blocking week lifts the delinquency (both claimed-once;
 	// a halt owned by another reason — dispute, return, stop — stays put).
 	delinquencyCleared := false
@@ -170,8 +187,8 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 			&chatID, &leaseRef)
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"cycle":                updated,
-		"delinquency_cleared":  delinquencyCleared,
+		"cycle":                 updated,
+		"delinquency_cleared":   delinquencyCleared,
 		"paid_through_advanced": advanced,
 	})
 }

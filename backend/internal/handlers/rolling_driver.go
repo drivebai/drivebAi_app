@@ -516,13 +516,27 @@ func (h *LeaseRequestHandler) handleArrearsPaid(ctx context.Context, cycleID uui
 	// Credit the driver-level balance. Idempotent on the intent id, so a
 	// redelivered webhook moves nothing; a partial payment simply lowers the
 	// balance and leaves the debt open.
+	// Credit the driver-level balance. Idempotent on the intent id, so a
+	// redelivered webhook moves nothing; a partial payment simply lowers the
+	// balance and leaves the debt open.
+	//
+	// H2 rule: this must NOT be best-effort. The balance blocks new bookings,
+	// so swallowing a failure here leaves a driver who has paid in full
+	// blocked forever, with the webhook ACKed and no redelivery coming.
+	// Return false and let Stripe retry.
 	if h.debtRepo != nil {
-		if debt, derr := h.debtRepo.GetByCycle(ctx, cycle.ID); derr != nil {
+		debt, derr := h.debtRepo.GetByCycle(ctx, cycle.ID)
+		if derr != nil {
 			h.logger.Error("arrears paid: load debt", "error", derr, "cycle_id", cycle.ID)
-		} else if debt != nil {
-			if _, applied, aerr := h.debtRepo.ApplyPayment(ctx, debt.ID, cycle.AmountCents, intentID, "driver"); aerr != nil {
+			return false
+		}
+		if debt != nil {
+			_, applied, aerr := h.debtRepo.ApplyPayment(ctx, debt.ID, cycle.AmountCents, intentID, "driver")
+			if aerr != nil {
 				h.logger.Error("arrears paid: apply to debt", "error", aerr, "debt_id", debt.ID)
-			} else if applied {
+				return false
+			}
+			if applied {
 				h.logger.Info("driver debt paid down", "debt_id", debt.ID, "amount_cents", cycle.AmountCents)
 			}
 		}

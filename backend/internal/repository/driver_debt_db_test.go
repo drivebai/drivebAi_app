@@ -242,3 +242,32 @@ func TestDriverDebt_FingerprintMatchExcludesSelf(t *testing.T) {
 		t.Errorf("fingerprint match = %d rows, want 1", len(other))
 	}
 }
+
+// A debt half paid and then waived must record the amount actually forgiven,
+// not the original — otherwise the write-off ledger overstates every partial.
+func TestDriverDebt_WaiveRecordsForgivenAmountNotOriginal(t *testing.T) {
+	db, repo, driverID, leaseID, seedCycle, cleanup := debtTestEnv(t)
+	defer cleanup()
+	ctx := context.Background()
+	cycleA := seedCycle(1, 10000)
+
+	debt, _, err := repo.OpenForCycle(ctx, driverID, leaseID, cycleA, 10000, "USD", models.DriverDebtSnapshot{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, _, err := repo.ApplyPayment(ctx, debt.ID, 4000, "pi_part_waive", "driver"); err != nil {
+		t.Fatalf("partial: %v", err)
+	}
+	if ok, err := repo.Close(ctx, debt.ID, models.DebtWaived, "admin", "goodwill"); err != nil || !ok {
+		t.Fatalf("waive: ok=%v err=%v", ok, err)
+	}
+	var forgiven int64
+	if err := db.Pool.QueryRow(ctx, `
+		SELECT amount_cents FROM driver_debt_entries
+		WHERE debt_id = $1 AND kind = 'waive'`, debt.ID).Scan(&forgiven); err != nil {
+		t.Fatalf("read entry: %v", err)
+	}
+	if forgiven != 6000 {
+		t.Errorf("waive entry recorded %d, want 6000 (the outstanding amount, not the original 10000)", forgiven)
+	}
+}
