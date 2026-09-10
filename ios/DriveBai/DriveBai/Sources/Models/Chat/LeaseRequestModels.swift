@@ -145,8 +145,20 @@ struct LeaseRequest: Identifiable, Equatable {
     /// Preset increments matching the backend's `AllowedPickupExtensionMinutes`.
     static let allowedPickupExtensionMinutes: [Int] = [15, 30, 60]
 
+    /// Maps the wire value to a mode this app is willing to act on.
+    /// A present-but-empty mode means the server could not read it, so it
+    /// becomes "unknown" and every payment affordance closes.
+    static func normalizedBillingMode(_ raw: String?) -> String {
+        guard let raw else { return "fixed_term" }
+        return raw.isEmpty ? "unknown" : raw
+    }
+
     /// True when this lease bills weekly with no fixed end date.
     var isRolling: Bool { billingMode == "rolling" }
+
+    /// The server didn't tell us how this lease bills. Nothing that takes
+    /// money may proceed until a refresh says which it is.
+    var isBillingModeUnknown: Bool { billingMode == "unknown" }
 
     /// The weekly amount a rolling driver is actually charged.
     var formattedRollingWeekly: String? { formattedEffectiveWeeklyPrice }
@@ -193,6 +205,9 @@ struct LeaseRequest: Identifiable, Equatable {
     /// `/payments/intent` (409 PRICE_REVIEW_PENDING) as defence in depth.
     var driverCanPay: Bool {
         if priceChangePending { return false }
+        // Paying without knowing the billing mode risks charging a weekly
+        // mandate without ever showing its authorization screen.
+        if isBillingModeUnknown { return false }
         if status == .accepted { return true }
         // payment_pending: a Stripe PaymentIntent exists but no payment has
         // succeeded yet. The driver should be able to (re)submit when the

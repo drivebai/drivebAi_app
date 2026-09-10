@@ -212,7 +212,7 @@ extension ActiveRentalAPIModel {
             paidAmountCents: paidAmountCents,
             returnLocationArea: returnLocationArea,
             returnLocationSource: returnLocationSource,
-            billingMode: (billingMode?.isEmpty == false) ? billingMode! : "fixed_term",
+            billingMode: LeaseRequest.normalizedBillingMode(billingMode),
             renewalHaltedReason: renewalHaltedReason,
             delinquentSince: delinquentSince,
             renewalStoppedAt: renewalStoppedAt

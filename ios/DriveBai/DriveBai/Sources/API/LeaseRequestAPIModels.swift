@@ -110,10 +110,16 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
             previousOfferedWeeklyPrice: previousOfferedWeeklyPrice,
             priceChangeActedAt: priceChangeActedAt,
             createdAt: createdAt, updatedAt: updatedAt,
-            // Empty is treated as absent: a backend that scans the column
-            // but never wrote it sends "", and a lease that silently reads
-            // as neither mode would render the wrong card entirely.
-            billingMode: (billingMode?.isEmpty == false) ? billingMode! : "fixed_term",
+            // Three cases, and they are not the same:
+            //   absent  — a backend older than rolling billing; every lease
+            //             there IS fixed term, so say so.
+            //   present — use it.
+            //   empty   — the server could not read the row's mode and
+            //             refused to guess. We refuse too: LeaseRequest
+            //             treats "unknown" as not payable, so a rolling
+            //             lease can never slip past the authorization
+            //             screen because of a failed read.
+            billingMode: LeaseRequest.normalizedBillingMode(billingMode),
             rentalEndsAt: rentalEndsAt,
             renewalStoppedAt: renewalStoppedAt,
             renewalHaltedReason: renewalHaltedReason,
