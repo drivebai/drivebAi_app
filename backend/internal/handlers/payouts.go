@@ -863,3 +863,65 @@ func payoutKindWord(p *models.OwnerPayout) string {
 	}
 	return "rental"
 }
+
+// ReverseSalePayoutForRefund claws back the seller's share when a completed
+// sale is refunded. Without it the platform returns the buyer's money in full
+// while the seller keeps theirs, and the platform absorbs the whole sale.
+//
+// Proportional to what was actually refunded, never more than the row holds.
+// Idempotent: the reversal carries a stable key per payout, and MarkReversed
+// is claimed-once, so a retried refund cannot reverse twice.
+//
+// An unpaid row needs no reversal — it is withheld instead, which is what a
+// dispute or a rejection does before any money leaves.
+func (h *PayoutHandler) ReverseSalePayoutForRefund(ctx context.Context, purchaseID uuid.UUID, refundedCents int64, reason string) {
+	if h.payoutRepo == nil || refundedCents <= 0 {
+		return
+	}
+	row, err := h.payoutRepo.GetByPurchaseRequestID(ctx, purchaseID)
+	if err != nil {
+		h.logger.Error("sale reversal: load payout", "error", err, "purchase_request_id", purchaseID)
+		return
+	}
+	if row == nil {
+		return // seller was never paid for this sale
+	}
+	if row.Status != models.PayoutPaid || row.StripeTransferID == nil {
+		// Not yet transferred: withhold rather than reverse, so the money
+		// simply never leaves.
+		if _, werr := h.payoutRepo.Withhold(ctx, row.ID, "sale refunded: "+reason); werr != nil {
+			h.logger.Error("sale reversal: withhold unpaid row", "error", werr, "payout_id", row.ID)
+		}
+		return
+	}
+
+	_, sellerShare := models.ComputePayoutSplit(refundedCents, row.FeeBPS)
+	if sellerShare > row.OwnerAmountCents {
+		sellerShare = row.OwnerAmountCents
+	}
+	if sellerShare <= 0 {
+		return
+	}
+	idemKey := "sale-reversal-" + row.ID.String()
+	rev, rerr := h.stripe.CreateTransferReversal(*row.StripeTransferID, idemKey, sellerShare)
+	if rerr != nil {
+		h.logger.Error("sale reversal: transfer reversal failed", "error", rerr,
+			"purchase_request_id", purchaseID, "transfer_id", *row.StripeTransferID)
+		if h.ticketRepo != nil {
+			desc := fmt.Sprintf(
+				"Sale %s was refunded %d¢ but reversing the seller's transfer %s failed: %v. The platform is currently out of pocket for the seller's share — reconcile in Stripe.",
+				purchaseID, refundedCents, *row.StripeTransferID, rerr)
+			if _, terr := h.ticketRepo.CreateSystemTicket(ctx, row.OwnerID, models.TicketCategoryPayments,
+				"Sale refund could not claw back the seller payout", desc, nil, nil); terr != nil {
+				h.logger.Error("sale reversal: ticket", "error", terr)
+			}
+		}
+		return
+	}
+	if ok, merr := h.payoutRepo.MarkReversed(ctx, row.ID, rev.ID, rev.Amount, "sale_refund_"+reason); merr != nil {
+		h.logger.Error("sale reversal: mark reversed", "error", merr, "payout_id", row.ID)
+	} else if ok {
+		h.logger.Warn("sale payout reversed after refund",
+			"purchase_request_id", purchaseID, "reversal_id", rev.ID, "amount_cents", rev.Amount)
+	}
+}

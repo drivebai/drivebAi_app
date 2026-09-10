@@ -183,6 +183,21 @@ func (h *LeaseRequestHandler) disputeOpenSideEffects(ctx context.Context, d *mod
 		}
 	}
 
+	// A dispute names a CHARGE, not a rental. A car sale has no lease row, so
+	// the lease-scoped withhold above skips it entirely — and an unpaid
+	// seller payout would keep marching toward a transfer while the buyer
+	// disputes the money funding it. Hold it by charge instead.
+	if d.StripeChargeID != "" {
+		note := h.disputeNoteTag(d) + ": withheld pending outcome"
+		if n, werr := h.payoutRepo.WithholdUnpaidByChargeID(ctx, d.StripeChargeID, note); werr != nil {
+			h.logger.Error("dispute open: withhold by charge", "error", werr, "dispute_id", d.StripeDisputeID)
+			return false // retryable; claim not yet taken
+		} else if n > 0 {
+			h.logger.Warn("dispute open: unpaid payout rows withheld by charge",
+				"count", n, "charge_id", d.StripeChargeID)
+		}
+	}
+
 	claimed, cerr := h.disputeRepo.ClaimPayoutsWithheld(ctx, d.ID)
 	if cerr != nil {
 		h.logger.Error("dispute open: claim", "error", cerr, "dispute_id", d.StripeDisputeID)

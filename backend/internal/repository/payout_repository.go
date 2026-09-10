@@ -720,3 +720,23 @@ func (r *PayoutRepository) GetByPurchaseRequestID(ctx context.Context, purchaseI
 	}
 	return p, nil
 }
+
+// WithholdUnpaidByChargeID holds any unpaid payout funded by one charge,
+// whatever its source. A dispute names a CHARGE, not a rental — so this is
+// how a disputed car sale stops paying its seller while the outcome is
+// unknown. Status-scoped, so a paid row is untouched (that money is clawed
+// back by transfer reversal instead).
+func (r *PayoutRepository) WithholdUnpaidByChargeID(ctx context.Context, chargeID, note string) (int, error) {
+	tag, err := r.db.Pool.Exec(ctx, `
+		UPDATE owner_payouts
+		SET status = 'withheld',
+		    note = COALESCE(note || ' | ', '') || $2,
+		    updated_at = NOW()
+		WHERE source_charge_id = $1
+		  AND status IN ('pending', 'awaiting_onboarding', 'failed', 'accruing')
+	`, chargeID, note)
+	if err != nil {
+		return 0, fmt.Errorf("withhold unpaid by charge: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

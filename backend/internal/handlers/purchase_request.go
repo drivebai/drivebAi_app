@@ -2321,6 +2321,13 @@ func (h *PurchaseRequestHandler) AdminRetryRefund(w http.ResponseWriter, r *http
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
+	// Claw back the seller's share. Without this the buyer is refunded in
+	// full while the seller keeps their money and the platform absorbs the
+	// entire sale.
+	if h.payoutH != nil {
+		h.payoutH.ReverseSalePayoutForRefund(r.Context(), updated.ID, updated.OfferAmountCents, "admin_retry")
+	}
+
 	// The money went back, so the car is not sold. Leaving it 'sold' and
 	// archived stranded the seller's listing with no way back except a
 	// database edit.
