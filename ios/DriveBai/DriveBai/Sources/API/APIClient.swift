@@ -255,6 +255,19 @@ protocol APIClientProtocol {
     func createPaymentIntent(leaseRequestId: UUID) async throws -> PaymentIntentAPIResponse
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
 
+    /// Owner proposes a mid-rental price change. It applies from the next
+    /// cycle; the driver must accept before anything is charged.
+    func proposeAmendment(leaseRequestId: UUID, newAmountCents: Int64) async throws -> BillingAmendmentAPIModel
+    /// Driver accepts or declines it.
+    func acceptAmendment(amendmentId: UUID) async throws -> OKAPIResponse
+    func declineAmendment(amendmentId: UUID) async throws -> OKAPIResponse
+    /// Owner withdraws their own offer.
+    func withdrawAmendment(amendmentId: UUID) async throws -> OKAPIResponse
+
+    /// The driver's running balance across every rental. Zero rather than
+    /// an error when nothing is owed.
+    func fetchMyBalance() async throws -> DriverBalanceAPIResponse
+
     /// Server-side feature switches. Asked before offering a weekly
     /// rental so the app never shows an option the server would refuse.
     func fetchAppConfig() async throws -> AppConfigAPIResponse
@@ -884,6 +897,28 @@ final class APIClient: APIClientProtocol {
 
     func syncPaymentStatus(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse {
         try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/payments/sync", authenticated: true)
+    }
+
+    func proposeAmendment(leaseRequestId: UUID, newAmountCents: Int64) async throws -> BillingAmendmentAPIModel {
+        let body = ProposeAmendmentAPIRequest(kind: "price", newAmountCents: newAmountCents)
+        return try await post(path: "lease-requests/\(leaseRequestId.uuidString)/billing/amendments",
+                              body: body, authenticated: true)
+    }
+
+    func acceptAmendment(amendmentId: UUID) async throws -> OKAPIResponse {
+        try await postEmpty(path: "billing/amendments/\(amendmentId.uuidString)/accept", authenticated: true)
+    }
+
+    func declineAmendment(amendmentId: UUID) async throws -> OKAPIResponse {
+        try await postEmpty(path: "billing/amendments/\(amendmentId.uuidString)/decline", authenticated: true)
+    }
+
+    func withdrawAmendment(amendmentId: UUID) async throws -> OKAPIResponse {
+        try await postEmpty(path: "billing/amendments/\(amendmentId.uuidString)/withdraw", authenticated: true)
+    }
+
+    func fetchMyBalance() async throws -> DriverBalanceAPIResponse {
+        try await get(path: "me/balance", authenticated: true)
     }
 
     func fetchAppConfig() async throws -> AppConfigAPIResponse {

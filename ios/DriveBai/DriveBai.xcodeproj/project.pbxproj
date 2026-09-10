@@ -147,6 +147,9 @@
 		F0DECA0001000000000000002 /* TourCatalogue.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000002 /* TourCatalogue.swift */; };
 		F0DECA0001000000000000003 /* TourLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000003 /* TourLogic.swift */; };
 		F0DECA0001000000000000004 /* ProductTourAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0DECA0002000000000000004 /* ProductTourAnalytics.swift */; };
+		F0B1110001000000000006 /* PriceChangeSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B1110002000000000006 /* PriceChangeSheets.swift */; };
+		F0B1110001000000000005 /* DebtBalanceCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B1110002000000000005 /* DebtBalanceCard.swift */; };
+		F0B1110001000000000004 /* DebtAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B1110002000000000004 /* DebtAPIModels.swift */; };
 		F0B1110001000000000003 /* RollingBillingCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B1110002000000000003 /* RollingBillingCard.swift */; };
 		F0B1110001000000000002 /* RollingConsentSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B1110002000000000002 /* RollingConsentSheet.swift */; };
 		F0B1110001000000000001 /* RollingBillingAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B1110002000000000001 /* RollingBillingAPIModels.swift */; };
@@ -332,6 +335,9 @@
 		F0DECA0002000000000000002 /* TourCatalogue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourCatalogue.swift; path = DriveBai/Sources/Onboarding/TourCatalogue.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000003 /* TourLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TourLogic.swift; path = DriveBai/Sources/Onboarding/TourLogic.swift; sourceTree = SOURCE_ROOT; };
 		F0DECA0002000000000000004 /* ProductTourAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProductTourAnalytics.swift; path = DriveBai/Sources/Onboarding/ProductTourAnalytics.swift; sourceTree = SOURCE_ROOT; };
+		F0B1110002000000000006 /* PriceChangeSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PriceChangeSheets.swift; path = DriveBai/Sources/Views/Billing/PriceChangeSheets.swift; sourceTree = SOURCE_ROOT; };
+		F0B1110002000000000005 /* DebtBalanceCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DebtBalanceCard.swift; path = DriveBai/Sources/Views/Billing/DebtBalanceCard.swift; sourceTree = SOURCE_ROOT; };
+		F0B1110002000000000004 /* DebtAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DebtAPIModels.swift; path = DriveBai/Sources/API/DebtAPIModels.swift; sourceTree = SOURCE_ROOT; };
 		F0B1110002000000000003 /* RollingBillingCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RollingBillingCard.swift; path = DriveBai/Sources/Views/Billing/RollingBillingCard.swift; sourceTree = SOURCE_ROOT; };
 		F0B1110002000000000002 /* RollingConsentSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RollingConsentSheet.swift; path = DriveBai/Sources/Views/Billing/RollingConsentSheet.swift; sourceTree = SOURCE_ROOT; };
 		F0B1110002000000000001 /* RollingBillingAPIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RollingBillingAPIModels.swift; path = DriveBai/Sources/API/RollingBillingAPIModels.swift; sourceTree = SOURCE_ROOT; };
@@ -494,6 +500,7 @@
 		E00000010000000000000008 /* API */ = {
 			isa = PBXGroup;
 			children = (
+				F0B1110002000000000004 /* DebtAPIModels.swift */,
 				F0B1110002000000000001 /* RollingBillingAPIModels.swift */,
 				E0000001000000000000000D /* APIClient.swift */,
 				E00000010000000000000097 /* CarAPIModels.swift */,
@@ -539,6 +546,8 @@
 		E0000001000000000000003B /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				F0B1110002000000000006 /* PriceChangeSheets.swift */,
+				F0B1110002000000000005 /* DebtBalanceCard.swift */,
 				F0B1110002000000000003 /* RollingBillingCard.swift */,
 				F0B1110002000000000002 /* RollingConsentSheet.swift */,
 				E0000001000000000000003D /* Auth */,
@@ -1048,6 +1057,9 @@
 				F0DECA0001000000000000002 /* TourCatalogue.swift in Sources */,
 				F0DECA0001000000000000003 /* TourLogic.swift in Sources */,
 				F0DECA0001000000000000004 /* ProductTourAnalytics.swift in Sources */,
+				F0B1110001000000000006 /* PriceChangeSheets.swift in Sources */,
+				F0B1110001000000000005 /* DebtBalanceCard.swift in Sources */,
+				F0B1110001000000000004 /* DebtAPIModels.swift in Sources */,
 				F0B1110001000000000003 /* RollingBillingCard.swift in Sources */,
 				F0B1110001000000000002 /* RollingConsentSheet.swift in Sources */,
 				F0B1110001000000000001 /* RollingBillingAPIModels.swift in Sources */,
@@ -1108,7 +1120,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
@@ -1139,7 +1151,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBaiWidgets/Info.plist;
@@ -1291,7 +1303,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DriveBai/DriveBai.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;
@@ -1327,7 +1339,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = DriveBai/DriveBai.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 48YP84XNBV;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DriveBai/Info.plist;

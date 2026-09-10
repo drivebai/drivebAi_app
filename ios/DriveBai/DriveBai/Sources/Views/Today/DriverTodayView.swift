@@ -52,6 +52,14 @@ struct DriverTodayView: View {
                     // period, not just when an action is due. First, because
                     // "you have this car until Friday" is today's context
                     // for everything below it.
+                    // A balance outranks everything else on this screen: it
+                    // blocks new rentals, so burying it under the current
+                    // rental would hide the reason the app says no.
+                    DebtBalanceCard {
+                        Task { await viewModel.refresh() }
+                    }
+                    .padding(.horizontal, TodayLayout.horizontalPadding)
+
                     activeRentalSection
 
                     // Section 1: Active Listings (rentals for driver)

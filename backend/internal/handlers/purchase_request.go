@@ -1835,6 +1835,75 @@ func (h *PurchaseRequestHandler) capturePayment(ctx context.Context, p *models.P
 	return updated
 }
 
+// ConfirmHandover — POST /api/v1/purchase-requests/{id}/confirm-handover
+//
+// The buyer says "I have the car and I'm happy". This ACCELERATES the sale: it
+// completes now instead of waiting out the 48-hour inspection window.
+//
+// Deliberately NOT a gate. A buyer-side confirmation that sales must wait for
+// would reintroduce the hostage problem the window decision exists to remove:
+// a buyer who says nothing would stall the seller indefinitely, having already
+// driven away in their car. Silence still completes the sale on its own. This
+// only lets an honest buyer end the wait early, which is also the strongest
+// dispute evidence we can hold — the buyer's own confirmation of receipt.
+func (h *PurchaseRequestHandler) ConfirmHandover(w http.ResponseWriter, r *http.Request) {
+	userID, id, ok := h.parseAuthed(w, r)
+	if !ok {
+		return
+	}
+	p, err := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if err != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
+		return
+	}
+	// The BUYER only: the seller confirming their own sale complete would be
+	// marking their own homework.
+	if p.BuyerID != userID {
+		httputil.WriteError(w, http.StatusForbidden, models.ErrInvalidPurchaseAction)
+		return
+	}
+	if p.Status == models.PurchaseStatusCompleted {
+		httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), p, userID))
+		return
+	}
+	if p.Status != models.PurchaseStatusAwaitingInspection {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NOT_AWAITING_INSPECTION",
+			"This sale isn't waiting on your inspection."))
+		return
+	}
+
+	claimed, cerr := h.repo.ClaimBuyerHandoverConfirm(r.Context(), id)
+	if cerr != nil {
+		h.logger.Error("purchase: confirm handover", "error", cerr, "id", id)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if claimed == nil {
+		// The window closed in the same moment; it completes either way.
+		fresh, _ := h.repo.GetByID(r.Context(), id)
+		if fresh != nil {
+			httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), fresh, userID))
+			return
+		}
+		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidPurchaseAction)
+		return
+	}
+
+	updated := h.capturePayment(r.Context(), claimed)
+	if updated == nil {
+		// Capture failed; the row stays at inspection_accepted and
+		// runCaptureRetry owns it. The buyer's confirmation stands.
+		httputil.WriteError(w, http.StatusBadGateway, models.NewAPIError("CAPTURE_PENDING",
+			"We're completing your payment — this can take a moment. You don't need to do anything."))
+		return
+	}
+	h.broadcast("purchase_request_updated", updated, nil)
+	h.postSystemMessage(r.Context(), updated.ChatID, updated.BuyerID, "Buyer confirmed handover — sale completed")
+	h.notifyPurchaseParty(updated, updated.SellerID, models.NotificationTypePurchaseRequest,
+		"Sale completed", "The buyer confirmed they have the car. The sale is complete and your payout is on its way.")
+	httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), updated, userID))
+}
+
 // releaseAuth cancels the Stripe auth (pre-capture) so the hold is
 // released. Used on admin-accept rejection + auth-expiry scanner.
 func (h *PurchaseRequestHandler) releaseAuth(ctx context.Context, p *models.PurchaseRequest, terminal models.PurchaseRequestStatus) *models.PurchaseRequest {

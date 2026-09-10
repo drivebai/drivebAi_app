@@ -2258,3 +2258,24 @@ func (r *PurchaseRequestRepository) UnsellAfterRefund(ctx context.Context, carID
 	}
 	return nil
 }
+
+// ClaimBuyerHandoverConfirm records the buyer's own confirmation of receipt
+// and moves the sale to inspection_accepted, exactly as the window closing
+// would. Status-scoped, so the sweep and the buyer cannot both claim it.
+//
+// inspection_auto_accepted_at is deliberately left NULL: this sale was
+// accepted by a PERSON, and "who accepted this" must stay answerable.
+func (r *PurchaseRequestRepository) ClaimBuyerHandoverConfirm(ctx context.Context, id uuid.UUID) (*models.PurchaseRequest, error) {
+	p, err := scanPurchaseRequest(r.db.Pool.QueryRow(ctx, `
+		UPDATE purchase_requests
+		SET status = 'inspection_accepted', inspection_accepted_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND status = 'awaiting_inspection'
+		RETURNING `+purchaseRequestColumns, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim buyer handover confirm: %w", err)
+	}
+	return p, nil
+}

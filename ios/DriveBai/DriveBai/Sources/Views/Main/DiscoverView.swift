@@ -1118,6 +1118,12 @@ struct ListingDetailView: View {
             } catch let apiError as APIError {
                 if apiError.errorCode == RollingBillingErrorCode.rollingDisabled {
                     leaseRequestError = "Weekly rentals aren't available right now. You can still rent this car for a fixed week."
+                } else if apiError.errorCode == DebtErrorCode.outstandingBalance {
+                    // Say the amount and where to clear it. A bare "you can't
+                    // book" with no number and no exit is the worst version
+                    // of this message.
+                    leaseRequestError = (apiError.errorDescription ?? "You have an unpaid balance.")
+                        + "\n\nOpen Today to pay it off — it takes one tap."
                 } else {
                     leaseRequestError = apiError.errorDescription
                 }

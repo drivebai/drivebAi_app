@@ -200,6 +200,21 @@ final class RollingBillingViewModel: ObservableObject {
         }
     }
 
+    func withdrawAmendment(_ id: UUID) async {
+        guard !isActing else { return }
+        isActing = true
+        defer { isActing = false }
+        do {
+            _ = try await apiClient.withdrawAmendment(amendmentId: id)
+            message = "Your price change offer was withdrawn."
+        } catch let apiError as APIError {
+            message = apiError.errorDescription
+        } catch {
+            message = "Couldn't withdraw the offer. Please try again."
+        }
+        await load()
+    }
+
     func stopRenewal() async {
         guard !isActing else { return }
         isActing = true
@@ -229,16 +244,23 @@ struct RollingBillingCard: View {
     /// the returns table, not just the halt slot), so the card must not
     /// offer buttons that can only 409. Both hosts already track this.
     var hasOpenReturn: Bool = false
+    /// True when the viewer OWNS the car. The owner proposes a price change;
+    /// the driver reviews it. Same card, two sides of one negotiation.
+    var isOwner: Bool = false
     /// Called after any action that can change the rental itself, so the
     /// host screen can re-read the lease it is showing beside this card.
     var onChanged: () -> Void = {}
 
     @State private var showStopRenewalConfirm = false
+    @State private var showProposePrice = false
+    @State private var showReviewPrice = false
     @Environment(\.scenePhase) private var scenePhase
 
-    init(leaseRequestId: UUID, hasOpenReturn: Bool = false, onChanged: @escaping () -> Void = {}) {
+    init(leaseRequestId: UUID, hasOpenReturn: Bool = false, isOwner: Bool = false,
+         onChanged: @escaping () -> Void = {}) {
         _viewModel = StateObject(wrappedValue: RollingBillingViewModel(leaseRequestId: leaseRequestId))
         self.hasOpenReturn = hasOpenReturn
+        self.isOwner = isOwner
         self.onChanged = onChanged
     }
 
@@ -371,6 +393,7 @@ struct RollingBillingCard: View {
             if !isArrearsBanner && banner != .cardProblem && banner != .needsCard {
                 scheduleLines
             }
+            priceChangeSection
             actionButtons
         }
         .padding(16)
@@ -517,10 +540,75 @@ struct RollingBillingCard: View {
         }
     }
 
+    /// A price change in flight, from whichever side the viewer is on. An
+    /// offer nobody actions simply expires and the current price stands —
+    /// that is an honest resting state, so the copy says so.
+    @ViewBuilder
+    private var priceChangeSection: some View {
+        if let pending = viewModel.status?.pendingAmendment {
+            VStack(alignment: .leading, spacing: 8) {
+                Divider()
+                if isOwner {
+                    Label("Price change sent — waiting for your driver",
+                          systemImage: "hourglass")
+                        .font(.subheadline.weight(.semibold))
+                    Text("They have to accept before anything changes. If they don't, your current price stays as it is.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Withdraw the offer") {
+                        Task {
+                            await viewModel.withdrawAmendment(pending.offer.id)
+                            onChanged()
+                        }
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                } else {
+                    Label("Your owner has proposed a new weekly price",
+                          systemImage: "arrow.left.arrow.right.circle")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Nothing changes until you agree, and the week you've paid for is never re-charged.")
+                        .font(.caption).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Review the new price") { showReviewPrice = true }
+                        .font(.system(size: 14, weight: .semibold))
+                }
+            }
+            .sheet(isPresented: $showReviewPrice) {
+                ReviewPriceChangeSheet(
+                    pending: pending,
+                    currentAmountCents: viewModel.status?.amountCents ?? 0,
+                    currencyCode: "USD"
+                ) {
+                    Task { await viewModel.load(); onChanged() }
+                }
+            }
+        } else if isOwner, viewModel.status?.renewalsRunning == true,
+                  let amount = viewModel.status?.amountCents {
+            Divider()
+            Button("Change the weekly price") { showProposePrice = true }
+                .font(.system(size: 14, weight: .semibold))
+                .sheet(isPresented: $showProposePrice) {
+                    ProposePriceChangeSheet(
+                        leaseRequestId: viewModel.leaseRequestId,
+                        currentAmountCents: amount,
+                        currencyCode: "USD"
+                    ) {
+                        Task { await viewModel.load(); onChanged() }
+                    }
+                }
+        }
+    }
+
     @ViewBuilder
     private var actionButtons: some View {
-        VStack(spacing: 8) {
-            switch banner {
+        // Paying, updating a card and stopping auto-renew are the DRIVER's.
+        // The server refuses them for anyone else, so offering them to an
+        // owner would only ever produce a 403.
+        if isOwner {
+            EmptyView()
+        } else {
+            VStack(spacing: 8) {
+                switch banner {
             case .arrears:
                 // The recorded disclosure tells the driver they can settle
                 // arrears "with Pay now". The button has to be that button.
@@ -556,9 +644,10 @@ struct RollingBillingCard: View {
                     }
                 }
             }
+            }
+            .disabled(viewModel.isActing)
+            .opacity(viewModel.isActing ? 0.6 : 1)
         }
-        .disabled(viewModel.isActing)
-        .opacity(viewModel.isActing ? 0.6 : 1)
     }
 
     // MARK: Stripe sheets

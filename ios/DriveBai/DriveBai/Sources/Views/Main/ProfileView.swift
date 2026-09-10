@@ -794,6 +794,11 @@ struct DeleteAccountSheet: View {
     @State private var password = ""
     @State private var isDeleting = false
     @State private var errorMessage: String?
+    /// An outstanding balance does NOT block deletion — Apple 5.1.1(v) is
+    /// explicit that apps making deletion unnecessarily difficult fail
+    /// review, and their own guidance for an ongoing financial relationship
+    /// is to NOTIFY and ask, not to refuse. We tell the truth instead.
+    @State private var balance: DriverBalanceAPIResponse?
 
     var body: some View {
         NavigationStack {
@@ -815,6 +820,28 @@ struct DeleteAccountSheet: View {
                     Text("Rental and payment records are kept for bookkeeping, attributed to “Deleted User”. If you have an active rental or a payment in progress, you'll be asked to finish it first — every step can be completed right here in the app.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
+
+                    if let balance, balance.hasBalance {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("You have an outstanding balance of \(balance.formatted)",
+                                  systemImage: "creditcard.trianglebadge.exclamationmark")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("Deleting your account does not clear it. You still owe this amount, and we may continue to contact you about it or pass it to a collections process. We'll keep a record of the balance and the transactions behind it for as long as it is owed and as long as the law requires us to keep financial records. Everything else about your account is deleted.")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("If you'd rather clear it first, you can pay it in Today — it takes one tap.")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
 
                     if confirming {
                         VStack(alignment: .leading, spacing: 12) {
@@ -859,6 +886,10 @@ struct DeleteAccountSheet: View {
                         .disabled(isDeleting)
                 }
                 .padding(20)
+            }
+            .task {
+                // Read the balance so the notice can state the real amount.
+                balance = try? await APIClient.shared.fetchMyBalance()
             }
             .navigationTitle("Delete account")
             .navigationBarTitleDisplayMode(.inline)

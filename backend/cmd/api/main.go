@@ -584,6 +584,9 @@ func main() {
 			r.Post("/purchase-requests/{id}/schedule-handover", purchaseHandler.ScheduleHandover)
 			r.Post("/purchase-requests/{id}/keys-handed-over", purchaseHandler.KeysHandedOver)
 			r.Post("/purchase-requests/{id}/inspect/accept", purchaseHandler.InspectAccept)
+			// Buyer accelerates: confirming receipt completes the sale now
+			// instead of waiting out the inspection window.
+			r.Post("/purchase-requests/{id}/confirm-handover", purchaseHandler.ConfirmHandover)
 			r.Post("/purchase-requests/{id}/inspect/reject", purchaseHandler.InspectReject)
 			r.Post("/purchase-requests/{id}/rejection-evidence", purchaseHandler.UploadEvidence)
 			r.Post("/purchase-requests/{id}/rejection/withdraw", purchaseHandler.WithdrawRejection)

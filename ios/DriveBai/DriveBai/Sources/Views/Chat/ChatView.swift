@@ -540,12 +540,14 @@ struct ChatView: View {
             // DRIVER of a rolling rental. It is the only surface that
             // survives the return, which is where a leftover balance has
             // to be payable from.
-            if leaseReq.isRolling,
-               currentUserId == leaseReq.driverId,
-               leaseReq.status == .paid {
+            // Both parties see it now: the driver pays and stops renewals,
+            // the owner proposes a price change. Same card, two sides.
+            if leaseReq.isRolling, leaseReq.status == .paid,
+               currentUserId == leaseReq.driverId || currentUserId == leaseReq.ownerId {
                 RollingBillingCard(
                     leaseRequestId: leaseReq.id,
-                    hasOpenReturn: viewModel.vehicleReturnsByLease[leaseReq.id].map { !$0.status.isTerminal } ?? false
+                    hasOpenReturn: viewModel.vehicleReturnsByLease[leaseReq.id].map { !$0.status.isTerminal } ?? false,
+                    isOwner: currentUserId == leaseReq.ownerId
                 ) {
                     Task { await viewModel.loadLeaseRequests() }
                 }

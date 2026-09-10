@@ -53,6 +53,55 @@ struct BillingArrearsAPIModel: Codable, Equatable {
     }
 }
 
+/// A price change offered mid-rental. It applies from the NEXT cycle and
+/// never to the week already paid for — the driver's authorization records a
+/// specific amount, so changing it without a fresh agreement would be an
+/// unauthorized charge, which auto-loses as a dispute.
+struct BillingAmendmentAPIModel: Codable, Identifiable, Equatable {
+    let id: UUID
+    let leaseRequestId: UUID
+    let proposedBy: UUID
+    /// "price" | "interval"
+    let kind: String
+    let newAmountCents: Int64
+    let newInterval: String?
+    let status: String
+    let expiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case leaseRequestId = "lease_request_id"
+        case proposedBy = "proposed_by"
+        case kind
+        case newAmountCents = "new_amount_cents"
+        case newInterval = "new_interval"
+        case status
+        case expiresAt = "expires_at"
+    }
+}
+
+/// The pending amendment plus the EXACT text acceptance would record, so the
+/// driver sees what they are agreeing to before they agree to it.
+struct PendingAmendmentAPIModel: Codable, Equatable {
+    let offer: BillingAmendmentAPIModel
+    let disclosurePreview: String?
+
+    enum CodingKeys: String, CodingKey {
+        case offer
+        case disclosurePreview = "disclosure_preview"
+    }
+}
+
+struct ProposeAmendmentAPIRequest: Codable {
+    let kind: String
+    let newAmountCents: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case newAmountCents = "new_amount_cents"
+    }
+}
+
 /// GET /lease-requests/{id}/billing
 struct BillingStatusAPIResponse: Codable {
     let billingMode: String
@@ -71,8 +120,7 @@ struct BillingStatusAPIResponse: Codable {
     let nextChargeAt: Date?
     let openCycle: BillingOpenCycleAPIModel?
     let arrears: BillingArrearsAPIModel?
-    // `pending_amendment` is deliberately not decoded in this build: the
-    // amendment surface ships later, and an undecoded key is ignored.
+    let pendingAmendment: PendingAmendmentAPIModel?
 
     enum CodingKeys: String, CodingKey {
         case billingMode = "billing_mode"
@@ -89,6 +137,7 @@ struct BillingStatusAPIResponse: Codable {
         case nextChargeAt = "next_charge_at"
         case openCycle = "open_cycle"
         case arrears
+        case pendingAmendment = "pending_amendment"
     }
 
     var isRolling: Bool { billingMode == "rolling" }
