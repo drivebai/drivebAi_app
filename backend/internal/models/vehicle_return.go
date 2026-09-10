@@ -163,13 +163,49 @@ type RefundComputation struct {
 //   - returnedAt beyond paid window → used_days capped at total_paid_days.
 //   - refund < 1¢ → NotApplicable=true (Stripe rejects sub-cent refunds).
 //   - refund > paid_amount_cents → impossible by formula, but min-guarded.
+//
+// ComputeReturnRefundOverDays is the same arithmetic with the paid period
+// stated in DAYS rather than weeks.
+//
+// The weekly form bakes in "a term is a multiple of 7 days", which is true of
+// fixed-term rentals and false of a monthly billing cycle: settling a 28-day
+// cycle through the weekly form pro-rates it over 7 days, so a driver who
+// returned a car 20 days into a paid month would be told they owed nothing
+// and refunded most of the month. Rolling settlements pass the cycle's own
+// period instead, so the maths follows the interval rather than assuming one.
+//
+// ComputeReturnRefund is left exactly as it was: it is the fixed-term path,
+// and it has settled real money correctly.
+func ComputeReturnRefundOverDays(paidAmountCents int64, totalPaidDays int, periodStart, returnedAt time.Time) RefundComputation {
+	if totalPaidDays <= 0 {
+		totalPaidDays = 7
+	}
+	return computeRefundOverDays(paidAmountCents, totalPaidDays, periodStart, returnedAt)
+}
+
+// DaysInPeriod is the paid length of a billing cycle, rounded to whole days.
+// Derived from the cycle's own period so it is correct for any interval,
+// including one we have not invented yet.
+func DaysInPeriod(periodStart, periodEnd time.Time) int {
+	d := int(math.Round(periodEnd.Sub(periodStart).Hours() / 24.0))
+	if d < 1 {
+		d = 1
+	}
+	return d
+}
+
 func ComputeReturnRefund(paidAmountCents int64, rentalWeeks int, pickupConfirmedAt, returnedAt time.Time) RefundComputation {
 	if rentalWeeks <= 0 {
 		rentalWeeks = 1
 	}
-	totalPaidDays := rentalWeeks * 7
+	return computeRefundOverDays(paidAmountCents, rentalWeeks*7, pickupConfirmedAt, returnedAt)
+}
 
-	elapsedSeconds := returnedAt.Sub(pickupConfirmedAt).Seconds()
+// computeRefundOverDays holds the arithmetic both entry points share. Behaviour
+// is byte-for-byte what ComputeReturnRefund has always done; only the source of
+// totalPaidDays differs.
+func computeRefundOverDays(paidAmountCents int64, totalPaidDays int, startedAt, returnedAt time.Time) RefundComputation {
+	elapsedSeconds := returnedAt.Sub(startedAt).Seconds()
 	if elapsedSeconds < 0 {
 		elapsedSeconds = 0
 	}

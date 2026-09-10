@@ -97,3 +97,51 @@ func indexOf(hay, needle string) int {
 	}
 	return -1
 }
+
+// The monthly package is its own version, and every number in it must differ
+// from the weekly one — that is the whole reason it is a separate package.
+func TestMonthlyDisclosureStatesMonthlyFacts(t *testing.T) {
+	monthly := RollingDriverDisclosureMonthlyV1(59976) // 4 x the CR-V weekly
+	weekly := RollingDriverDisclosureV3(14994)
+
+	if monthly == weekly {
+		t.Fatal("the monthly package is identical to the weekly one")
+	}
+	for _, want := range []string{
+		"every 28 days",
+		"28 days, not a calendar month",
+		"charged three days before it starts",
+		"remind you three days before every charge",
+		"counted across the whole 28",
+		"$599.76",
+	} {
+		if !contains(monthly, want) {
+			t.Errorf("monthly package is missing: %q", want)
+		}
+	}
+	// It must not quote the weekly cadence anywhere.
+	for _, unwanted := range []string{"every 7 days", "one day before", "6 days after pickup"} {
+		if contains(monthly, unwanted) {
+			t.Errorf("monthly package still quotes the weekly cadence: %q", unwanted)
+		}
+	}
+	if !contains(monthly, TermsVersionRollingMonthlyV1) {
+		t.Error("monthly package does not record its own version string")
+	}
+}
+
+func TestRollingDisclosureForPicksTheRightPackage(t *testing.T) {
+	mText, mVer := RollingDisclosureFor("monthly", 59976)
+	if mVer != TermsVersionRollingMonthlyV1 || !contains(mText, "every 28 days") {
+		t.Errorf("monthly interval got the wrong package: %s", mVer)
+	}
+	wText, wVer := RollingDisclosureFor("weekly", 14994)
+	if wVer != TermsVersionRollingV3 || !contains(wText, "every 7 days") {
+		t.Errorf("weekly interval got the wrong package: %s", wVer)
+	}
+	// An unknown interval must fall back to weekly, never to nothing.
+	_, uVer := RollingDisclosureFor("fortnightly", 14994)
+	if uVer != TermsVersionRollingV3 {
+		t.Errorf("unknown interval fell through to %q", uVer)
+	}
+}

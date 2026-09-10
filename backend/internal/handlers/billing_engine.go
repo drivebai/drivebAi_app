@@ -69,7 +69,10 @@ func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
 // Phase 1 — T−48h renewal notice (recurring claimed-once: stamped with the
 // CURRENT paid-through value; the next advance re-arms it automatically).
 func (h *LeaseRequestHandler) billingNoticePhase(ctx context.Context, now time.Time) {
-	due, err := h.leaseRepo.ListRollingDueForBilling(ctx, now.Add(models.BillingNoticeLead), 50)
+	// Widest lead any live interval needs. A monthly lease notices at T-72h,
+	// so listing only to T-48h would never surface it in time and the notice
+	// would arrive after the charge.
+	due, err := h.leaseRepo.ListRollingDueForBilling(ctx, now.Add(models.BillingIntervalNoticeLead("monthly")), 50)
 	if err != nil {
 		h.logger.Error("billing notice: list", "error", err)
 		return
@@ -478,7 +481,8 @@ func (h *LeaseRequestHandler) billingNeedsActionPhase(ctx context.Context, now t
 					"waived: verification lapsed on a week that began after the vehicle was returned")
 				continue
 			}
-			owed := c.AmountCents - models.ComputeReturnRefund(c.AmountCents, 1, c.PeriodStart, returnedAt).RefundAmountCents
+			owed := c.AmountCents - models.ComputeReturnRefundOverDays(c.AmountCents,
+				models.DaysInPeriod(c.PeriodStart, c.PeriodEnd), c.PeriodStart, returnedAt).RefundAmountCents
 			if owed > 0 {
 				if settled, serr := h.billingRepo.SettleArrearsProRata(ctx, c.ID, owed); serr == nil && settled {
 					h.openDriverDebt(ctx, lr, c.ID, owed)
@@ -974,7 +978,13 @@ func computeRollingSettlement(ctx context.Context, repo *repository.BillingRepos
 		current = prev
 	}
 	out.CurrentCycle = current
-	calc := models.ComputeReturnRefund(current.AmountCents, 1, current.PeriodStart, returnedAt)
+	// Pro-rate over the cycle's OWN period, not over an assumed week. Passing
+	// a hardcoded 1 week settles a 28-day monthly cycle across 7 days: a
+	// driver returning 20 days into a paid month would be told they owed
+	// nothing and refunded most of it.
+	calc := models.ComputeReturnRefundOverDays(current.AmountCents,
+		models.DaysInPeriod(current.PeriodStart, current.PeriodEnd),
+		current.PeriodStart, returnedAt)
 	out.CurrentUsedDays = calc.UsedDays
 	if current.Status == models.CyclePaid && current.RefundID == nil {
 		out.CurrentRefundCents = calc.RefundAmountCents
@@ -1160,7 +1170,8 @@ func (h *LeaseRequestHandler) billingReturnedLeaseCloserPhase(ctx context.Contex
 				"waived: week began after the vehicle was returned")
 			continue
 		}
-		owed := c.AmountCents - models.ComputeReturnRefund(c.AmountCents, 1, c.PeriodStart, returnedAt).RefundAmountCents
+		owed := c.AmountCents - models.ComputeReturnRefundOverDays(c.AmountCents,
+			models.DaysInPeriod(c.PeriodStart, c.PeriodEnd), c.PeriodStart, returnedAt).RefundAmountCents
 		if owed <= 0 {
 			_, _ = h.billingRepo.WaiveUnpaidCycle(ctx, c.ID,
 				"waived: nothing owed for the returned week")

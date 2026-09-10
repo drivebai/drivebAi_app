@@ -138,6 +138,30 @@ type BillingAmendmentOffer struct {
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
+// BillingIntervalNoticeLead is how far ahead the driver is told a renewal is
+// coming. Weekly keeps 48 hours; monthly gets 72.
+//
+// The lead is not cosmetic. Auto-renewal statutes in several states scale the
+// required notice with the term, and the practical argument runs the same way:
+// a month's rent is four times the weekly amount, so a driver needs more than
+// a day and a half to move money or cancel before it is taken off their card.
+func BillingIntervalNoticeLead(interval string) time.Duration {
+	if interval == "monthly" {
+		return 72 * time.Hour
+	}
+	return BillingNoticeLead
+}
+
+// BillingIntervalChargeLead is how far before paid-through the charge fires.
+// Monthly gets a longer runway because the dunning ladder that follows a
+// decline has to fit inside it, and a failed month is worth four weeks.
+func BillingIntervalChargeLead(interval string) time.Duration {
+	if interval == "monthly" {
+		return 72 * time.Hour
+	}
+	return BillingChargeLead
+}
+
 // BillingIntervalLength maps a consent's interval to its cycle length.
 // Month = 4 weeks (28d) platform-wide, per RentMonthWeeks.
 func BillingIntervalLength(interval string) time.Duration {

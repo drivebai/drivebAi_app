@@ -137,3 +137,48 @@ func RollingDriverDisclosureV3(amountCents int64) string {
 			"Terms: %s.",
 		amt, amt, TermsVersionRollingV3)
 }
+
+// ─── Monthly interval (2026-09-10) ──────────────────────────────────────────
+
+// TermsVersionRollingMonthlyV1 is the consent package for a MONTHLY rolling
+// rental. It is its own version, not a parameterised weekly one: every number
+// a driver is agreeing to changes — the amount, the cadence, the notice lead,
+// and how much is at stake if a charge fails.
+const TermsVersionRollingMonthlyV1 = "rolling-billing-monthly-v1 (2026-09-10)"
+
+// RollingDriverDisclosureMonthlyV1 renders the monthly consent text.
+//
+// It keeps the shape of the weekly package the client approved — charged now,
+// then the cadence, the pickup-day example, returning as the exit, the failure
+// policy — because that shape was approved for being clear, and only the facts
+// that actually differ are changed. The pickup-day example survives in monthly
+// form.
+func RollingDriverDisclosureMonthlyV1(amountCents int64) string {
+	amt := float64(amountCents) / 100
+	return fmt.Sprintf(
+		"You're authorizing an automatic monthly charge. $%.2f will be charged now, for your first month. "+
+			"After that, DriveBai will charge your card $%.2f every 28 days for as long as you keep the car — there is no fixed end date. "+
+			"A month here is 28 days, not a calendar month, so the date moves earlier through the year. "+
+			"Each new month is charged three days before it starts, counted from your pickup day and time "+
+			"(pick up Tuesday the 3rd at 3 PM, and you're charged on the 28th at 3 PM), so your next charge comes 25 days after pickup. "+
+			"We'll remind you three days before every charge, and this amount never changes without a new agreement from you.\n\n"+
+			"Returning the car in the app stops the charges — that's the exit, any day, no notice needed. "+
+			"You can also turn off auto-renew instead: your rental then ends when your paid month runs out. "+
+			"Return mid-month and we refund the days you didn't use, counted across the whole 28.\n\n"+
+			"If a monthly payment fails, we'll retry your card over the next two days and notify you each time; you keep the car while we retry. "+
+			"If it still can't be collected, billing stops and your rental ends when your paid time runs out. "+
+			"Any days you used but didn't pay for are still owed. They're added to a balance you can see and pay off in the app at any time. "+
+			"Until that balance is cleared you won't be able to start a new rental, and we'll contact you about it. "+
+			"Closing your DriveBai account doesn't clear what you owe.\n\n"+
+			"Terms: %s.",
+		amt, amt, TermsVersionRollingMonthlyV1)
+}
+
+// RollingDisclosureFor picks the package for an interval, so no caller has to
+// remember which text goes with which cadence.
+func RollingDisclosureFor(interval string, amountCents int64) (text, version string) {
+	if interval == "monthly" {
+		return RollingDriverDisclosureMonthlyV1(amountCents), TermsVersionRollingMonthlyV1
+	}
+	return RollingDriverDisclosureV3(amountCents), TermsVersionRollingV3
+}
