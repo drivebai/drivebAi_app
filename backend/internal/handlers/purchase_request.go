@@ -1787,6 +1787,16 @@ func (h *PurchaseRequestHandler) capturePayment(ctx context.Context, p *models.P
 		h.logger.Error("purchase: capture with no payment intent", "id", p.ID)
 		return nil
 	}
+	// Capture hits Stripe BEFORE MarkCaptured, and MarkCaptured is scoped to
+	// inspection_accepted. Calling this on any other state would take the
+	// buyer's money and leave the row behind, where no sweep looks for it —
+	// runCaptureRetry only lists inspection_accepted. Every production
+	// caller sets that state first; refuse rather than trust it.
+	if p.Status != models.PurchaseStatusInspectionAccepted {
+		h.logger.Error("purchase: refusing to capture from an unexpected state",
+			"id", p.ID, "status", p.Status)
+		return nil
+	}
 	idemKey := fmt.Sprintf("purchase-capture-%s", p.ID.String())
 	if _, err := h.stripe.CapturePaymentIntent(*p.PaymentIntentID, idemKey); err != nil {
 		h.logger.Error("purchase: stripe capture failed", "error", err, "id", p.ID)
