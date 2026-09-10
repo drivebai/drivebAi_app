@@ -469,6 +469,7 @@ func (h *LeaseRequestHandler) billingNeedsActionPhase(ctx context.Context, now t
 			owed := c.AmountCents - models.ComputeReturnRefund(c.AmountCents, 1, c.PeriodStart, returnedAt).RefundAmountCents
 			if owed > 0 {
 				if settled, serr := h.billingRepo.SettleArrearsProRata(ctx, c.ID, owed); serr == nil && settled {
+					h.openDriverDebt(ctx, lr, c.ID, owed)
 					h.openArrearsTicket(ctx, lr, c, owed)
 					chatID := lr.ChatID
 					leaseID := lr.ID
@@ -1154,6 +1155,7 @@ func (h *LeaseRequestHandler) billingReturnedLeaseCloserPhase(ctx context.Contex
 			continue
 		}
 		if settled, serr := h.billingRepo.SettleArrearsProRata(ctx, c.ID, owed); serr == nil && settled {
+			h.openDriverDebt(ctx, lr, c.ID, owed)
 			h.openArrearsTicket(ctx, lr, c, owed)
 			chatID := lr.ChatID
 			leaseID := lr.ID

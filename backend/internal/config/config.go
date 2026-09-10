@@ -91,6 +91,13 @@ type Config struct {
 	// only after the Stripe test-clock rehearsal passes (client rule).
 	RollingRentalsEnabled bool
 
+	// DebtEnforcementEnabled turns the driver-debt block on new bookings on.
+	// Defaults TRUE because the app already tells drivers "new bookings are
+	// paused until this is resolved" — shipping it off would keep that a
+	// false statement. The switch exists to disable enforcement in a hurry,
+	// not to delay it.
+	DebtEnforcementEnabled bool
+
 	// CORS allowed origins, comma-separated. In production this must be a
 	// concrete list (e.g. https://drivebai-admin-team.fly.dev). Default of
 	// "*" is fine for development (iOS clients don't care about CORS); the
@@ -145,10 +152,11 @@ func Load() (*Config, error) {
 		StripeConnectWebhookSecret: getEnv("STRIPE_CONNECT_WEBHOOK_SECRET", ""),
 		PlatformFeeBPS:             getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
 
-		MinWeeklyRentPrice: getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
-		AutoApproveCars:    getEnv("AUTO_APPROVE_CARS", "false") == "true",
-		DisableCarSales:    getEnv("DISABLE_CAR_SALES", "false") == "true",
-		RollingRentalsEnabled: getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
+		MinWeeklyRentPrice:     getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
+		AutoApproveCars:        getEnv("AUTO_APPROVE_CARS", "false") == "true",
+		DisableCarSales:        getEnv("DISABLE_CAR_SALES", "false") == "true",
+		RollingRentalsEnabled:  getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
+		DebtEnforcementEnabled: getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),

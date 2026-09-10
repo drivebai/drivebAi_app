@@ -46,7 +46,10 @@ type VehicleReturnHandler struct {
 	// the cycle ledger instead of the legacy settleOwnerPayout row.
 	billingRepo       *repository.BillingRepository
 	billingPayoutRepo *repository.PayoutRepository
-	billingFeeBPS     int
+	// debtRepo records an uncollected final week as a driver-level debt.
+	// Optional: nil leaves the return flow exactly as it was.
+	debtRepo      *repository.DriverDebtRepository
+	billingFeeBPS int
 }
 
 // SetDisputeRepository wires the dispute mirror for halt juggling.
@@ -60,6 +63,12 @@ func (h *VehicleReturnHandler) SetBillingDependencies(b *repository.BillingRepos
 	h.billingRepo = b
 	h.billingPayoutRepo = p
 	h.billingFeeBPS = feeBPS
+}
+
+// SetDebtRepository wires the driver-level debt ledger so an uncollected
+// final week is recorded against the driver, not only against the cycle.
+func (h *VehicleReturnHandler) SetDebtRepository(d *repository.DriverDebtRepository) {
+	h.debtRepo = d
 }
 
 // SetPayoutHandler wires the owner-payout engine so a completed return
@@ -206,14 +215,14 @@ func (h *VehicleReturnHandler) Initiate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	resp := h.buildResponse(r.Context(), created, userID)
-		// Rolling leases: a live return pauses the billing ladder explicitly
+	// Rolling leases: a live return pauses the billing ladder explicitly
 	// (review H3: nothing wrote 'return_initiated' before). Cleared on
 	// cancel; superseded by vehicle_returned_at on completion.
 	if _, herr := h.leaseRepo.HaltRenewals(r.Context(), leaseID, "return_initiated"); herr != nil {
 		h.logger.Warn("return initiate: halt renewals", "error", herr, "lease_request_id", leaseID)
 	}
 
-httputil.WriteJSON(w, http.StatusCreated, resp)
+	httputil.WriteJSON(w, http.StatusCreated, resp)
 
 	h.broadcast("vehicle_return_initiated", created)
 	h.postSystemMessage(r.Context(), created, "driver_initiated", resp)
@@ -1576,6 +1585,9 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 				// see the completion block below (rehearsal line 7).
 				arrearsOwedCents = owed
 				arrearsCycle = cc
+				// The debt is the DRIVER's, not just this cycle's: it has to
+				// sum with anything they owe elsewhere and outlive the lease.
+				openDriverDebtLedger(ctx, h.logger, h.debtRepo, h.userRepo, h.billingRepo, lr, cc.ID, owed)
 				h.logger.Info("rolling return: final week settled as arrears",
 					"cycle_id", cc.ID, "owed_cents", owed)
 			}

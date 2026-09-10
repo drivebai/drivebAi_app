@@ -513,6 +513,20 @@ func (h *LeaseRequestHandler) handleArrearsPaid(ctx context.Context, cycleID uui
 		h.logger.Error("arrears paid: load lease", "error", lerr, "lease_request_id", cycle.LeaseRequestID)
 		return false
 	}
+	// Credit the driver-level balance. Idempotent on the intent id, so a
+	// redelivered webhook moves nothing; a partial payment simply lowers the
+	// balance and leaves the debt open.
+	if h.debtRepo != nil {
+		if debt, derr := h.debtRepo.GetByCycle(ctx, cycle.ID); derr != nil {
+			h.logger.Error("arrears paid: load debt", "error", derr, "cycle_id", cycle.ID)
+		} else if debt != nil {
+			if _, applied, aerr := h.debtRepo.ApplyPayment(ctx, debt.ID, cycle.AmountCents, intentID, "driver"); aerr != nil {
+				h.logger.Error("arrears paid: apply to debt", "error", aerr, "debt_id", debt.ID)
+			} else if applied {
+				h.logger.Info("driver debt paid down", "debt_id", debt.ID, "amount_cents", cycle.AmountCents)
+			}
+		}
+	}
 	// Pure redelivery (payout already written): ACK without re-sending
 	// the settlement notifications (batch-4 verification LOW).
 	if cycle.Status == models.CyclePaid {

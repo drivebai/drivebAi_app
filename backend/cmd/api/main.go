@@ -268,6 +268,8 @@ func main() {
 	// creation and cycle-1 consent; the engine's sweeps match zero rows
 	// until a rolling lease exists, so starting them is always safe.
 	leaseHandler.SetBillingDependencies(repository.NewBillingRepository(db), cfg.PlatformFeeBPS, cfg.RollingRentalsEnabled)
+	driverDebtRepo := repository.NewDriverDebtRepository(db)
+	leaseHandler.SetDebtDependencies(driverDebtRepo, cfg.DebtEnforcementEnabled)
 
 	// Owner payouts (Stripe Connect, separate charges & transfers). The
 	// Connect webhook has its own signing secret — the payment webhook's
@@ -280,6 +282,7 @@ func main() {
 	// Rolling returns settle per CYCLE (batch 3): pro-rata out of the final
 	// week's own charge, cycle-ledger rewrite instead of the legacy row.
 	vehicleReturnHandler.SetBillingDependencies(repository.NewBillingRepository(db), payoutRepo, cfg.PlatformFeeBPS)
+	vehicleReturnHandler.SetDebtRepository(driverDebtRepo)
 
 	// Purchase (buy the car) — mirrors the lease flow but with manual capture
 	// held until buyer inspection accept. See DESIGN SPEC for the state
@@ -339,8 +342,8 @@ func main() {
 		// Auth routes (public) — two rate-limit buckets so benign traffic
 		// (availability checks, token refresh) can't starve logins.
 		r.Route("/auth", func(r chi.Router) {
-			strict := r.With(middleware.RateLimit(authRateLimiter))     // 15/min: credential attempts
-			soft := r.With(middleware.RateLimit(authSoftRateLimiter))   // 60/min: benign, high-frequency
+			strict := r.With(middleware.RateLimit(authRateLimiter))   // 15/min: credential attempts
+			soft := r.With(middleware.RateLimit(authSoftRateLimiter)) // 60/min: benign, high-frequency
 
 			strict.Post("/register", authHandler.Register)
 			strict.Post("/login", authHandler.Login)
@@ -387,6 +390,9 @@ func main() {
 				})
 			})
 			r.Get("/me", userHandler.GetCurrentUser)
+			// Driver debt: the running balance the app shows and the block
+			// on new bookings enforces.
+			r.Get("/me/balance", leaseHandler.GetMyBalance)
 			r.Patch("/profile", userHandler.UpdateProfile)
 			// OTP-confirmed email/phone change (batch items 7+8): nothing
 			// commits until the code sent to the (new) address verifies.

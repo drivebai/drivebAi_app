@@ -57,6 +57,83 @@ type LeaseRequestHandler struct {
 	billingRepo    *repository.BillingRepository
 	billingFeeBPS  int
 	rollingEnabled bool
+	// Driver debt ledger — wired via SetDebtDependencies. Optional: when
+	// absent the engine behaves exactly as before, which keeps every
+	// existing test constructor working untouched.
+	debtRepo    *repository.DriverDebtRepository
+	debtEnforce bool
+}
+
+// SetDebtDependencies wires the driver-level debt ledger and the switch that
+// enforces it. Enforcement is what makes the app's existing promise — "new
+// bookings are paused until this is resolved" — true; it was a false
+// statement until this shipped.
+func (h *LeaseRequestHandler) SetDebtDependencies(d *repository.DriverDebtRepository, enforce bool) {
+	h.debtRepo = d
+	h.debtEnforce = enforce
+}
+
+// openDriverDebt records an uncollected week as a debt against the DRIVER.
+func (h *LeaseRequestHandler) openDriverDebt(ctx context.Context, lr *models.LeaseRequest, cycleID uuid.UUID, owedCents int64) {
+	openDriverDebtLedger(ctx, h.logger, h.debtRepo, h.userRepo, h.billingRepo, lr, cycleID, owedCents)
+}
+
+// openDriverDebtLedger records an uncollected week as a debt against the
+// DRIVER, not just the cycle, so it sums with anything they owe elsewhere and
+// outlives the lease. Shared by the billing engine and the return flow.
+//
+// Claimed-once inside the repository, so the sweeps that call it may retry
+// freely. Never fatal: failing to write the ledger row must not stop the
+// settlement that produced it — the money question is already decided by then.
+func openDriverDebtLedger(
+	ctx context.Context,
+	logger *slog.Logger,
+	debtRepo *repository.DriverDebtRepository,
+	userRepo *repository.UserRepository,
+	billingRepo *repository.BillingRepository,
+	lr *models.LeaseRequest,
+	cycleID uuid.UUID,
+	owedCents int64,
+) {
+	if debtRepo == nil || lr == nil || owedCents <= 0 {
+		return
+	}
+	// Identifier snapshot: SoftDeleteUser rewrites the email, NULLs the phone
+	// and replaces the name, so reading them later from users returns nothing
+	// usable. A debt that outlives the account needs its own copy.
+	var snap models.DriverDebtSnapshot
+	if userRepo != nil {
+		if u, err := userRepo.GetByID(ctx, lr.DriverID); err == nil && u != nil {
+			snap.Email = u.Email
+			if u.Phone != nil {
+				snap.Phone = *u.Phone
+			}
+			snap.Name = strings.TrimSpace(u.FirstName + " " + u.LastName)
+		}
+	}
+	if billingRepo != nil {
+		if c, cerr := billingRepo.GetActiveConsent(ctx, lr.ID); cerr == nil && c != nil {
+			if c.CardFingerprint != nil {
+				snap.CardFingerprint = *c.CardFingerprint
+			}
+			if c.CardLast4 != nil {
+				snap.CardLast4 = *c.CardLast4
+			}
+		}
+	}
+	currency := lr.Currency
+	if currency == "" {
+		currency = "USD"
+	}
+	debt, created, err := debtRepo.OpenForCycle(ctx, lr.DriverID, lr.ID, cycleID, owedCents, currency, snap)
+	if err != nil {
+		logger.Error("driver debt: open", "error", err, "cycle_id", cycleID, "lease_request_id", lr.ID)
+		return
+	}
+	if created {
+		logger.Info("driver debt opened", "debt_id", debt.ID, "driver_id", lr.DriverID,
+			"cycle_id", cycleID, "amount_cents", owedCents)
+	}
 }
 
 // SetTicketRepository wires the support-ticket repo for the rental-term
@@ -202,6 +279,32 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	if userID == car.OwnerID {
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrCannotLeaseOwnCar)
 		return
+	}
+
+	// Outstanding balance blocks a new rental. Until this shipped the app
+	// told drivers "new bookings are paused until this is resolved" and
+	// nothing enforced it — a false statement in a payment notification.
+	// Applies to BOTH billing modes on purpose: the debt is the driver's,
+	// not the rental's. It is inert for anyone who owes nothing.
+	if h.debtEnforce && h.debtRepo != nil {
+		bal, berr := h.debtRepo.BalanceFor(r.Context(), userID)
+		if berr != nil {
+			// Fail OPEN: a ledger read failure must not stop an honest
+			// driver renting. The debt does not disappear; the next attempt
+			// re-checks it.
+			h.logger.Error("lease create: debt balance read failed", "error", berr, "driver_id", userID)
+		} else if bal.HasBalance() {
+			apiErr := models.NewAPIError("OUTSTANDING_BALANCE", fmt.Sprintf(
+				"You have an unpaid balance of $%.2f from a previous rental. Clear it to start a new one.",
+				float64(bal.OutstandingCents)/100))
+			apiErr.Details = map[string]interface{}{
+				"outstanding_cents": bal.OutstandingCents,
+				"currency":          bal.Currency,
+				"open_debt_count":   bal.OpenDebtCount,
+			}
+			httputil.WriteError(w, http.StatusConflict, apiErr)
+			return
+		}
 	}
 
 	weeks := 1
