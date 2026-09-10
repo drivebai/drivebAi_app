@@ -917,6 +917,12 @@ func (r *PayoutRepository) ListCompletedSalesWithoutPayout(ctx context.Context, 
 	if limit <= 0 {
 		limit = 50
 	}
+	// HARD CUTOFF. Sales that completed before seller payouts existed were
+	// never eligible for one, and several of them are test-era rows whose
+	// Stripe charges do not exist on the live account at all. Reconciling
+	// them would invent money: a payout row, and eventually a real transfer,
+	// for a charge that was never captured here. Only sales completed after
+	// the feature shipped can be missing a payout.
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT pr.id, pr.seller_id, pr.offer_amount_cents
 		FROM purchase_requests pr
@@ -924,8 +930,10 @@ func (r *PayoutRepository) ListCompletedSalesWithoutPayout(ctx context.Context, 
 		WHERE pr.status = 'completed'
 		  AND pr.payment_status = 'succeeded'
 		  AND op.id IS NULL
+		  AND pr.completed_at IS NOT NULL
+		  AND pr.completed_at >= $2::timestamptz
 		ORDER BY pr.updated_at ASC
-		LIMIT $1`, limit)
+		LIMIT $1`, limit, models.SellerPayoutsLiveFrom)
 	if err != nil {
 		return nil, fmt.Errorf("list unpaid completed sales: %w", err)
 	}

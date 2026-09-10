@@ -38,6 +38,16 @@ const (
 	PayoutVoided OwnerPayoutStatus = "voided"
 )
 
+// SellerPayoutsLiveFrom is the instant seller payouts began existing.
+//
+// Anything that completed before it was never eligible for a payout, and the
+// purchase rows from before that date are test-era artifacts whose Stripe
+// charges do not exist on the live account. The reconcile sweep must never
+// reach back past this line: doing so would create a payout row — and
+// eventually a real transfer of platform money — for a charge that was never
+// captured here.
+var SellerPayoutsLiveFrom = time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+
 // OwnerPayoutSource records why the split exists.
 type OwnerPayoutSource string
 
@@ -66,35 +76,35 @@ const (
 
 // OwnerPayout is the ledger row.
 type OwnerPayout struct {
-	ID               uuid.UUID         `json:"id"`
+	ID uuid.UUID `json:"id"`
 	// Exactly one of LeaseRequestID / PurchaseRequestID is set — enforced by
 	// the owner_payouts_one_source CHECK (migration 000060). A sale has no
 	// lease row and never will.
-	LeaseRequestID    *uuid.UUID `json:"lease_request_id,omitempty"`
-	PurchaseRequestID *uuid.UUID `json:"purchase_request_id,omitempty"`
-	OwnerID          uuid.UUID         `json:"owner_id"`
-	StripeAccountID  *string           `json:"-"`
-	GrossKeptCents   int64             `json:"gross_kept_cents"`
-	FeeBPS           int               `json:"fee_bps"`
-	FeeCents         int64             `json:"fee_cents"`
-	OwnerAmountCents int64             `json:"owner_amount_cents"`
-	Currency         string            `json:"currency"`
-	Status           OwnerPayoutStatus `json:"status"`
-	Source           OwnerPayoutSource `json:"source"`
-	SourceChargeID   *string           `json:"-"`
-	StripeTransferID *string           `json:"stripe_transfer_id,omitempty"`
-	FailureReason    *string           `json:"failure_reason,omitempty"`
-	Note             *string           `json:"note,omitempty"`
-	ReminderCount    int               `json:"reminder_count"`
-	LastReminderAt   *time.Time        `json:"last_reminder_at,omitempty"`
-	EscalatedAt      *time.Time        `json:"escalated_at,omitempty"`
-	PaidAt           *time.Time        `json:"paid_at,omitempty"`
-	BillingCycleID   *uuid.UUID        `json:"billing_cycle_id,omitempty"`
-	PeriodStart      *time.Time        `json:"period_start,omitempty"`
-	PeriodEnd        *time.Time        `json:"period_end,omitempty"`
-	ConsumedAt       *time.Time        `json:"consumed_at,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	LeaseRequestID    *uuid.UUID        `json:"lease_request_id,omitempty"`
+	PurchaseRequestID *uuid.UUID        `json:"purchase_request_id,omitempty"`
+	OwnerID           uuid.UUID         `json:"owner_id"`
+	StripeAccountID   *string           `json:"-"`
+	GrossKeptCents    int64             `json:"gross_kept_cents"`
+	FeeBPS            int               `json:"fee_bps"`
+	FeeCents          int64             `json:"fee_cents"`
+	OwnerAmountCents  int64             `json:"owner_amount_cents"`
+	Currency          string            `json:"currency"`
+	Status            OwnerPayoutStatus `json:"status"`
+	Source            OwnerPayoutSource `json:"source"`
+	SourceChargeID    *string           `json:"-"`
+	StripeTransferID  *string           `json:"stripe_transfer_id,omitempty"`
+	FailureReason     *string           `json:"failure_reason,omitempty"`
+	Note              *string           `json:"note,omitempty"`
+	ReminderCount     int               `json:"reminder_count"`
+	LastReminderAt    *time.Time        `json:"last_reminder_at,omitempty"`
+	EscalatedAt       *time.Time        `json:"escalated_at,omitempty"`
+	PaidAt            *time.Time        `json:"paid_at,omitempty"`
+	BillingCycleID    *uuid.UUID        `json:"billing_cycle_id,omitempty"`
+	PeriodStart       *time.Time        `json:"period_start,omitempty"`
+	PeriodEnd         *time.Time        `json:"period_end,omitempty"`
+	ConsumedAt        *time.Time        `json:"consumed_at,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 // ComputePayoutSplit is THE money split — the single definition used by the
