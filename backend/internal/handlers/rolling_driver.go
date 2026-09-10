@@ -538,6 +538,18 @@ func (h *LeaseRequestHandler) handleArrearsPaid(ctx context.Context, cycleID uui
 			}
 			if applied {
 				h.logger.Info("driver debt paid down", "debt_id", debt.ID, "amount_cents", cycle.AmountCents)
+				// If DriveBai already covered this week for the owner, the
+				// recovery reimburses the PLATFORM. The owner keeps what
+				// they were paid — paying them again would pay twice for
+				// one week.
+				if h.payoutRepo != nil {
+					if credited, gerr := h.payoutRepo.ApplyGuaranteeRecovery(ctx, cycle.ID, cycle.AmountCents); gerr != nil {
+						h.logger.Error("arrears paid: credit guarantee", "error", gerr, "cycle_id", cycle.ID)
+					} else if credited {
+						h.logger.Info("guarantee reimbursed from driver payment",
+							"cycle_id", cycle.ID, "amount_cents", cycle.AmountCents)
+					}
+				}
 			}
 		}
 	}

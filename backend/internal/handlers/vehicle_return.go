@@ -1588,6 +1588,17 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 				// The debt is the DRIVER's, not just this cycle's: it has to
 				// sum with anything they owe elsewhere and outlive the lease.
 				openDriverDebtLedger(ctx, h.logger, h.debtRepo, h.userRepo, h.billingRepo, lr, cc.ID, owed)
+				// The rental is closed out here — vehicle_returned_at is
+				// stamped and the settlement is running — so this is the
+				// moment the capped owner guarantee is owed. Flag-gated OFF
+				// by default; it spends the platform's own money.
+				if h.payoutH != nil {
+					weekly := int64(0)
+					if consent, cerr := h.billingRepo.GetActiveConsent(ctx, lr.ID); cerr == nil && consent != nil {
+						weekly = consent.AmountCents
+					}
+					h.payoutH.SettleOwnerGuarantee(ctx, lr, cc.ID, owed, weekly)
+				}
 				h.logger.Info("rolling return: final week settled as arrears",
 					"cycle_id", cc.ID, "owed_cents", owed)
 			}

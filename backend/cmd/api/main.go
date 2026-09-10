@@ -284,6 +284,7 @@ func main() {
 	vehicleReturnHandler.SetBillingDependencies(repository.NewBillingRepository(db), payoutRepo, cfg.PlatformFeeBPS)
 	vehicleReturnHandler.SetDebtRepository(driverDebtRepo)
 	payoutHandler.SetPurchaseRepository(repository.NewPurchaseRequestRepository(db))
+	payoutHandler.SetGuaranteeEnabled(cfg.OwnerGuaranteeEnabled)
 
 	// Purchase (buy the car) — mirrors the lease flow but with manual capture
 	// held until buyer inspection accept. See DESIGN SPEC for the state
@@ -712,6 +713,9 @@ func main() {
 				// (the rent settle endpoint 409s on rolling leases).
 				r.Get("/rents/{id}/billing-cycles", leaseHandler.AdminListBillingCycles)
 				r.Post("/billing-cycles/{id}/waive", leaseHandler.AdminWaiveBillingCycle)
+				// Owner-guarantee exposure: what the platform has fronted
+				// against debt it has not collected, and the trailing rate.
+				r.Get("/payouts/guarantee-exposure", payoutHandler.AdminGuaranteeExposure)
 
 				// Purchase requests + rejections.
 				r.Get("/purchase-requests", purchaseHandler.AdminList)

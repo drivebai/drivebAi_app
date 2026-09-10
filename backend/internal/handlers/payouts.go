@@ -38,11 +38,18 @@ type PayoutHandler struct {
 	notifHandler *NotificationHandler
 	feeBPS       int
 	logger       *slog.Logger
+	// guaranteeEnabled gates the capped owner guarantee. Defaults OFF: it
+	// spends the platform's own money, so it stays dark until the client
+	// turns it on deliberately.
+	guaranteeEnabled bool
 	// purchaseRepo lets a SALE payout find its funding charge. Optional:
 	// nil simply means the transfer comes from the platform balance rather
 	// than being traced to the specific charge.
 	purchaseRepo *repository.PurchaseRequestRepository
 }
+
+// SetGuaranteeEnabled turns the capped owner guarantee on. Off by default.
+func (h *PayoutHandler) SetGuaranteeEnabled(on bool) { h.guaranteeEnabled = on }
 
 // SetPurchaseRepository wires the purchase side so a completed car sale can
 // pay its seller. Setter, per the house pattern.
@@ -924,4 +931,85 @@ func (h *PayoutHandler) ReverseSalePayoutForRefund(ctx context.Context, purchase
 		h.logger.Warn("sale payout reversed after refund",
 			"purchase_request_id", purchaseID, "reversal_id", rev.ID, "amount_cents", rev.Amount)
 	}
+}
+
+// SettleOwnerGuarantee pays an owner out of DriveBai's own funds for a week
+// it could not collect from the driver.
+//
+// TRIGGER: the rental is closed out on the platform by any route we
+// recognise. The condition is deliberately NOT "the car came back": a
+// guarantee that pays when an owner loses a week's rent and pays nothing when
+// they lose the car is backwards for a policy whose purpose is keeping
+// owners, and the one-week cap bounds the exposure identically either way.
+//
+// CAP: one week of rent, at the owner's normal share. An uncollected part-week
+// is covered for the days actually owed; a longer unpaid run is still capped
+// at one week.
+//
+// This does NOT touch the driver's debt. They still owe what they owe, and a
+// payment to a third party does not discharge it — if it did, we would be
+// buying the debt, which is a different instrument. What changes is who is
+// economically owed: recovery from the driver reimburses the PLATFORM, and
+// the owner keeps what they were paid.
+func (h *PayoutHandler) SettleOwnerGuarantee(
+	ctx context.Context,
+	lr *models.LeaseRequest,
+	cycleID uuid.UUID,
+	uncollectedCents int64,
+	weeklyCents int64,
+) {
+	if !h.guaranteeEnabled || h.payoutRepo == nil || lr == nil || uncollectedCents <= 0 {
+		return
+	}
+	// The cap: never more than one week, however long the unpaid run.
+	covered := uncollectedCents
+	if weeklyCents > 0 && covered > weeklyCents {
+		covered = weeklyCents
+	}
+	fee, ownerShare := models.ComputePayoutSplit(covered, h.feeBPS)
+	if ownerShare <= 0 {
+		return
+	}
+
+	accountID, status, aerr := h.payoutRepo.GetPayoutAccount(ctx, lr.OwnerID)
+	rowStatus := models.PayoutPending
+	if aerr != nil || accountID == nil || status != models.PayoutAccountReady {
+		rowStatus = models.PayoutAwaitingOnboarding
+	}
+	note := fmt.Sprintf("platform guarantee: %d¢ of rent could not be collected", uncollectedCents)
+	row, created, err := h.payoutRepo.CreateGuarantee(ctx, &models.OwnerPayout{
+		LeaseRequestID:   &lr.ID,
+		OwnerID:          lr.OwnerID,
+		StripeAccountID:  accountID,
+		GrossKeptCents:   covered,
+		FeeBPS:           h.feeBPS,
+		FeeCents:         fee,
+		OwnerAmountCents: ownerShare,
+		Currency:         "USD",
+		Status:           rowStatus,
+		Source:           models.PayoutSourceAdminSettlement,
+		Note:             &note,
+	}, cycleID)
+	if err != nil {
+		h.logger.Error("guarantee: create ledger row", "error", err, "cycle_id", cycleID)
+		return
+	}
+	if !created {
+		h.logger.Info("guarantee: already recorded for this week (idempotent)",
+			"cycle_id", cycleID, "payout_id", row.ID)
+		return
+	}
+	h.logger.Warn("owner guarantee raised — the platform is funding this week",
+		"lease_request_id", lr.ID, "cycle_id", cycleID,
+		"uncollected_cents", uncollectedCents, "covered_cents", covered,
+		"owner_amount_cents", ownerShare)
+
+	if rowStatus == models.PayoutAwaitingOnboarding {
+		go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
+			fmt.Sprintf("%s is waiting for you", formatMoney(ownerShare)),
+			"We couldn't collect a weekly payment from your driver, so DriveBai is covering it. Finish payout setup in Earnings & payouts and it transfers automatically.",
+			nil, &lr.ID)
+		return
+	}
+	h.executePayout(ctx, row)
 }

@@ -98,6 +98,11 @@ type Config struct {
 	// not to delay it.
 	DebtEnforcementEnabled bool
 
+	// OwnerGuaranteeEnabled gates the capped owner guarantee — DriveBai
+	// paying an owner for a week it could not collect. Defaults FALSE: it
+	// spends platform money, so it ships dark.
+	OwnerGuaranteeEnabled bool
+
 	// CORS allowed origins, comma-separated. In production this must be a
 	// concrete list (e.g. https://drivebai-admin-team.fly.dev). Default of
 	// "*" is fine for development (iOS clients don't care about CORS); the
@@ -157,6 +162,7 @@ func Load() (*Config, error) {
 		DisableCarSales:        getEnv("DISABLE_CAR_SALES", "false") == "true",
 		RollingRentalsEnabled:  getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
 		DebtEnforcementEnabled: getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
+		OwnerGuaranteeEnabled:  getEnv("OWNER_GUARANTEE_ENABLED", "false") == "true",
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),
