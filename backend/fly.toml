@@ -24,11 +24,14 @@ primary_region = 'ewr'
   # a sale must be listed). Flip to "false" only once build 37 (buyer
   # inspection countdown + warnings + handover confirm) is on the store.
   DISABLE_CAR_SALES = "true"
-  # ROLLING_RENTALS_ENABLED is deliberately NOT set here yet: it is flipped
-  # to "true" by its own deploy after v98 verifies clean on production
-  # (client decision Sep 11). It is a kill switch — see
-  # docs/DESIGN_RECURRING_BILLING.md §10 for what it stops and what keeps
+  # Rolling (weekly auto-renewing) rentals: ON since v99 (client decision
+  # Sep 11, after v98 verified clean on production). Only builds 35+ ever
+  # offer the weekly option (they read /config); the App Store build cannot
+  # create a rolling lease. This is a KILL SWITCH: set to "false" and
+  # redeploy to stop every phase that takes money — see
+  # docs/DESIGN_RECURRING_BILLING.md §10 for what stops and what keeps
   # running while it is off.
+  ROLLING_RENTALS_ENABLED = "true"
   UPLOAD_URL_TTL = "1h"
   # iOS bundle ID — public, not secret. Lives here so the APNs send loop has
   # a topic to claim without needing a separate fly secrets set step.
