@@ -166,3 +166,43 @@ func TestRender_NoGovernmentMarkers_AllFields(t *testing.T) {
 		t.Errorf("renderer leaked state form number %q", m)
 	}
 }
+
+// The odometer disclosure is its own section, prints the reading and the
+// seller's certification verbatim, and carries the buyer's acknowledgement.
+func TestRender_OdometerDisclosureStatement(t *testing.T) {
+	d := sampleData()
+	d.OdometerReading = "84213"
+	d.OdometerAccuracy = "Not actual — WARNING: ODOMETER DISCREPANCY"
+	d.OdometerDeclaredAt = "2026-09-11"
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("Render error: %v", err)
+	}
+	body := decodePDFStreams(t, out)
+	for _, want := range []string{
+		"ODOMETER DISCLOSURE STATEMENT",
+		"requires that you state the mileage upon transfer of ownership",
+		"84213",
+		"DISCREPANCY", // the label may wrap inside the value column; the warning word must survive
+		"2026-09-11",
+		"aware of the above odometer certification",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("PDF must contain %q", want)
+		}
+	}
+	// Undeclared: the section still prints (the sign gate keeps such a
+	// document unsigned), with dashes rather than invented numbers.
+	d.OdometerReading, d.OdometerAccuracy, d.OdometerDeclaredAt = "", "", ""
+	out, err = Render(d)
+	if err != nil {
+		t.Fatalf("Render (undeclared) error: %v", err)
+	}
+	body = decodePDFStreams(t, out)
+	if !strings.Contains(body, "ODOMETER DISCLOSURE STATEMENT") {
+		t.Error("undeclared document lost the odometer section")
+	}
+	if strings.Contains(body, "84213") {
+		t.Error("stale reading printed on an undeclared document")
+	}
+}

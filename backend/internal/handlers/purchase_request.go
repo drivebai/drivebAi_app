@@ -159,6 +159,9 @@ func (h *PurchaseRequestHandler) buildBOSResponse(b *models.PurchaseBillOfSale) 
 		BuyerSignedAt:       models.NewRFC3339TimePtr(b.BuyerSignedAt),
 		TitleCondition:      b.TitleCondition,
 		TitleConditionOther: b.TitleConditionOther,
+		OdometerReading:     b.OdometerReading,
+		OdometerAccuracy:    b.OdometerAccuracy,
+		OdometerDeclaredAt:  models.NewRFC3339TimePtr(b.OdometerDeclaredAt),
 		FinalizedAt:         models.NewRFC3339TimePtr(b.FinalizedAt),
 		Locked:              b.SellerSigned() || b.BuyerSigned(),
 		FullySigned:         b.FullySigned(),
@@ -978,6 +981,13 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrSellerAddressRequired)
 		return
 	}
+	// The seller's signature is the odometer certification: it cannot be
+	// given before the reading and its accuracy are declared. The buyer's
+	// signature beneath the statement is their acknowledgement.
+	if !curBOS.OdometerDeclared() {
+		httputil.WriteError(w, http.StatusBadRequest, models.ErrOdometerRequired)
+		return
+	}
 	if role == "buyer" && strings.TrimSpace(curBOS.BuyerAddress) == "" {
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrBuyerAddressRequired)
 		return
@@ -1214,6 +1224,9 @@ func (h *PurchaseRequestHandler) buildBOSData(b *models.PurchaseBillOfSale) bill
 		VehicleModel:        b.VehicleModel,
 		VIN:                 b.VIN,
 		TitleConditionLabel: titleLabel,
+		OdometerReading:     odometerReadingLabel(b),
+		OdometerAccuracy:    odometerAccuracyLabel(b),
+		OdometerDeclaredAt:  odometerDeclaredLabel(b),
 		SalePriceCents:      b.SaleAmountCents,
 		Currency:            b.Currency,
 		Terms:               b.TermsConditions,
@@ -3011,4 +3024,26 @@ func (h *PurchaseRequestHandler) runSellerPayoutReconcile(ctx context.Context) {
 			"purchase_request_id", u.PurchaseID, "amount_cents", u.AmountCents)
 		h.payoutH.SettleSalePayout(ctx, u.PurchaseID, u.SellerID, u.AmountCents, nil)
 	}
+}
+
+// Odometer disclosure → printed labels. Empty strings render as em dashes.
+func odometerReadingLabel(b *models.PurchaseBillOfSale) string {
+	if b.OdometerReading == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *b.OdometerReading)
+}
+
+func odometerAccuracyLabel(b *models.PurchaseBillOfSale) string {
+	if b.OdometerAccuracy == nil {
+		return ""
+	}
+	return models.OdometerAccuracy(*b.OdometerAccuracy).Label()
+}
+
+func odometerDeclaredLabel(b *models.PurchaseBillOfSale) string {
+	if b.OdometerDeclaredAt == nil {
+		return ""
+	}
+	return b.OdometerDeclaredAt.UTC().Format("2006-01-02")
 }

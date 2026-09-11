@@ -47,6 +47,15 @@ type Data struct {
 	VIN          string
 	Mileage      string // optional; rendered only when non-empty
 
+	// Odometer disclosure statement (49 CFR 580). OdometerReading is the
+	// whole-mile reading as text; OdometerAccuracy is the printed
+	// certification label; OdometerDeclaredAt the date the seller declared
+	// it. All empty when not yet declared — the section then prints dashes
+	// and the document is, by the sign gate, unsigned.
+	OdometerReading    string
+	OdometerAccuracy   string
+	OdometerDeclaredAt string
+
 	// TitleConditionLabel is the human-readable title brand (e.g. "Clean",
 	// "Salvage", "Other: <detail>"). Empty when the seller has not declared
 	// one yet — rendered as an em dash.
@@ -219,6 +228,10 @@ func render(d Data, compress bool) ([]byte, error) {
 	dc.sectionBar("DESCRIPTION OF VEHICLE")
 	dc.vehicleDescription(d)
 
+	// ── Odometer Disclosure Statement (bordered) ─────────────────────────
+	dc.sectionBar("ODOMETER DISCLOSURE STATEMENT")
+	dc.odometerDisclosure(d)
+
 	// ── Terms and Conditions (bordered box) ──────────────────────────────
 	dc.sectionBar("TERMS AND CONDITIONS")
 	pdf.SetFont("Helvetica", "", 10)
@@ -296,6 +309,38 @@ func (dc *doc) vehicleDescription(d Data) {
 	if strings.TrimSpace(d.Mileage) != "" {
 		dc.detailRow("Mileage:", d.Mileage)
 	}
+}
+
+// odometerDisclosure prints the federal odometer statement: the reading, the
+// seller's certification, the date, and the buyer's acknowledgement line.
+// Both parties' signatures below the document are the signatures the
+// statement refers to.
+func (dc *doc) odometerDisclosure(d Data) {
+	pdf := dc.pdf
+	pdf.SetFont("Helvetica", "", 9)
+	pdf.SetTextColor(20, 20, 20)
+	pdf.MultiCell(contentWidth, 4.6, dc.tr(
+		"Federal law (and state law, if applicable) requires that you state the mileage upon transfer of ownership. "+
+			"Failure to complete or providing a false statement may result in fines and/or imprisonment."),
+		"", "L", false)
+	pdf.Ln(1.5)
+	pdf.SetFont("Helvetica", "", 10)
+	reading := "—"
+	if strings.TrimSpace(d.OdometerReading) != "" {
+		reading = d.OdometerReading + " miles (no tenths)"
+	}
+	pdf.MultiCell(contentWidth, 5.5, dc.tr(fmt.Sprintf(
+		"I, %s, state that the odometer of the vehicle described above now reads %s.",
+		nameOrBlank(d.SellerName), reading)), "", "L", false)
+	dc.detailRow("Odometer reading:", valueOrDash(d.OdometerReading))
+	dc.detailRow("Seller certifies the reading is:", valueOrDash(d.OdometerAccuracy))
+	dc.detailRow("Declared on:", valueOrDash(d.OdometerDeclaredAt))
+	pdf.SetFont("Helvetica", "", 9)
+	pdf.MultiCell(contentWidth, 4.6, dc.tr(fmt.Sprintf(
+		"Buyer's acknowledgement: I, %s, am aware of the above odometer certification made by the seller. "+
+			"The seller's and buyer's signatures on this document are the signatures to this statement.",
+		nameOrBlank(d.BuyerName))), "", "L", false)
+	pdf.Ln(2)
 }
 
 // detailRow draws one bordered full-width row with a bold label column and a

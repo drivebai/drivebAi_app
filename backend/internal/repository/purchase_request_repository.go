@@ -532,6 +532,7 @@ func (r *PurchaseRequestRepository) GetBillOfSale(ctx context.Context, purchaseI
 		       seller_name, seller_address, seller_address_lat, seller_address_lng, seller_signature_url, seller_signed_at,
 		       buyer_name, buyer_address, buyer_address_lat, buyer_address_lng, buyer_signature_url, buyer_signed_at,
 		       title_condition, title_condition_other,
+		       odometer_reading, odometer_accuracy, odometer_declared_at,
 		       finalized_pdf_url, finalized_at,
 		       created_at, updated_at
 		FROM purchase_bill_of_sales
@@ -545,6 +546,7 @@ func (r *PurchaseRequestRepository) GetBillOfSale(ctx context.Context, purchaseI
 		&b.SellerName, &b.SellerAddress, &b.SellerAddressLat, &b.SellerAddressLng, &b.SellerSignatureURL, &b.SellerSignedAt,
 		&b.BuyerName, &b.BuyerAddress, &b.BuyerAddressLat, &b.BuyerAddressLng, &b.BuyerSignatureURL, &b.BuyerSignedAt,
 		&b.TitleCondition, &b.TitleConditionOther,
+		&b.OdometerReading, &b.OdometerAccuracy, &b.OdometerDeclaredAt,
 		&b.FinalizedPDFURL, &b.FinalizedAt,
 		&b.CreatedAt, &b.UpdatedAt,
 	); err != nil {
@@ -828,6 +830,15 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleFields(ctx context.Context, 
 		}
 	}
 
+	// Odometer disclosure: a whole, non-negative reading and a valid
+	// certification. Either field patched stamps the declaration time.
+	if patch.OdometerReading != nil && *patch.OdometerReading < 0 {
+		return nil, models.ErrInvalidOdometerReading
+	}
+	if patch.OdometerAccuracy != nil && !models.OdometerAccuracy(strings.TrimSpace(*patch.OdometerAccuracy)).IsValid() {
+		return nil, models.ErrInvalidOdometerAccuracy
+	}
+
 	// Build a dynamic SET clause so we only write the columns the caller
 	// actually patched. This prevents a stale @State from re-writing a
 	// column the user hasn't touched, and keeps the UPDATE role-scoped
@@ -882,6 +893,20 @@ func (r *PurchaseRequestRepository) UpdateBillOfSaleFields(ctx context.Context, 
 		sets = append(sets, fmt.Sprintf("seller_address_lng = $%d", next))
 		args = append(args, *patch.SellerAddressLng)
 		next++
+	}
+	if patch.OdometerReading != nil {
+		sets = append(sets, fmt.Sprintf("odometer_reading = $%d", next))
+		args = append(args, *patch.OdometerReading)
+		next++
+		sets = append(sets, "odometer_declared_at = NOW()")
+	}
+	if patch.OdometerAccuracy != nil {
+		sets = append(sets, fmt.Sprintf("odometer_accuracy = $%d", next))
+		args = append(args, strings.TrimSpace(*patch.OdometerAccuracy))
+		next++
+		if patch.OdometerReading == nil {
+			sets = append(sets, "odometer_declared_at = NOW()")
+		}
 	}
 	if patch.TitleCondition != nil {
 		sets = append(sets, fmt.Sprintf("title_condition = $%d", next))
@@ -1047,6 +1072,7 @@ func (r *PurchaseRequestRepository) MarkSignature(ctx context.Context, purchaseI
 		       seller_name, seller_address, seller_address_lat, seller_address_lng, seller_signature_url, seller_signed_at,
 		       buyer_name, buyer_address, buyer_address_lat, buyer_address_lng, buyer_signature_url, buyer_signed_at,
 		       title_condition, title_condition_other,
+		       odometer_reading, odometer_accuracy, odometer_declared_at,
 		       finalized_pdf_url, finalized_at,
 		       created_at, updated_at
 		FROM purchase_bill_of_sales
@@ -1059,6 +1085,7 @@ func (r *PurchaseRequestRepository) MarkSignature(ctx context.Context, purchaseI
 		&b.SellerName, &b.SellerAddress, &b.SellerAddressLat, &b.SellerAddressLng, &b.SellerSignatureURL, &b.SellerSignedAt,
 		&b.BuyerName, &b.BuyerAddress, &b.BuyerAddressLat, &b.BuyerAddressLng, &b.BuyerSignatureURL, &b.BuyerSignedAt,
 		&b.TitleCondition, &b.TitleConditionOther,
+		&b.OdometerReading, &b.OdometerAccuracy, &b.OdometerDeclaredAt,
 		&b.FinalizedPDFURL, &b.FinalizedAt,
 		&b.CreatedAt, &b.UpdatedAt,
 	); err != nil {

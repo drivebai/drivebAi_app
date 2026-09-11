@@ -276,11 +276,59 @@ type PurchaseBillOfSale struct {
 	TitleCondition      *string
 	TitleConditionOther *string
 
+	// Odometer disclosure (federal: 49 CFR 580). Declared by the seller before
+	// they can sign; NULL until then. OdometerAccuracy is one of
+	// OdometerAccuracy* below.
+	OdometerReading    *int
+	OdometerAccuracy   *string
+	OdometerDeclaredAt *time.Time
+
 	FinalizedPDFURL *string
 	FinalizedAt     *time.Time
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// OdometerDeclared reports whether the seller has made the odometer
+// disclosure this document must carry before it is signed.
+func (b *PurchaseBillOfSale) OdometerDeclared() bool {
+	return b.OdometerReading != nil && *b.OdometerReading >= 0 &&
+		b.OdometerAccuracy != nil && OdometerAccuracy(*b.OdometerAccuracy).IsValid()
+}
+
+// OdometerAccuracy is the seller's certification about the reading.
+type OdometerAccuracy string
+
+const (
+	// OdometerAccuracyActual: the reading is the actual mileage.
+	OdometerAccuracyActual OdometerAccuracy = "actual"
+	// OdometerAccuracyNotActual: the reading is NOT the actual mileage —
+	// the federal "WARNING — ODOMETER DISCREPANCY" case.
+	OdometerAccuracyNotActual OdometerAccuracy = "not_actual"
+	// OdometerAccuracyExceedsMechanicalLimits: the odometer rolled over.
+	OdometerAccuracyExceedsMechanicalLimits OdometerAccuracy = "exceeds_mechanical_limits"
+)
+
+func (a OdometerAccuracy) IsValid() bool {
+	switch a {
+	case OdometerAccuracyActual, OdometerAccuracyNotActual, OdometerAccuracyExceedsMechanicalLimits:
+		return true
+	}
+	return false
+}
+
+// Label is the printed certification for this accuracy value.
+func (a OdometerAccuracy) Label() string {
+	switch a {
+	case OdometerAccuracyActual:
+		return "Actual mileage"
+	case OdometerAccuracyNotActual:
+		return "Not actual — WARNING: ODOMETER DISCREPANCY"
+	case OdometerAccuracyExceedsMechanicalLimits:
+		return "Mileage in excess of the odometer's mechanical limits"
+	}
+	return string(a)
 }
 
 // SellerSigned / BuyerSigned are small convenience helpers.
@@ -376,6 +424,10 @@ type UpdateBOSBody struct {
 	// 'other', TitleConditionOther must be non-empty.
 	TitleCondition      *string `json:"title_condition,omitempty"`
 	TitleConditionOther *string `json:"title_condition_other,omitempty"`
+	// Odometer disclosure. Both must be present for the seller to sign;
+	// patching either stamps odometer_declared_at.
+	OdometerReading  *int    `json:"odometer_reading,omitempty"`
+	OdometerAccuracy *string `json:"odometer_accuracy,omitempty"`
 }
 
 // UpdateBOSBuyerFieldsBody is the buyer-owned identity block PATCH.
@@ -587,6 +639,10 @@ type PurchaseBillOfSaleResponse struct {
 	TitleCondition      *string `json:"title_condition,omitempty"`
 	TitleConditionOther *string `json:"title_condition_other,omitempty"`
 
+	OdometerReading    *int         `json:"odometer_reading,omitempty"`
+	OdometerAccuracy   *string      `json:"odometer_accuracy,omitempty"`
+	OdometerDeclaredAt *RFC3339Time `json:"odometer_declared_at,omitempty"`
+
 	// Party ID documents (driver's license), SIGNED and show-if-on-file. Nil
 	// when absent — NEVER a hard requirement (buyers have a license; car-owner
 	// sellers may not).
@@ -714,6 +770,9 @@ var (
 	ErrTitleConditionOtherRequired   = &APIError{Code: ErrCodeTitleConditionOtherRequired, Message: "Describe the title condition when selecting 'other'"}
 	ErrInspectionChecklistIncomplete = &APIError{Code: ErrCodeInspectionChecklistIncomplete, Message: "All inspection checklist items must be confirmed before accepting the vehicle"}
 	ErrTitleConditionRequired        = &APIError{Code: ErrCodeTitleConditionRequired, Message: "The seller must declare the title condition before the sale can be completed"}
+	ErrOdometerRequired              = &APIError{Code: "ODOMETER_REQUIRED", Message: "Declare the odometer reading and whether it is the actual mileage before signing — federal law requires it on a vehicle sale"}
+	ErrInvalidOdometerAccuracy       = &APIError{Code: "INVALID_ODOMETER_ACCURACY", Message: "odometer_accuracy must be one of: actual, not_actual, exceeds_mechanical_limits"}
+	ErrInvalidOdometerReading        = &APIError{Code: "INVALID_ODOMETER_READING", Message: "odometer_reading must be a whole number of miles, zero or more"}
 )
 
 // ─── Notification types (extension of existing enum) ────────────────────────

@@ -584,3 +584,75 @@ func TestConfirmHandoverPersistsTheChecklistBeforeClaiming(t *testing.T) {
 		t.Errorf("acknowledged checklist rows on file = %d, want 1", n)
 	}
 }
+
+// The seller declares the odometer on the Bill of Sale; the patch validates
+// the certification, stamps the declaration time, and the document reports
+// itself declared only when both halves are present.
+func TestBillOfSaleOdometerDeclaration(t *testing.T) {
+	e := newSalesGateEnv(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	seller := e.seedUser(t, "car_owner", "odo_seller_"+run+"@example.com")
+	buyer := e.seedUser(t, "driver", "odo_buyer_"+run+"@example.com")
+	e.seedLicense(t, buyer)
+	car := e.seedCar(t, seller, "available", true, false)
+	e.listForSale(t, car, 9000)
+	e.purchaseH.SetSalesDisabled(false)
+	rr := httptest.NewRecorder()
+	e.purchaseH.Create(rr, purchaseCreateReq(t, buyer, car, `{"offer_amount_cents": 900000}`))
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var pid uuid.UUID
+	if err := e.db.Pool.QueryRow(ctx, `SELECT id FROM purchase_requests WHERE car_id = $1`, car).Scan(&pid); err != nil {
+		t.Fatalf("purchase id: %v", err)
+	}
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM purchase_bill_of_sales WHERE purchase_request_id = $1`, pid)
+		e.db.Pool.Exec(ctx, `UPDATE cars SET reserved_by_purchase_request_id = NULL WHERE id = $1`, car)
+		e.db.Pool.Exec(ctx, `DELETE FROM purchase_requests WHERE id = $1`, pid)
+	})
+	rr = httptest.NewRecorder()
+	e.purchaseH.Accept(rr, purchaseReq(t, seller, pid, "accept", `{}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seller accept (seeds the BoS): %d %s", rr.Code, rr.Body.String())
+	}
+	bos, err := e.purchaseRepo.GetBillOfSale(ctx, pid)
+	if err != nil || bos == nil {
+		t.Fatalf("bos after accept: %v %v", bos, err)
+	}
+	if bos.OdometerDeclared() {
+		t.Fatal("a fresh Bill of Sale claims an odometer declaration")
+	}
+
+	reading, bad := 84213, "roughly"
+	if _, err := e.purchaseRepo.UpdateBillOfSaleFields(ctx, pid, models.UpdateBOSBody{OdometerAccuracy: &bad}); err == nil {
+		t.Error("an invalid certification was accepted")
+	}
+	neg := -1
+	if _, err := e.purchaseRepo.UpdateBillOfSaleFields(ctx, pid, models.UpdateBOSBody{OdometerReading: &neg}); err == nil {
+		t.Error("a negative reading was accepted")
+	}
+	// Reading alone: recorded, stamped, but not yet a declaration.
+	updated, err := e.purchaseRepo.UpdateBillOfSaleFields(ctx, pid, models.UpdateBOSBody{OdometerReading: &reading})
+	if err != nil {
+		t.Fatalf("patch reading: %v", err)
+	}
+	if updated.OdometerReading == nil || *updated.OdometerReading != reading || updated.OdometerDeclaredAt == nil {
+		t.Fatalf("reading not recorded/stamped: %+v", updated)
+	}
+	if updated.OdometerDeclared() {
+		t.Error("reading without a certification counted as declared")
+	}
+	acc := string(models.OdometerAccuracyNotActual)
+	updated, err = e.purchaseRepo.UpdateBillOfSaleFields(ctx, pid, models.UpdateBOSBody{OdometerAccuracy: &acc})
+	if err != nil {
+		t.Fatalf("patch accuracy: %v", err)
+	}
+	if !updated.OdometerDeclared() {
+		t.Fatalf("reading + certification not declared: %+v", updated)
+	}
+	if lbl := models.OdometerAccuracy(*updated.OdometerAccuracy).Label(); !strings.Contains(lbl, "ODOMETER DISCREPANCY") {
+		t.Errorf("not_actual label lacks the federal warning: %q", lbl)
+	}
+}
