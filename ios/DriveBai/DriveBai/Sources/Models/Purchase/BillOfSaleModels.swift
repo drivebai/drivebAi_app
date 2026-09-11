@@ -5,6 +5,23 @@ import Foundation
 /// Seller-declared title/branding condition on the Bill of Sale. Raw values
 /// mirror the backend `title_condition` enum EXACTLY. `.other` requires a
 /// free-text description (`titleConditionOther`).
+/// The seller's odometer certification (federal odometer disclosure).
+enum OdometerAccuracy: String, CaseIterable, Identifiable, Equatable, Hashable {
+    case actual
+    case notActual = "not_actual"
+    case exceedsMechanicalLimits = "exceeds_mechanical_limits"
+
+    var id: String { rawValue }
+
+    var displayText: String {
+        switch self {
+        case .actual: return "Actual mileage"
+        case .notActual: return "NOT the actual mileage (odometer discrepancy)"
+        case .exceedsMechanicalLimits: return "Exceeds the odometer's mechanical limits"
+        }
+    }
+}
+
 enum TitleCondition: String, CaseIterable, Identifiable, Equatable, Hashable {
     case clean
     case lienRecorded = "lien_recorded"
@@ -76,6 +93,14 @@ struct BillOfSale: Identifiable, Equatable, Hashable {
     // Title condition (seller-declared branding)
     var titleCondition: TitleCondition?
     var titleConditionOther: String?
+
+    // Odometer disclosure (seller-declared; both required before the seller
+    // can sign — server gate ODOMETER_REQUIRED).
+    var odometerReading: Int?
+    var odometerAccuracy: OdometerAccuracy?
+    let odometerDeclaredAt: Date?
+
+    var odometerDeclared: Bool { odometerReading != nil && odometerAccuracy != nil }
 
     // ID documents (backend-signed private URLs; nil when not on file).
     let sellerIdDocumentUrl: String?

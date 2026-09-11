@@ -153,6 +153,9 @@ struct BillOfSaleAPIResponse: Codable, Identifiable {
     let buyerSignedAt: Date?
     let titleCondition: String?
     let titleConditionOther: String?
+    let odometerReading: Int?
+    let odometerAccuracy: String?
+    let odometerDeclaredAt: Date?
     let sellerIdDocumentUrl: String?
     let buyerIdDocumentUrl: String?
     let titleDocumentUrl: String?
@@ -186,6 +189,9 @@ struct BillOfSaleAPIResponse: Codable, Identifiable {
         case buyerSignedAt = "buyer_signed_at"
         case titleCondition = "title_condition"
         case titleConditionOther = "title_condition_other"
+        case odometerReading = "odometer_reading"
+        case odometerAccuracy = "odometer_accuracy"
+        case odometerDeclaredAt = "odometer_declared_at"
         case sellerIdDocumentUrl = "seller_id_document_url"
         case buyerIdDocumentUrl = "buyer_id_document_url"
         case titleDocumentUrl = "title_document_url"
@@ -221,6 +227,9 @@ struct BillOfSaleAPIResponse: Codable, Identifiable {
             buyerSignedAt: buyerSignedAt,
             titleCondition: titleCondition.flatMap { TitleCondition(rawValue: $0) },
             titleConditionOther: titleConditionOther,
+            odometerReading: odometerReading,
+            odometerAccuracy: odometerAccuracy.flatMap { OdometerAccuracy(rawValue: $0) },
+            odometerDeclaredAt: odometerDeclaredAt,
             sellerIdDocumentUrl: sellerIdDocumentUrl,
             buyerIdDocumentUrl: buyerIdDocumentUrl,
             titleDocumentUrl: titleDocumentUrl,
@@ -359,6 +368,8 @@ struct UpdateBillOfSaleAPIRequest: Codable {
     let sellerAddressLng: Double?
     let titleCondition: String?
     let titleConditionOther: String?
+    let odometerReading: Int?
+    let odometerAccuracy: String?
 
     enum CodingKeys: String, CodingKey {
         case vehicleYear = "vehicle_year"
@@ -372,6 +383,8 @@ struct UpdateBillOfSaleAPIRequest: Codable {
         case sellerAddressLng = "seller_address_lng"
         case titleCondition = "title_condition"
         case titleConditionOther = "title_condition_other"
+        case odometerReading = "odometer_reading"
+        case odometerAccuracy = "odometer_accuracy"
     }
 }
 

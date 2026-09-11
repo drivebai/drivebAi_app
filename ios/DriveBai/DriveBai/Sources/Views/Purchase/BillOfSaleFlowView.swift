@@ -54,6 +54,8 @@ struct BillOfSaleFlowView: View {
     @State private var buyerAddressLng: Double? = nil
     @State private var selectedTitleCondition: TitleCondition? = nil
     @State private var titleConditionOther: String = ""
+    @State private var odometerReadingText: String = ""
+    @State private var selectedOdometerAccuracy: OdometerAccuracy? = nil
 
     /// Drives the map-picker / document-preview sheets (a single enum-backed
     /// `.sheet(item:)` so multiple presentations never collide).
@@ -308,6 +310,51 @@ struct BillOfSaleFlowView: View {
             }
             .disabled(!isSeller || sellerLockedForEdits)
             titleCard(allowEditing: isSeller && !sellerLockedForEdits)
+            odometerCard(allowEditing: isSeller && !sellerLockedForEdits)
+        }
+    }
+
+    // MARK: - Odometer disclosure (federal)
+
+    /// The seller declares the reading and certifies its accuracy; the
+    /// server refuses the seller's signature until both are on the row
+    /// (ODOMETER_REQUIRED) and prints the statement on the PDF.
+    private func odometerCard(allowEditing: Bool) -> some View {
+        PurchaseSectionCard(title: "Odometer disclosure") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Federal law requires the seller to state the mileage on transfer of ownership. Enter the reading on the dashboard now, in whole miles, and certify it.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if allowEditing {
+                    PurchaseFormField("Odometer reading (miles, no tenths)", text: $odometerReadingText)
+                        .keyboardType(.numberPad)
+                        .onChange(of: odometerReadingText) { _, _ in markDirty(.sale) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("The reading is")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                        Picker("The reading is", selection: $selectedOdometerAccuracy) {
+                            Text("Choose one").tag(OdometerAccuracy?.none)
+                            ForEach(OdometerAccuracy.allCases) { a in
+                                Text(a.displayText).tag(OdometerAccuracy?.some(a))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: selectedOdometerAccuracy) { _, _ in markDirty(.sale) }
+                    }
+                    if selectedOdometerAccuracy == .notActual {
+                        Label("WARNING — ODOMETER DISCREPANCY will be printed on the Bill of Sale.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.orange)
+                    }
+                } else {
+                    reviewRow("Reading", odometerReadingText.isEmpty ? "" : "\(odometerReadingText) miles",
+                              requiredMissingHint: "Missing — seller must complete")
+                    reviewRow("Certified as", selectedOdometerAccuracy?.displayText ?? "",
+                              requiredMissingHint: "Missing — seller must complete")
+                }
+            }
         }
     }
 
@@ -662,6 +709,7 @@ struct BillOfSaleFlowView: View {
                 reviewRow("Terms", termsConditions.isEmpty ? "—" : termsConditions)
             }
             titleCard(allowEditing: false)
+            odometerCard(allowEditing: false)
             PurchaseSectionCard(title: "Seller") {
                 reviewRow("Name", sellerName, requiredMissingHint: missingSellerHint)
                 reviewRow("Address", sellerAddress, requiredMissingHint: missingSellerHint)
@@ -1228,6 +1276,8 @@ struct BillOfSaleFlowView: View {
                 saleAmountString = format(cents: domain.saleAmountCents)
                 selectedTitleCondition = domain.titleCondition
                 titleConditionOther = domain.titleConditionOther ?? ""
+                odometerReadingText = domain.odometerReading.map(String.init) ?? ""
+                selectedOdometerAccuracy = domain.odometerAccuracy
             }
             if sellerClean {
                 sellerName = domain.sellerName
@@ -1246,6 +1296,8 @@ struct BillOfSaleFlowView: View {
             saleAmountString = format(cents: domain.saleAmountCents)
             selectedTitleCondition = domain.titleCondition
             titleConditionOther = domain.titleConditionOther ?? ""
+            odometerReadingText = domain.odometerReading.map(String.init) ?? ""
+            selectedOdometerAccuracy = domain.odometerAccuracy
             sellerName = domain.sellerName
             sellerAddress = domain.sellerAddress
             sellerAddressLat = domain.sellerAddressLat
@@ -1350,6 +1402,8 @@ struct BillOfSaleFlowView: View {
         var addressLat: Double? = nil
         var addressLng: Double? = nil
         var titleCond: String? = nil
+        var odoReading: Int? = nil
+        var odoAccuracy: String? = nil
         var titleCondOther: String? = nil
 
         if step == .vehicle {
@@ -1360,6 +1414,11 @@ struct BillOfSaleFlowView: View {
         }
         if step == .sale {
             if termsConditions != lastServer?.termsConditions { terms = termsConditions }
+            // Odometer: send what moved. The server validates and stamps the
+            // declaration time on either field.
+            let odoTrimmed = odometerReadingText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let n = Int(odoTrimmed), n >= 0, n != lastServer?.odometerReading { odoReading = n }
+            if selectedOdometerAccuracy != lastServer?.odometerAccuracy { odoAccuracy = selectedOdometerAccuracy?.rawValue }
             let condRaw = selectedTitleCondition?.rawValue
             let condChanged = condRaw != lastServer?.titleCondition?.rawValue
             let otherChanged = titleConditionOther != (lastServer?.titleConditionOther ?? "")
@@ -1392,7 +1451,9 @@ struct BillOfSaleFlowView: View {
             sellerAddressLat: addressLat,
             sellerAddressLng: addressLng,
             titleCondition: titleCond,
-            titleConditionOther: titleCondOther
+            titleConditionOther: titleCondOther,
+            odometerReading: odoReading,
+            odometerAccuracy: odoAccuracy
         )
     }
 
