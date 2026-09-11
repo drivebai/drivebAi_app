@@ -73,6 +73,15 @@ func (r *LeaseRequestRepository) claimTermPhase(ctx context.Context, flagColumn,
 			        WHERE vr.lease_request_id = lease_requests.id
 			          AND vr.status IN ('driver_initiated', 'owner_confirmed', 'disputed')
 			      )
+			  -- "You keep the car while we retry": a delinquent rolling lease
+			  -- whose ladder still has an attempt scheduled is not over yet,
+			  -- and must not be told it is.
+			  AND NOT EXISTS (
+			        SELECT 1 FROM billing_cycles bc
+			        WHERE bc.lease_request_id = lease_requests.id
+			          AND bc.status = 'retrying'
+			          AND bc.next_attempt_at > NOW()
+			      )
 			ORDER BY rental_ends_at ASC
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
@@ -143,6 +152,12 @@ func (r *LeaseRequestRepository) ListTermEscalationCandidates(ctx context.Contex
 		       OR lr.renewal_halted_reason IS NOT NULL)
 		  AND lr.rental_ends_at <= $1::timestamptz - INTERVAL '%d hours'
 		  AND lr.overdue_escalated_at IS NULL
+		  AND NOT EXISTS (
+		        SELECT 1 FROM billing_cycles bc
+		        WHERE bc.lease_request_id = lr.id
+		          AND bc.status = 'retrying'
+		          AND bc.next_attempt_at > NOW()
+		      )
 		  AND NOT EXISTS (
 		        SELECT 1 FROM vehicle_returns vr
 		        WHERE vr.lease_request_id = lr.id

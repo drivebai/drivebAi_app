@@ -348,9 +348,20 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 	// and for weekly cycles exactly equivalent by the mint's anchor
 	// arithmetic (period_end = the rental_ends_at the cycle was minted
 	// from + 7d). GREATEST defends against replays ever shrinking it.
+	// Recovery from delinquency (v98): a late Pay-now on a cycle whose
+	// period ended weeks ago must resume billing FORWARD with the promised
+	// notice runway — advancing only to that period's end would land the
+	// lease below the catch-up floor and stall it. The days in between are
+	// not back-billed, exactly as on a halt clear (ClearRenewalHaltReporting).
+	// Everything on time is untouched: the CASE fires only when the lease is
+	// delinquent AND the paid period is already over.
 	tag, err := tx.Exec(ctx, `
 		UPDATE lease_requests
-		SET rental_ends_at = GREATEST(rental_ends_at, $2),
+		SET rental_ends_at = CASE
+		        WHEN (delinquent_since IS NOT NULL OR renewal_halted_reason = 'delinquent') AND $2::timestamptz < NOW()
+		          THEN GREATEST(rental_ends_at, NOW() + $3::interval)
+		        ELSE GREATEST(rental_ends_at, $2)
+		      END,
 		    term_ending_notified_at = NULL,
 		    overdue_notified_at = NULL,
 		    overdue_escalated_at = NULL,
@@ -360,7 +371,7 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 		WHERE id = $1 AND billing_mode = 'rolling'
 		  AND status = 'paid' AND vehicle_returned_at IS NULL
 		  AND renewal_stopped_at IS NULL
-	`, c.LeaseRequestID, c.PeriodEnd)
+	`, c.LeaseRequestID, c.PeriodEnd, fmt.Sprintf("%d seconds", int(models.BillingNoticeLead.Seconds())))
 	if err != nil {
 		return nil, false, fmt.Errorf("advance paid-through: %w", err)
 	}

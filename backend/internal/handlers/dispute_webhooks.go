@@ -422,7 +422,11 @@ func (h *LeaseRequestHandler) disputeWonEffects(ctx context.Context, d *models.C
 			// Renewals resume only when the LAST open dispute wins
 			// (verify pass: clearing before the sibling check resumed
 			// billing under a live dispute).
-			if _, herr := h.leaseRepo.ClearRenewalHalt(ctx, *d.LeaseRequestID, "dispute"); herr != nil {
+			haltCleared, haltLapsed, herr := h.leaseRepo.ClearRenewalHaltReporting(ctx, *d.LeaseRequestID, "dispute")
+			if haltCleared {
+				noteUnbilledDays(ctx, h.ticketRepo, h.leaseRepo, h.logger, *d.LeaseRequestID, "dispute", haltLapsed)
+			}
+			if herr != nil {
 				h.logger.Warn("dispute won: clear renewal halt", "error", herr, "lease_request_id", *d.LeaseRequestID)
 			}
 			n, rerr := h.payoutRepo.ReleaseDisputeWithheld(ctx, *d.LeaseRequestID)

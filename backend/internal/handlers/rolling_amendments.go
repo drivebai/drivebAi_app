@@ -11,6 +11,7 @@ package handlers
 // them.
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -121,7 +122,11 @@ func (h *LeaseRequestHandler) ProposeAmendment(w http.ResponseWriter, r *http.Re
 		&chatID, &leaseRef)
 	h.logger.Info("amendment proposed", "lease_request_id", lr.ID, "kind", offer.Kind,
 		"new_amount_cents", offer.NewAmountCents)
-	httputil.WriteJSON(w, http.StatusCreated, map[string]interface{}{"amendment": offer})
+	// Build 36 decodes the created offer at the TOP level; the wrapped
+	// "amendment" key is what later clients read. Emit both, so no client
+	// is told an offer it just created — and the driver was just pushed
+	// about — failed.
+	httputil.WriteJSON(w, http.StatusCreated, withTopLevel(offer, map[string]interface{}{"amendment": offer}))
 }
 
 // loadAmendmentForLease resolves an offer id + its rolling lease.
@@ -226,6 +231,7 @@ func (h *LeaseRequestHandler) AcceptAmendment(w http.ResponseWriter, r *http.Req
 		h.logger.Warn("amendment: reset renewal notice", "error", rerr, "lease_request_id", lr.ID)
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":            true, // build 36 decodes {ok}; the rest is for later clients
 		"amount_cents":  consent.AmountCents,
 		"interval":      consent.BillingInterval,
 		"terms_version": consent.TermsVersion,
@@ -266,7 +272,7 @@ func (h *LeaseRequestHandler) DeclineAmendment(w http.ResponseWriter, r *http.Re
 		fmt.Sprintf("The driver declined $%.2f — the rental continues%s. If you don't want to continue at that price, you can end auto-renew from the rental card.",
 			float64(offer.NewAmountCents)/100, cur),
 		&chatID, &leaseRef)
-	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"declined": true})
+	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true, "declined": true})
 }
 
 // WithdrawAmendment — POST /api/v1/billing/amendments/{id}/withdraw
@@ -295,5 +301,17 @@ func (h *LeaseRequestHandler) WithdrawAmendment(w http.ResponseWriter, r *http.R
 		"Proposal withdrawn",
 		"The owner withdrew the proposed billing change — your rental continues unchanged.",
 		&chatID, &leaseRef)
-	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"withdrawn": true})
+	httputil.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true, "withdrawn": true})
+}
+
+// withTopLevel flattens v's JSON fields into extra (extra wins on a clash).
+func withTopLevel(v interface{}, extra map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if b, err := json.Marshal(v); err == nil {
+		_ = json.Unmarshal(b, &out)
+	}
+	for k, val := range extra {
+		out[k] = val
+	}
+	return out
 }

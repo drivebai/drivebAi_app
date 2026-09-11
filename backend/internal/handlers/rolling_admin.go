@@ -160,7 +160,11 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 	} else if cleared {
 		delinquencyCleared = true
 	}
-	if _, herr := h.leaseRepo.ClearRenewalHalt(r.Context(), cycle.LeaseRequestID, "delinquent"); herr != nil {
+	haltCleared, haltLapsed, herr := h.leaseRepo.ClearRenewalHaltReporting(r.Context(), cycle.LeaseRequestID, "delinquent")
+	if haltCleared {
+		noteUnbilledDays(r.Context(), h.ticketRepo, h.leaseRepo, h.logger, cycle.LeaseRequestID, "delinquent", haltLapsed)
+	}
+	if herr != nil {
 		h.logger.Error("admin waive cycle: clear halt", "error", herr, "lease_request_id", cycle.LeaseRequestID)
 	}
 	// On a LIVE rental the forgiven week must also ADVANCE paid-through

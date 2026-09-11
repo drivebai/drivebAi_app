@@ -534,28 +534,60 @@ func (h *PayoutHandler) executePayout(ctx context.Context, row *models.OwnerPayo
 	switch {
 	case row.PurchaseRequestID != nil:
 		// A sale funds its transfer from the captured purchase charge.
-		if h.purchaseRepo != nil {
-			if pr, perr := h.purchaseRepo.GetByID(ctx, *row.PurchaseRequestID); perr == nil && pr != nil && pr.PaymentIntentID != nil {
-				if chargeID, cerr := h.stripe.GetLatestChargeID(*pr.PaymentIntentID); cerr == nil {
-					sourceCharge = chargeID
-				} else {
-					h.logger.Warn("payout: sale charge lookup failed, transferring from balance",
-						"error", cerr, "purchase_request_id", *row.PurchaseRequestID)
-				}
-			}
+		//
+		// This is the LAST gate before money moves, and every path that
+		// executes a row — the sweep, the Connect-onboarding drain, an
+		// admin revive — lands here. So the two refusals live here, not
+		// only in a lister: a sale that completed before seller payouts
+		// existed is never paid (its charge lives on an account we no
+		// longer use), and a sale whose charge cannot be resolved is never
+		// paid from platform balance. Both park the row for a human.
+		if h.purchaseRepo == nil {
+			h.parkUnfundable(ctx, row, "sale payout: no purchase repository wired to resolve the funding charge", true)
+			return
 		}
+		pr, perr := h.purchaseRepo.GetByID(ctx, *row.PurchaseRequestID)
+		if perr != nil || pr == nil {
+			h.parkUnfundable(ctx, row, fmt.Sprintf("sale payout: purchase %s could not be loaded (%v)", *row.PurchaseRequestID, perr), perr == nil)
+			return
+		}
+		if pr.CompletedAt == nil || pr.CompletedAt.Before(models.SellerPayoutsLiveFrom) {
+			h.parkUnfundable(ctx, row, fmt.Sprintf("sale payout: purchase completed before seller payouts existed (%s) — its charge is not on this Stripe account",
+				models.SellerPayoutsLiveFrom.Format("2006-01-02")), true)
+			return
+		}
+		if pr.PaymentIntentID == nil || *pr.PaymentIntentID == "" {
+			h.parkUnfundable(ctx, row, "sale payout: purchase has no payment intent to fund the transfer", true)
+			return
+		}
+		chargeID, cerr := h.stripe.GetLatestChargeID(*pr.PaymentIntentID)
+		if cerr != nil || chargeID == "" {
+			h.parkUnfundable(ctx, row, fmt.Sprintf("sale payout: funding charge for %s could not be resolved (%v)", *pr.PaymentIntentID, cerr),
+				chargeDefinitelyMissing(cerr) || chargeID == "" && cerr == nil)
+			return
+		}
+		sourceCharge = chargeID
 	case row.BillingCycleID != nil:
 		// Rolling cycle rows carry their funding charge from accrual time.
 		if row.SourceChargeID != nil {
 			sourceCharge = *row.SourceChargeID
 		}
 	case row.LeaseRequestID != nil:
-		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, *row.LeaseRequestID); perr == nil && payment != nil && payment.PaymentIntentID != nil {
-			if chargeID, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID); cerr == nil {
-				sourceCharge = chargeID
-			} else {
-				h.logger.Warn("payout: charge lookup failed, transferring from balance", "error", cerr, "lease_request_id", row.LeaseRequestID)
+		// A rental whose booking charge EXISTS but cannot be resolved is the
+		// $25k near-miss in another coat: the intent lives on a Stripe
+		// account we no longer use. Fail closed — park it for a human rather
+		// than transfer platform money. A rental with no intent at all (an
+		// admin settlement of a $0 promo lease) has nothing to resolve and
+		// keeps its balance-funded transfer, exactly as before.
+		if payment, perr := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, *row.LeaseRequestID); perr == nil && payment != nil &&
+			payment.PaymentIntentID != nil && *payment.PaymentIntentID != "" {
+			chargeID, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID)
+			if cerr != nil || chargeID == "" {
+				h.parkUnfundable(ctx, row, fmt.Sprintf("rental payout: funding charge for %s could not be resolved (%v)", *payment.PaymentIntentID, cerr),
+					chargeDefinitelyMissing(cerr) || chargeID == "" && cerr == nil)
+				return
 			}
+			sourceCharge = chargeID
 		}
 	}
 
@@ -767,6 +799,10 @@ func (h *PayoutHandler) AdminReviveWithheld(ctx context.Context, id uuid.UUID, n
 		return nil, err
 	}
 	h.executePayout(ctx, row)
+	// A SALE row has no lease to look up by.
+	if row.PurchaseRequestID != nil {
+		return h.payoutRepo.GetByPurchaseRequestID(ctx, *row.PurchaseRequestID)
+	}
 	return h.payoutRepo.GetByLeaseRequestID(ctx, *row.LeaseRequestID)
 }
 
@@ -1012,4 +1048,45 @@ func (h *PayoutHandler) SettleOwnerGuarantee(
 		return
 	}
 	h.executePayout(ctx, row)
+}
+
+// parkUnfundable refuses to move money for a row whose funding cannot be
+// established, and makes the refusal visible. A DEFINITIVE answer (the
+// charge does not exist on this account, the sale predates seller payouts)
+// parks the row withheld — a deliberate admin state with a deliberate exit,
+// AdminReviveWithheld — and opens a payments ticket. A transient lookup
+// failure parks it failed instead, so the sweep retries. Either way nothing
+// is transferred from platform balance.
+func (h *PayoutHandler) parkUnfundable(ctx context.Context, row *models.OwnerPayout, reason string, permanent bool) {
+	h.logger.Error("payout: refusing to transfer — funding unresolved",
+		"payout_id", row.ID, "amount_cents", row.OwnerAmountCents, "reason", reason, "permanent", permanent)
+	if !permanent {
+		if merr := h.payoutRepo.MarkFailed(ctx, row.ID, "funding unresolved (will retry): "+reason); merr != nil {
+			h.logger.Error("payout: mark failed", "error", merr, "payout_id", row.ID)
+		}
+		return
+	}
+	if _, werr := h.payoutRepo.Withhold(ctx, row.ID, "withheld: "+reason); werr != nil {
+		h.logger.Error("payout: withhold unfundable", "error", werr, "payout_id", row.ID)
+		return
+	}
+	if h.ticketRepo != nil {
+		if _, terr := h.ticketRepo.CreateSystemTicket(ctx, row.OwnerID, models.TicketCategoryPayments,
+			"Payout withheld — funding charge unresolved",
+			fmt.Sprintf("Payout %s for %s (%s) was withheld before any transfer: %s\n\nNothing has been paid. Revive it from the Payouts page only once the funding charge is confirmed to exist on this Stripe account.",
+				row.ID, formatMoney(row.OwnerAmountCents), payoutKindWord(row), reason),
+			row.LeaseRequestID, nil); terr != nil {
+			h.logger.Error("payout: unfundable ticket", "error", terr, "payout_id", row.ID)
+		}
+	}
+}
+
+// chargeDefinitelyMissing tells a "this charge does not exist here" answer
+// from Stripe apart from a transient failure.
+func chargeDefinitelyMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "resource_missing") || strings.Contains(s, "No such")
 }

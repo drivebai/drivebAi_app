@@ -442,7 +442,11 @@ func (h *LeaseRequestHandler) CardUpdateComplete(w http.ResponseWriter, r *http.
 	// here fails the whole request (batch-4 verification MEDIUM: this
 	// endpoint is the halt's ONLY clearer and is safely re-runnable — a
 	// 200 with the halt stuck would end the rental after a success push).
-	if _, herr := h.leaseRepo.ClearRenewalHalt(ctx, lr.ID, "consent_revoked"); herr != nil {
+	haltCleared, haltLapsed, herr := h.leaseRepo.ClearRenewalHaltReporting(ctx, lr.ID, "consent_revoked")
+	if haltCleared {
+		noteUnbilledDays(ctx, h.ticketRepo, h.leaseRepo, h.logger, lr.ID, "consent_revoked", haltLapsed)
+	}
+	if herr != nil {
 		h.logger.Error("card update: clear halt failed — failing request for retry", "error", herr, "lease_request_id", lr.ID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return

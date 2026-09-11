@@ -14,6 +14,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -46,24 +47,70 @@ func (h *LeaseRequestHandler) runBillingSweep(ctx context.Context) {
 	// promoting payouts on every lease that already existed. That is the
 	// exact lever an operator reaches for during a live billing incident,
 	// and it would have done nothing.
-	if !h.rollingEnabled {
-		return
-	}
+	//
+	// It stops the phases that TAKE money or pay it out: bootstrap, notice,
+	// mint, retry, promote. It does not stop the phases that give money
+	// back, close out a returned lease, ledger arrears, expire offers,
+	// reconcile a charge already in flight, or surface a stall — a driver
+	// who returns the car during an incident still gets their refund and
+	// their closure, and an operator still sees what is queued behind the
+	// switch. See docs/DESIGN_RECURRING_BILLING.md, "Kill switch".
 	h.runDebtReconcilePhase(ctx)
 	if h.billingRepo == nil {
 		return
 	}
 	now := time.Now().UTC()
-	h.billingBootstrapPhase(ctx, now)
+	if h.rollingEnabled {
+		h.billingBootstrapPhase(ctx, now)
+	}
 	h.billingPostReturnRefundPhase(ctx, now)
-	h.billingNoticePhase(ctx, now)
-	h.billingMintPhase(ctx, now)
-	h.billingRetryPhase(ctx, now)
+	if h.rollingEnabled {
+		h.billingNoticePhase(ctx, now)
+		h.billingMintPhase(ctx, now)
+		h.billingRetryPhase(ctx, now)
+	}
 	h.runStuckChargingPhase(ctx, now)
 	h.billingNeedsActionPhase(ctx, now)
 	h.billingReturnedLeaseCloserPhase(ctx, now)
 	h.billingAmendmentExpiryPhase(ctx, now)
-	h.billingPromotePhase(ctx, now)
+	if h.rollingEnabled {
+		h.billingPromotePhase(ctx, now)
+	}
+	h.billingStaleEscalationPhase(ctx, now)
+}
+
+// billingStaleEscalationPhase — a rolling lease whose paid-through fell
+// below the BillingMaxCatchUp floor with nothing halting or stopping it is
+// one the engine will never touch again on its own: the floor keeps it from
+// being back-billed, and this phase keeps it from being silent. Runs with
+// the switch OFF too — a long outage is exactly how leases get here.
+// Ticket-first, deduped by the live-ticket index on lease_request_id.
+func (h *LeaseRequestHandler) billingStaleEscalationPhase(ctx context.Context, now time.Time) {
+	if h.ticketRepo == nil {
+		return
+	}
+	stale, err := h.leaseRepo.ListRollingStalePaidThrough(ctx, now.Add(-models.BillingMaxCatchUp), 50)
+	if err != nil {
+		h.logger.Error("billing stale escalation: list", "error", err)
+		return
+	}
+	for i := range stale {
+		s := &stale[i]
+		days := now.Sub(s.RentalEndsAt).Hours() / 24
+		created, terr := h.ticketRepo.CreateSystemTicket(ctx, s.DriverID, models.TicketCategoryPayments,
+			"Rolling rental stalled past the catch-up floor",
+			fmt.Sprintf("Lease %s is paid through %s (%.1f days ago) with renewals neither halted nor stopped, so the engine will not bill it again on its own (the catch-up floor is %d days). Close the rental out from the Rents page, or have paid-through moved forward before billing can resume.\n\nDriver: %s\nOwner: %s",
+				s.ID, s.RentalEndsAt.Format(time.RFC3339), days, int(models.BillingMaxCatchUp.Hours()/24), s.DriverID, s.OwnerID),
+			&s.ID, nil)
+		if terr != nil {
+			h.logger.Error("billing stale escalation: ticket", "error", terr, "lease_request_id", s.ID)
+			continue
+		}
+		if created != nil {
+			h.logger.Error("billing: rolling lease stalled past the catch-up floor — escalated",
+				"lease_request_id", s.ID, "days_stale", days)
+		}
+	}
 }
 
 // Phase 1 — T−48h renewal notice (recurring claimed-once: stamped with the
@@ -1289,5 +1336,29 @@ func (h *LeaseRequestHandler) runDebtReconcilePhase(ctx context.Context) {
 		h.logger.Warn("debt reconcile: arrears week had no debt row, opening it",
 			"cycle_id", m.CycleID, "lease_request_id", m.LeaseID, "amount_cents", m.AmountCents)
 		openDriverDebtLedger(ctx, h.logger, h.debtRepo, h.userRepo, h.billingRepo, lr, m.CycleID, m.AmountCents)
+	}
+}
+
+// noteUnbilledDays puts the days a driver had the car while renewals were
+// halted — days resumption deliberately does not back-bill — in front of a
+// human. The consent says used days are owed; forgiving them is a decision,
+// and a decision needs a record. Ticket-first, deduped by the live-ticket
+// index on lease_request_id; best-effort, never blocks the resume.
+func noteUnbilledDays(ctx context.Context, ticketRepo *repository.TicketRepository, leaseRepo *repository.LeaseRequestRepository,
+	logger *slog.Logger, leaseID uuid.UUID, reason string, lapsed time.Duration) {
+	if lapsed < time.Hour || ticketRepo == nil || leaseRepo == nil {
+		return
+	}
+	lr, err := leaseRepo.GetByID(ctx, leaseID)
+	if err != nil || lr == nil {
+		return
+	}
+	days := lapsed.Hours() / 24
+	logger.Warn("halt clear: unbilled rental days", "lease_request_id", leaseID, "reason", reason, "days", days)
+	subject := fmt.Sprintf("Unbilled rental days after a %s halt", reason)
+	desc := fmt.Sprintf("Renewals on lease %s were halted (%s) and have resumed with paid-through %.1f days in the past. Those days were driven and are NOT billed automatically — the rolling terms say used days are owed — so decide whether to record a balance for the driver or waive them, and note it here.\n\nDriver: %s\nOwner: %s",
+		leaseID, reason, days, lr.DriverID, lr.OwnerID)
+	if _, terr := ticketRepo.CreateSystemTicket(ctx, lr.DriverID, models.TicketCategoryPayments, subject, desc, &leaseID, nil); terr != nil {
+		logger.Error("halt clear: unbilled-days ticket", "error", terr, "lease_request_id", leaseID)
 	}
 }

@@ -162,6 +162,18 @@ func TestDeadEnd_PaymentPendingExits(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		id := created.LeaseRequest.ID
+		// The handler notifies the owner on a goroutine whose INSERT holds a
+		// KEY SHARE lock on the lease; the sweep's FOR UPDATE SKIP LOCKED
+		// skips the row while that INSERT is in flight. Wait for it, so the
+		// test measures the sweep and not a race with its own fixture.
+		for i := 0; i < 100; i++ {
+			var n int
+			_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE related_lease_request_id = $1`, id).Scan(&n)
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if _, err := e.leaseRepo.AcceptLeaseRequest(ctx, id, owner); err != nil {
 			t.Fatalf("accept: %v", err)
 		}
@@ -250,6 +262,18 @@ func TestDeadEnd_AcceptExpiryTTL(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		id := created.LeaseRequest.ID
+		// The handler notifies the owner on a goroutine whose INSERT holds a
+		// KEY SHARE lock on the lease; the sweep's FOR UPDATE SKIP LOCKED
+		// skips the row while that INSERT is in flight. Wait for it, so the
+		// test measures the sweep and not a race with its own fixture.
+		for i := 0; i < 100; i++ {
+			var n int
+			_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE related_lease_request_id = $1`, id).Scan(&n)
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if _, err := e.leaseRepo.AcceptLeaseRequest(ctx, id, owner); err != nil {
 			t.Fatalf("accept: %v", err)
 		}

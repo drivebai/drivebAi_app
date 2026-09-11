@@ -750,3 +750,33 @@ func (r *VehicleReturnRepository) SyncRollingSnapshot(ctx context.Context, id uu
 	`, id, paidCents, refundCents, usedDays)
 	return err
 }
+
+// ListStuckZeroRefundsOlderThan is the other side of the heal window: the
+// owner_confirmed zero-refund rows the sweep deliberately no longer touches.
+// They are listed so a human is told, not so they are healed.
+func (r *VehicleReturnRepository) ListStuckZeroRefundsOlderThan(ctx context.Context, olderThan time.Time, limit int) ([]models.VehicleReturn, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT `+vehicleReturnColumns+`
+		FROM vehicle_returns
+		WHERE status = 'owner_confirmed'
+		  AND refund_amount_cents <= 0
+		  AND updated_at < $1
+		ORDER BY updated_at ASC
+		LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stuck zero refunds older than: %w", err)
+	}
+	defer rows.Close()
+	var out []models.VehicleReturn
+	for rows.Next() {
+		v, serr := scanVehicleReturn(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}

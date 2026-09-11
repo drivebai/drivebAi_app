@@ -126,3 +126,24 @@ what the logic would do to rows nobody was thinking about.
 
 Reconciliation is the one class of code that is *designed* to act on data
 nobody is watching. That is exactly why it needs the tightest bound.
+
+## Addendum (v98): the executor is the last gate, and it fails closed
+
+Bounding a lister is not enough when other paths execute the same rows: the
+Connect-onboarding drain (`executeAwaitingForOwner`) and the admin revive
+never go through `ListExecutable`. So `executePayout` itself refuses:
+
+- a **sale** whose purchase completed before `SellerPayoutsLiveFrom`, or has
+  no payment intent, or whose charge cannot be resolved;
+- a **rental** whose booking intent exists but whose charge cannot be
+  resolved (an intent on a Stripe account we no longer use).
+
+A definitive "does not exist here" parks the row **withheld** with a payments
+ticket (exit: `AdminReviveWithheld`, once the charge is confirmed). A
+transient failure parks it **failed** so the sweep retries. In neither case
+is platform balance transferred. A row with no intent at all (a $0 promo
+lease settled by an admin) has nothing to resolve and is unchanged.
+
+Floors need a voice: `ListStuckZeroRefundsOlderThan` and
+`ListRollingStalePaidThrough` list what the bounded sweeps deliberately skip,
+and their callers open one ticket per row.

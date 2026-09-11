@@ -349,3 +349,35 @@ vindicated-driver trap). These webhooks are BATCH-1 PREREQUISITES.
 
 ~11 working days end to end, each batch independently deployable behind the
 flag.
+
+## 10. Kill switch (v98)
+
+`ROLLING_RENTALS_ENABLED` is read once at boot; flipping it is a Fly
+redeploy (`fly secrets set ROLLING_RENTALS_ENABLED=false -a drivebai-api-team`).
+
+**Off stops:** rolling lease creation; bootstrap of week 1 into the cycle
+ledger; renewal notices; minting and the first off-session charge; the
+retry ladder; promotion of paid cycles into owner payouts.
+
+**Off does not stop:** post-return pro-rata refunds; the needs-action TTL;
+closing out returned leases (waive/arrears); the debt-ledger reconcile;
+amendment expiry; reconciliation of a charge already in flight
+(stuck-`charging`); the stale paid-through escalation below. Webhooks,
+Pay-now, card update and return finalize keep working. A driver who returns
+the car during an incident still gets their refund and closure.
+
+**Safe-off duration:** `BillingMaxCatchUp` (14 days) minus the charge lead.
+A live lease whose paid-through lapses further than that while the switch
+is off falls below the floor in `ListRollingDueForBilling` and is never
+billed again automatically. It is not silent: `billingStaleEscalationPhase`
+(runs with the switch off) opens one payments ticket per such lease. Recovery
+is a human decision — close the rental from the Rents page, or move
+paid-through forward before turning the switch back on.
+
+**Resumption after a halt** (`ClearRenewalHaltReporting`): a lease whose
+paid-through already lapsed is re-anchored to `NOW() + BillingNoticeLead`,
+so the driver gets the promised notice and the charge fires a day later —
+never within sixty seconds of the halt lifting, never quoting a date already
+gone. The lapsed days are not back-billed; they are put in front of a human
+as an "unbilled rental days" ticket, because the consent says used days are
+owed and forgiving them is a decision.

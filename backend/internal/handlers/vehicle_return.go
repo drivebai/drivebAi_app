@@ -343,7 +343,11 @@ func (h *VehicleReturnHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	// — then RE-halt if a dispute is live on the lease (the single-slot
 	// reason column can only hold one; a dispute opening mid-return would
 	// otherwise resume billing here — verify-pass H2).
-	if _, herr := h.leaseRepo.ClearRenewalHalt(r.Context(), updated.LeaseRequestID, "return_initiated"); herr != nil {
+	haltCleared, haltLapsed, herr := h.leaseRepo.ClearRenewalHaltReporting(r.Context(), updated.LeaseRequestID, "return_initiated")
+	if haltCleared {
+		noteUnbilledDays(r.Context(), h.ticketRepo, h.leaseRepo, h.logger, updated.LeaseRequestID, "return_initiated", haltLapsed)
+	}
+	if herr != nil {
 		h.logger.Warn("return cancel: clear renewal halt", "error", herr, "lease_request_id", updated.LeaseRequestID)
 	}
 	if h.disputeRepoForBilling != nil {
@@ -797,7 +801,11 @@ func (h *VehicleReturnHandler) AdminResolve(w http.ResponseWriter, r *http.Reque
 		// same way a driver cancel does (batch 3: this arm previously left
 		// 'return_initiated' parked forever — a halt with no exit). Both
 		// halt writes are billing_mode-gated, so fixed-term is a no-op.
-		if _, herr := h.leaseRepo.ClearRenewalHalt(r.Context(), resolved.LeaseRequestID, "return_initiated"); herr != nil {
+		haltCleared, haltLapsed, herr := h.leaseRepo.ClearRenewalHaltReporting(r.Context(), resolved.LeaseRequestID, "return_initiated")
+		if haltCleared {
+			noteUnbilledDays(r.Context(), h.ticketRepo, h.leaseRepo, h.logger, resolved.LeaseRequestID, "return_initiated", haltLapsed)
+		}
+		if herr != nil {
 			h.logger.Warn("admin resolve: clear renewal halt", "error", herr, "lease_request_id", resolved.LeaseRequestID)
 		}
 		if h.disputeRepoForBilling != nil {
@@ -1576,7 +1584,8 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 		// on-session only from here (driver Pay-now / support), admin
 		// waive is the write-off, and if it's never collected the owner
 		// absorbs those days per the rolling terms.
-		owed := cc.AmountCents - models.ComputeReturnRefund(cc.AmountCents, 1, cc.PeriodStart, v.ReturnedAt).RefundAmountCents
+		owed := cc.AmountCents - models.ComputeReturnRefundOverDays(cc.AmountCents,
+			models.DaysInPeriod(cc.PeriodStart, cc.PeriodEnd), cc.PeriodStart, v.ReturnedAt).RefundAmountCents
 		if owed > 0 {
 			if settled, aerr := h.billingRepo.SettleArrearsProRata(ctx, cc.ID, owed); aerr != nil {
 				h.logger.Error("rolling return: settle arrears", "error", aerr, "cycle_id", cc.ID)
@@ -1851,6 +1860,35 @@ func (h *VehicleReturnHandler) runStuckRefundSweep(ctx context.Context) {
 		h.logger.Info("vehicle return: stuck zero-refund candidates", "count", len(zeroStuck))
 		for i := range zeroStuck {
 			h.issueRefund(ctx, &zeroStuck[i])
+		}
+	}
+
+	// Beyond the heal window the sweep deliberately stops touching a row:
+	// completing it settles a FULL owner payout against a charge that may no
+	// longer exist. A row that old is not healed — it is handed to a human,
+	// once (ticket-first, deduped by the live-ticket index), and closed from
+	// the Rents page.
+	if h.ticketRepo != nil {
+		old, oerr := h.repo.ListStuckZeroRefundsOlderThan(ctx, time.Now().UTC().Add(-models.StuckReturnHealWindow), 50)
+		if oerr != nil {
+			h.logger.Error("vehicle return: list returns past the heal window", "error", oerr)
+		}
+		for i := range old {
+			v := &old[i]
+			returnRef := v.ID
+			leaseRef := v.LeaseRequestID
+			created, terr := h.ticketRepo.CreateSystemTicket(ctx, v.OwnerID, models.TicketCategoryRenting,
+				"Return stuck past the heal window",
+				fmt.Sprintf("Return %s (lease %s) has sat at owner_confirmed with nothing to refund since %s — older than the %d-day window the scanner will heal on its own, because finishing it pays the owner in full against a charge that may not exist any more. Close it from the Rents page (settle: close, driver_refund_cents 0) once the payout is confirmed fundable.\n\nDriver: %s\nOwner: %s",
+					v.ID, v.LeaseRequestID, v.UpdatedAt.Format(time.RFC3339), int(models.StuckReturnHealWindow.Hours()/24), v.DriverID, v.OwnerID),
+				&leaseRef, &returnRef)
+			if terr != nil {
+				h.logger.Error("vehicle return: heal-window escalation ticket", "error", terr, "return_id", v.ID)
+				continue
+			}
+			if created != nil {
+				h.logger.Error("vehicle return: zero-refund return past the heal window — escalated", "return_id", v.ID)
+			}
 		}
 	}
 

@@ -2033,9 +2033,10 @@ func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, d
 		  AND delinquent_since IS NULL
 		  AND renewal_halted_reason IS NULL
 		  AND rental_ends_at <= $1
-		  -- FLOOR. A paid-through older than one cycle means something
-		  -- parked this lease (a halt, an outage) and resuming would
-		  -- back-bill at one week per tick. Those belong to a human.
+		  -- FLOOR. A paid-through older than BillingMaxCatchUp (two cycles)
+		  -- means something parked this lease (a halt, an outage) and
+		  -- resuming would back-bill at one week per tick. Those are
+		  -- surfaced by billingStaleEscalationPhase, not billed.
 		  AND rental_ends_at >= $3
 		  AND NOT EXISTS (
 		      SELECT 1 FROM vehicle_returns vr
@@ -2156,17 +2157,49 @@ func (r *LeaseRequestRepository) HaltRenewals(ctx context.Context, leaseID uuid.
 // charge we chose not to make at the time, and collecting them in a burst is
 // how a card issuer learns to call us fraudulent.
 func (r *LeaseRequestRepository) ClearRenewalHalt(ctx context.Context, leaseID uuid.UUID, reason string) (bool, error) {
-	tag, err := r.db.Pool.Exec(ctx, `
-		UPDATE lease_requests
+	cleared, _, err := r.ClearRenewalHaltReporting(ctx, leaseID, reason)
+	return cleared, err
+}
+
+// ClearRenewalHaltReporting is ClearRenewalHalt that also reports how long
+// paid-through had LAPSED when the halt lifted — the days the driver had the
+// car that resumption deliberately does not back-bill — so the caller can
+// put them in front of a human.
+//
+// A lapsed lease is re-anchored to NOW() + the notice lead, not NOW(): at
+// NOW() the lease lands inside the charge window on the very next tick, the
+// "renews soon" notice goes out in the same tick quoting a moment already
+// gone, and the card is charged off-session within sixty seconds of a halt
+// lifting. The lead is the runway the consent promises. A lease whose
+// paid-through is still in the future is left exactly where it was.
+func (r *LeaseRequestRepository) ClearRenewalHaltReporting(ctx context.Context, leaseID uuid.UUID, reason string) (cleared bool, lapsed time.Duration, err error) {
+	var oldEnds, newEnds *time.Time
+	err = r.db.Pool.QueryRow(ctx, `
+		WITH before AS (
+			SELECT id, rental_ends_at AS old_ends
+			FROM lease_requests
+			WHERE id = $1 AND renewal_halted_reason = $2
+			FOR UPDATE)
+		UPDATE lease_requests lr
 		SET renewal_halted_reason = NULL,
-		    rental_ends_at = GREATEST(rental_ends_at, NOW()),
+		    rental_ends_at = CASE WHEN lr.rental_ends_at < NOW() THEN NOW() + $3::interval ELSE lr.rental_ends_at END,
 		    updated_at = NOW()
-		WHERE id = $1 AND renewal_halted_reason = $2
-	`, leaseID, reason)
-	if err != nil {
-		return false, err
+		FROM before
+		WHERE lr.id = before.id
+		RETURNING before.old_ends, lr.rental_ends_at
+	`, leaseID, reason, fmt.Sprintf("%d seconds", int(models.BillingNoticeLead.Seconds()))).Scan(&oldEnds, &newEnds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, nil
 	}
-	return tag.RowsAffected() == 1, nil
+	if err != nil {
+		return false, 0, err
+	}
+	if oldEnds != nil {
+		if now := time.Now(); now.After(*oldEnds) {
+			lapsed = now.Sub(*oldEnds)
+		}
+	}
+	return true, lapsed, nil
 }
 
 // ClearDelinquency lifts the dunning-exhaustion stamp after an admin
@@ -2230,4 +2263,50 @@ func (r *LeaseRequestRepository) ResetRenewalNotice(ctx context.Context, leaseID
 		WHERE id = $1 AND billing_mode = 'rolling'
 	`, leaseID)
 	return err
+}
+
+// StaleRollingLease is the slice of a lease the stale-escalation phase needs.
+type StaleRollingLease struct {
+	ID           uuid.UUID
+	ChatID       uuid.UUID
+	DriverID     uuid.UUID
+	OwnerID      uuid.UUID
+	RentalEndsAt time.Time
+}
+
+// ListRollingStalePaidThrough finds rolling leases the engine will no longer
+// touch: paid-through has fallen below the BillingMaxCatchUp floor while
+// nothing halted or stopped them — the engine was switched off for longer
+// than the floor, or paid-through was moved back by hand. The same
+// predicates as ListRollingDueForBilling, minus the floor and inverted.
+func (r *LeaseRequestRepository) ListRollingStalePaidThrough(ctx context.Context, staleBefore time.Time, limit int) ([]StaleRollingLease, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT id, chat_id, driver_id, owner_id, rental_ends_at
+		FROM lease_requests
+		WHERE billing_mode = 'rolling'
+		  AND status = 'paid'
+		  AND pickup_confirmed_at IS NOT NULL
+		  AND vehicle_returned_at IS NULL
+		  AND renewal_stopped_at IS NULL
+		  AND delinquent_since IS NULL
+		  AND renewal_halted_reason IS NULL
+		  AND rental_ends_at < $1
+		ORDER BY rental_ends_at ASC
+		LIMIT $2`, staleBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list rolling stale paid-through: %w", err)
+	}
+	defer rows.Close()
+	var out []StaleRollingLease
+	for rows.Next() {
+		var s StaleRollingLease
+		if err := rows.Scan(&s.ID, &s.ChatID, &s.DriverID, &s.OwnerID, &s.RentalEndsAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

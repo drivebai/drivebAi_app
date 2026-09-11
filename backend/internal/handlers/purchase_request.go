@@ -1950,13 +1950,19 @@ func (h *PurchaseRequestHandler) ConfirmHandover(w http.ResponseWriter, r *http.
 		return
 	}
 	if claimed == nil {
-		// The window closed in the same moment; it completes either way.
+		// Lost the claim. If the window closed in the same moment, the sale
+		// completes either way — but a rejection or an auth expiry can win
+		// this race too, and the buyer must not be told "confirmed" then.
 		fresh, _ := h.repo.GetByID(r.Context(), id)
-		if fresh != nil {
+		if fresh != nil && (fresh.Status == models.PurchaseStatusInspectionAccepted || fresh.Status == models.PurchaseStatusCompleted) {
 			httputil.WriteJSON(w, http.StatusOK, h.buildResponse(r.Context(), fresh, userID))
 			return
 		}
-		httputil.WriteError(w, http.StatusConflict, models.ErrInvalidPurchaseAction)
+		apiErr := models.NewAPIError("NOT_AWAITING_INSPECTION", "This sale isn't waiting on your inspection.")
+		if fresh != nil {
+			apiErr.Details = map[string]interface{}{"status": string(fresh.Status)}
+		}
+		httputil.WriteError(w, http.StatusConflict, apiErr)
 		return
 	}
 
