@@ -83,6 +83,12 @@ func (h *LeaseRequestHandler) billingNoticePhase(ctx context.Context, now time.T
 		if consent == nil || !consent.Active() {
 			continue // the mint phase halts these with the right copy
 		}
+		// The list is widened to the LONGEST lead so a monthly lease
+		// surfaces in time; each lease is then held to ITS OWN lead, so a
+		// weekly driver is still told at T-48h, not three days out.
+		if lr.RentalEndsAt == nil || now.Before(lr.RentalEndsAt.Add(-models.BillingIntervalNoticeLead(consent.BillingInterval))) {
+			continue
+		}
 		claimed, cerr := h.leaseRepo.ClaimRenewalNotice(ctx, lr.ID)
 		if cerr != nil || !claimed {
 			continue
@@ -90,7 +96,7 @@ func (h *LeaseRequestHandler) billingNoticePhase(ctx context.Context, now time.T
 		amount := consent.AmountCents
 		chatID := lr.ChatID
 		leaseID := lr.ID
-		chargeAt := lr.RentalEndsAt.Add(-models.BillingChargeLead)
+		chargeAt := lr.RentalEndsAt.Add(-models.BillingIntervalChargeLead(consent.BillingInterval))
 		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
 			"Your rental renews soon",
 			fmt.Sprintf("$%.2f will be charged to your saved card on %s. Return the car before then to stop.",
@@ -101,7 +107,10 @@ func (h *LeaseRequestHandler) billingNoticePhase(ctx context.Context, now time.T
 
 // Phase 2 — T−24h: mint the next cycle and make the first charge attempt.
 func (h *LeaseRequestHandler) billingMintPhase(ctx context.Context, now time.Time) {
-	due, err := h.leaseRepo.ListRollingDueForBilling(ctx, now.Add(models.BillingChargeLead), 50)
+	// Widened to the longest charge lead any live interval needs (see the
+	// notice phase); each lease is then charged — or halted for a missing
+	// consent — at its own lead, never earlier.
+	due, err := h.leaseRepo.ListRollingDueForBilling(ctx, now.Add(models.BillingIntervalChargeLead("monthly")), 50)
 	if err != nil {
 		h.logger.Error("billing mint: list", "error", err)
 		return
@@ -111,6 +120,15 @@ func (h *LeaseRequestHandler) billingMintPhase(ctx context.Context, now time.Tim
 		consent, cerr := h.billingRepo.GetActiveConsent(ctx, lr.ID)
 		if cerr != nil {
 			h.logger.Error("billing mint: consent lookup", "error", cerr, "lease_request_id", lr.ID)
+			continue
+		}
+		// A lease with no consent row has no interval: it is held to
+		// weekly, exactly as before the widening.
+		interval := "weekly"
+		if consent != nil && consent.BillingInterval != "" {
+			interval = consent.BillingInterval
+		}
+		if lr.RentalEndsAt == nil || now.Before(lr.RentalEndsAt.Add(-models.BillingIntervalChargeLead(interval))) {
 			continue
 		}
 		if consent == nil || !consent.Active() {

@@ -36,6 +36,9 @@ type CarHandler struct {
 	// salesDisabled masks is_for_sale on discovery surfaces while the
 	// car-sale flow is switched off (no seller payout path yet — audit M1).
 	salesDisabled bool
+	// salesAllowlist: the pilot group the sale flow stays open to while the
+	// switch is on. See SetSalesAllowlist / advertiseSale.
+	salesAllowlist map[uuid.UUID]struct{}
 	// reviewRepo feeds real owner rating aggregates into car responses.
 	// Wired via SetReviewRepository; nil in tests → "no ratings yet".
 	reviewRepo *repository.ReviewRepository
@@ -49,6 +52,29 @@ type CarHandler struct {
 // SetSalesDisabled wires the DISABLE_CAR_SALES kill switch (audit M1):
 // discovery stops advertising Buy while sellers cannot be paid.
 func (h *CarHandler) SetSalesDisabled(disabled bool) { h.salesDisabled = disabled }
+
+// SetSalesAllowlist mirrors PurchaseRequestHandler.SetSalesAllowlist for the
+// discovery surface: while the switch is on, Buy is advertised only where an
+// offer would actually be accepted — a pilot viewer on a pilot seller's car.
+func (h *CarHandler) SetSalesAllowlist(ids []uuid.UUID) {
+	h.salesAllowlist = make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		h.salesAllowlist[id] = struct{}{}
+	}
+}
+
+// advertiseSale decides whether a listing may show is_for_sale to this
+// viewer. Off-switch: always. On-switch: only when both the viewer and the
+// car's owner are on the pilot allowlist, so the Buy CTA never leads to a
+// SALES_PAUSED refusal.
+func (h *CarHandler) advertiseSale(viewerID, ownerID uuid.UUID) bool {
+	if !h.salesDisabled {
+		return true
+	}
+	_, viewerOK := h.salesAllowlist[viewerID]
+	_, ownerOK := h.salesAllowlist[ownerID]
+	return viewerOK && ownerOK
+}
 
 func (h *CarHandler) SetReviewRepository(r *repository.ReviewRepository) {
 	h.reviewRepo = r
@@ -1527,17 +1553,18 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 	// 300–700 m), street address, owner surname/photo/UUIDs, and owner
 	// earnings — see CarResponse.RedactForPublic. Redaction must happen
 	// HERE, server-side: a guest's JSON must not contain the fields.
-	_, isAuthenticated := httputil.GetUserID(ctx)
+	viewerID, isAuthenticated := httputil.GetUserID(ctx)
 
 	var responses []*models.CarResponse
 	var ownerFirstNames []string
 	for _, car := range cars {
 		photos, _ := h.photoRepo.GetByCarID(ctx, car.ID)
 		owner, _ := h.userRepo.GetByID(ctx, car.OwnerID)
-		if h.salesDisabled {
+		if !h.advertiseSale(viewerID, car.OwnerID) {
 			// Sales kill switch (audit M1): discovery never advertises Buy
-			// while sellers cannot be paid. The stored value is untouched —
-			// owners still see their own listing's truth.
+			// while the switch is on — except to a pilot viewer on a pilot
+			// seller's car, where the offer would be accepted. The stored
+			// value is untouched — owners still see their own listing's truth.
 			car.IsForSale = false
 		}
 		responses = append(responses, car.ToResponse(photos, nil, owner, false))

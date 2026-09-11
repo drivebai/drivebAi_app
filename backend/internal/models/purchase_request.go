@@ -150,6 +150,14 @@ const (
 	// After this point, we transition to `expired_auth` and the auth is
 	// released automatically by Stripe. DESIGN SPEC §12 assumption #2.
 	PurchaseAuthTTL = 7 * 24 * time.Hour
+	// PurchaseCaptureSafetyMargin is how much of the auth hold must remain
+	// AFTER the inspection window closes. The window ends in a capture made
+	// by the 60-second sweep, and a failed capture retries; a capture that
+	// lands after the issuer released the hold is a seller who has handed
+	// over a car for money that can no longer be taken. So keys may not
+	// change hands unless window + margin still fits inside the hold, and a
+	// handover may not be scheduled later than that. See LatestHandoverFor.
+	PurchaseCaptureSafetyMargin = 24 * time.Hour
 	// PurchaseAcceptTTL (audit H3): how long a sale may sit in the
 	// post-accept, pre-payment states (accepted / bos_pending_* /
 	// bos_signed) before it expires and stops blocking the car. These
@@ -716,3 +724,10 @@ const (
 	NotificationTypePurchaseHandover  NotificationType = "purchase_handover"
 	NotificationTypePurchaseRejection NotificationType = "purchase_rejection"
 )
+
+// LatestHandoverFor is the last moment keys may change hands under an auth
+// hold that expires at authExpiresAt: the inspection window plus the capture
+// margin must still fit inside the hold.
+func LatestHandoverFor(authExpiresAt time.Time) time.Time {
+	return authExpiresAt.Add(-(PurchaseInspectionWindow + PurchaseCaptureSafetyMargin))
+}

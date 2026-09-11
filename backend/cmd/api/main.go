@@ -193,6 +193,7 @@ func main() {
 	contactChangeHandler := handlers.NewContactChangeHandler(userRepo, contactChangeRepo, otpEmailSvc, logger)
 	carHandler := handlers.NewCarHandler(carRepo, carPhotoRepo, carDocRepo, userRepo, uploadDir, privateURLSigner, cfg.MinWeeklyRentPrice, cfg.AutoApproveCars)
 	carHandler.SetSalesDisabled(cfg.DisableCarSales)
+	carHandler.SetSalesAllowlist(cfg.SalesAllowlistUserIDs)
 	carHandler.SetReviewRepository(reviewRepo)
 	// Coordinate-displacement key for anonymous listing responses. Derived
 	// from the JWT secret (always set, prod-validated) rather than a new env
@@ -296,6 +297,11 @@ func main() {
 	purchaseHandler.SetPayoutHandler(payoutHandler)
 	purchaseHandler.SetPayoutRepository(payoutRepo)
 	purchaseHandler.SetSalesDisabled(cfg.DisableCarSales)
+	purchaseHandler.SetSalesAllowlist(cfg.SalesAllowlistUserIDs)
+	if cfg.DisableCarSales {
+		logger.Info("car sales: switch is ON — pilot allowlist in force",
+			"allowlisted_users", len(cfg.SalesAllowlistUserIDs), "rejected_entries", cfg.SalesAllowlistRejected)
+	}
 	leaseHandler.SetPurchaseHandler(purchaseHandler)
 	todayHandler.SetPurchaseRepository(purchaseRepo)
 

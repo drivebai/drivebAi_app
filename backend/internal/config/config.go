@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -85,6 +87,14 @@ type Config struct {
 	// views keep the stored truth; existing in-flight purchases (none in
 	// prod at flag time) are untouched. Rentals are unaffected.
 	DisableCarSales bool
+	// SalesAllowlistUserIDs keeps the sale flow open to these users while
+	// DISABLE_CAR_SALES is on — an internal pilot behind the public kill
+	// switch. Both parties to a sale must be listed. SALES_ALLOWLIST_USER_IDS
+	// is a comma-separated list of user UUIDs; anything unparseable is
+	// dropped into SalesAllowlistRejected and reported at boot rather than
+	// silently widening or narrowing the list.
+	SalesAllowlistUserIDs  []uuid.UUID
+	SalesAllowlistRejected []string
 
 	// RollingRentalsEnabled gates the recurring-billing product (batch 2+):
 	// rolling lease creation and the billing engine. Default OFF; flips on
@@ -160,6 +170,8 @@ func Load() (*Config, error) {
 		MinWeeklyRentPrice:     getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
 		AutoApproveCars:        getEnv("AUTO_APPROVE_CARS", "false") == "true",
 		DisableCarSales:        getEnv("DISABLE_CAR_SALES", "false") == "true",
+		SalesAllowlistUserIDs:  uuidListEnv("SALES_ALLOWLIST_USER_IDS"),
+		SalesAllowlistRejected: uuidListRejects("SALES_ALLOWLIST_USER_IDS"),
 		RollingRentalsEnabled:  getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
 		DebtEnforcementEnabled: getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
 		OwnerGuaranteeEnabled:  getEnv("OWNER_GUARANTEE_ENABLED", "false") == "true",
@@ -179,6 +191,38 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// uuidListEnv parses a comma-separated list of UUIDs; entries that do not
+// parse are skipped (see uuidListRejects for reporting them).
+func uuidListEnv(key string) []uuid.UUID {
+	var out []uuid.UUID
+	for _, part := range strings.Split(os.Getenv(key), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if id, err := uuid.Parse(part); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// uuidListRejects returns the entries of a comma-separated UUID list that
+// did not parse, so boot can say so.
+func uuidListRejects(key string) []string {
+	var bad []string
+	for _, part := range strings.Split(os.Getenv(key), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, err := uuid.Parse(part); err != nil {
+			bad = append(bad, part)
+		}
+	}
+	return bad
 }
 
 func getEnv(key, defaultValue string) string {

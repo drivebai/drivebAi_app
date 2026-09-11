@@ -1329,8 +1329,12 @@ func (r *PurchaseRequestRepository) KeysHandedOver(ctx context.Context, id, sell
 		    inspection_deadline_at = NOW() + $3::interval,
 		    updated_at = NOW()
 		WHERE id = $1 AND seller_id = $2 AND status = 'handover_scheduled'
+		  -- Backstop for the handler's hold check: the inspection window
+		  -- plus the capture margin must still fit inside the auth hold.
+		  AND (auth_expires_at IS NULL OR auth_expires_at >= NOW() + $3::interval + $4::interval)
 		RETURNING `+purchaseRequestColumns,
-		id, sellerID, fmt.Sprintf("%d seconds", int(models.PurchaseInspectionWindow.Seconds())))
+		id, sellerID, fmt.Sprintf("%d seconds", int(models.PurchaseInspectionWindow.Seconds())),
+		fmt.Sprintf("%d seconds", int(models.PurchaseCaptureSafetyMargin.Seconds())))
 	p, err := scanPurchaseRequest(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, models.ErrInvalidPurchaseAction

@@ -715,3 +715,41 @@ type PaymentMethodCard struct {
 	Fingerprint     string
 	Metadata        map[string]string
 }
+
+// RetrievePaymentMethodCard fetches the card summary (brand, last4,
+// fingerprint) for a saved payment method. The consent row records these at
+// activation; the fingerprint is what lets a returning debtor be recognised
+// across accounts (flagged for a human — never an automatic block).
+func (s *Service) RetrievePaymentMethodCard(pmID string) (*PaymentMethodCard, error) {
+	if pmID == "" {
+		return nil, fmt.Errorf("retrieve payment method: empty id")
+	}
+	req, err := http.NewRequest("GET", "https://api.stripe.com/v1/payment_methods/"+url.PathEscape(pmID), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.secretKey)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve payment method: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("stripe payment method error %d: %s", resp.StatusCode, string(body))
+	}
+	var raw struct {
+		ID       string            `json:"id"`
+		Metadata map[string]string `json:"metadata"`
+		Card     struct {
+			Brand       string `json:"brand"`
+			Last4       string `json:"last4"`
+			Fingerprint string `json:"fingerprint"`
+		} `json:"card"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode payment method: %w", err)
+	}
+	return &PaymentMethodCard{PaymentMethodID: raw.ID, Brand: raw.Card.Brand, Last4: raw.Card.Last4,
+		Fingerprint: raw.Card.Fingerprint, Metadata: raw.Metadata}, nil
+}

@@ -45,6 +45,9 @@ type PurchaseRequestHandler struct {
 	// salesDisabled refuses new purchase offers while the sale flow is
 	// switched off (no seller payout path yet — audit M1).
 	salesDisabled bool
+	// salesAllowlist keeps the flow open to a named pilot group while the
+	// switch is on. See SetSalesAllowlist.
+	salesAllowlist map[uuid.UUID]struct{}
 	// payoutH pays the SELLER when a sale completes. Optional: nil means the
 	// sale still completes and the ledger row is simply never written, which
 	// is the pre-seller-payout behaviour.
@@ -70,6 +73,27 @@ func (h *PurchaseRequestHandler) SetPayoutHandler(p *PayoutHandler) {
 // SetSalesDisabled wires the DISABLE_CAR_SALES kill switch (house setter
 // pattern).
 func (h *PurchaseRequestHandler) SetSalesDisabled(disabled bool) { h.salesDisabled = disabled }
+
+// SetSalesAllowlist names the users for whom the sale flow stays open while
+// DISABLE_CAR_SALES is on: an internal pilot behind a public kill switch.
+// BOTH parties to a sale must be on it — a listed buyer offering on a
+// stranger's car would strand at the seller's first refused step.
+func (h *PurchaseRequestHandler) SetSalesAllowlist(ids []uuid.UUID) {
+	h.salesAllowlist = make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		h.salesAllowlist[id] = struct{}{}
+	}
+}
+
+// salesOpenFor reports whether the sale flow is open to this user: either
+// the switch is off for everyone, or they are on the pilot allowlist.
+func (h *PurchaseRequestHandler) salesOpenFor(userID uuid.UUID) bool {
+	if !h.salesDisabled {
+		return true
+	}
+	_, ok := h.salesAllowlist[userID]
+	return ok
+}
 
 func NewPurchaseRequestHandler(
 	repo *repository.PurchaseRequestRepository,
@@ -499,12 +523,10 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid car id"))
 		return
 	}
-	// Sales kill switch (audit M1): a purchase can capture a buyer's money
-	// but no code path pays the seller yet. Refuse at the front door until
-	// seller payouts exist. Rentals are unaffected.
-	if h.salesDisabled {
-		httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("SALES_PAUSED",
-			"Buying isn't available right now — rentals are unaffected. Check back soon."))
+	// Sales kill switch (audit M1), with the pilot allowlist: refuse at the
+	// front door unless the BUYER is allowed. The seller is checked once
+	// the car is loaded, below. Rentals are unaffected.
+	if h.refuseIfSalesDisabled(w, userID) {
 		return
 	}
 	var body models.CreatePurchaseRequestBody
@@ -524,6 +546,11 @@ func (h *PurchaseRequestHandler) Create(w http.ResponseWriter, r *http.Request) 
 	}
 	if car.OwnerID == userID {
 		httputil.WriteError(w, http.StatusForbidden, models.ErrCannotBuyOwnCar)
+		return
+	}
+	// The SELLER must be on the pilot too, or this sale strands at their
+	// first refused step (scheduling the handover).
+	if h.refuseIfSalesDisabled(w, car.OwnerID) {
 		return
 	}
 	if !car.IsForSale || !car.SalePrice.Valid {
@@ -1468,8 +1495,8 @@ func (h *PurchaseRequestHandler) GetBOS(w http.ResponseWriter, r *http.Request) 
 // problem it is meant to contain: the hold would lapse after 7 days with the
 // car already gone and nobody paid. So the switch stops sales STARTING and
 // lets in-flight ones land or unwind.
-func (h *PurchaseRequestHandler) refuseIfSalesDisabled(w http.ResponseWriter) bool {
-	if !h.salesDisabled {
+func (h *PurchaseRequestHandler) refuseIfSalesDisabled(w http.ResponseWriter, userID uuid.UUID) bool {
+	if h.salesOpenFor(userID) {
 		return false
 	}
 	httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("SALES_PAUSED",
@@ -1478,11 +1505,11 @@ func (h *PurchaseRequestHandler) refuseIfSalesDisabled(w http.ResponseWriter) bo
 }
 
 func (h *PurchaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http.Request) {
-	if h.refuseIfSalesDisabled(w) {
-		return
-	}
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
+		return
+	}
+	if h.refuseIfSalesDisabled(w, userID) {
 		return
 	}
 	p, err := h.repo.GetByIDForUser(r.Context(), id, userID)
@@ -1596,11 +1623,11 @@ func (h *PurchaseRequestHandler) SyncPayment(w http.ResponseWriter, r *http.Requ
 
 // ScheduleHandover — POST /api/v1/purchase-requests/{id}/schedule-handover
 func (h *PurchaseRequestHandler) ScheduleHandover(w http.ResponseWriter, r *http.Request) {
-	if h.refuseIfSalesDisabled(w) {
-		return
-	}
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
+		return
+	}
+	if h.refuseIfSalesDisabled(w, userID) {
 		return
 	}
 	var body models.ScheduleHandoverBody
@@ -1615,6 +1642,32 @@ func (h *PurchaseRequestHandler) ScheduleHandover(w http.ResponseWriter, r *http
 	if body.HandoverScheduledAt.IsZero() {
 		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("handover_scheduled_at is required"))
 		return
+	}
+	// The auth hold is finite. Keys change hands at the handover, the buyer
+	// then has PurchaseInspectionWindow, and the capture that ends the
+	// window must still land inside the hold with margin to spare —
+	// otherwise the seller has given up the car for money that can no
+	// longer be taken. Refuse a date that would outrun it, and say when the
+	// latest possible handover is.
+	existing, gerr := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if gerr != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
+		return
+	}
+	if existing.AuthExpiresAt != nil {
+		latest := models.LatestHandoverFor(*existing.AuthExpiresAt)
+		if body.HandoverScheduledAt.After(latest) {
+			apiErr := models.NewAPIError("HANDOVER_TOO_LATE",
+				fmt.Sprintf("The buyer's payment hold ends %s. Schedule the handover by %s so the %.0f-hour inspection window still fits inside it.",
+					existing.AuthExpiresAt.Format("Mon, Jan 2 15:04 MST"), latest.Format("Mon, Jan 2 15:04 MST"),
+					models.PurchaseInspectionWindow.Hours()))
+			apiErr.Details = map[string]interface{}{
+				"latest_handover_at": latest.UTC().Format(time.RFC3339),
+				"auth_expires_at":    existing.AuthExpiresAt.UTC().Format(time.RFC3339),
+			}
+			httputil.WriteError(w, http.StatusConflict, apiErr)
+			return
+		}
 	}
 	p, err := h.repo.ScheduleHandover(r.Context(), id, userID, body)
 	if err != nil {
@@ -1642,11 +1695,29 @@ func (h *PurchaseRequestHandler) ScheduleHandover(w http.ResponseWriter, r *http
 
 // KeysHandedOver — POST /api/v1/purchase-requests/{id}/keys-handed-over
 func (h *PurchaseRequestHandler) KeysHandedOver(w http.ResponseWriter, r *http.Request) {
-	if h.refuseIfSalesDisabled(w) {
-		return
-	}
 	userID, id, ok := h.parseAuthed(w, r)
 	if !ok {
+		return
+	}
+	if h.refuseIfSalesDisabled(w, userID) {
+		return
+	}
+	// The same hold arithmetic at the moment that matters most: once the
+	// keys are gone the window is running, so it must end — with margin —
+	// before the hold does. (The repository re-checks this in SQL.)
+	existing, gerr := h.repo.GetByIDForUser(r.Context(), id, userID)
+	if gerr != nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrPurchaseRequestNotFound)
+		return
+	}
+	if existing.AuthExpiresAt != nil && time.Now().After(models.LatestHandoverFor(*existing.AuthExpiresAt)) {
+		apiErr := models.NewAPIError("AUTH_EXPIRING",
+			fmt.Sprintf("The buyer's payment hold ends %s — too soon for the %.0f-hour inspection window to finish inside it. Don't hand over the keys under this payment; once the hold lapses the sale is cancelled and the buyer can make a new offer.",
+				existing.AuthExpiresAt.Format("Mon, Jan 2 15:04 MST"), models.PurchaseInspectionWindow.Hours()))
+		apiErr.Details = map[string]interface{}{
+			"auth_expires_at": existing.AuthExpiresAt.UTC().Format(time.RFC3339),
+		}
+		httputil.WriteError(w, http.StatusConflict, apiErr)
 		return
 	}
 	p, err := h.repo.KeysHandedOver(r.Context(), id, userID)

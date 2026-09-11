@@ -863,14 +863,19 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 				"Weekly rentals aren't available right now"))
 			return
 		}
+		// The package for this consent's interval. CreateConsent records
+		// 'weekly' (the only interval the schema admits), so this resolves
+		// to v3: the text that discloses the persistent balance the debt
+		// ledger enforces. v2 predates that ledger — a driver who consented
+		// on v2 was never told a debt blocks new rentals or survives
+		// account closure, and enforcement is on by default.
+		disclosureText, termsVersion := models.RollingDisclosureFor("weekly", totalCents)
 		consentRow, cerr := h.billingRepo.CreateConsent(r.Context(), &models.BillingConsent{
 			LeaseRequestID: leaseID,
 			DriverID:       lr.DriverID,
 			AmountCents:    totalCents,
-			// v2 is the client-approved consent package (batch 4) — the
-			// screen shows exactly this text and the row records it.
-			TermsVersion:   models.TermsVersionRollingV2,
-			DisclosureText: models.RollingDriverDisclosureV2(totalCents),
+			TermsVersion:   termsVersion,
+			DisclosureText: disclosureText,
 		})
 		if cerr != nil || consentRow == nil {
 			h.logger.Error("rolling consent: create", "error", cerr, "lease_request_id", leaseID)
@@ -1284,7 +1289,8 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 							h.logger.Error("rolling consent: redelivery carries no payment_method", "lease_request_id", cur.ID)
 							return false
 						}
-						if _, aerr := h.billingRepo.ActivateConsent(r.Context(), cur.ID, pmID, "", "", ""); aerr != nil {
+						brand, last4, fp := h.cardForPaymentMethod(pmID, cur.ID)
+						if _, aerr := h.billingRepo.ActivateConsent(r.Context(), cur.ID, pmID, brand, last4, fp); aerr != nil {
 							return false
 						}
 						h.logger.Info("rolling consent activated on redelivery", "lease_request_id", cur.ID)
@@ -1326,7 +1332,8 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 				h.logger.Error("rolling consent: succeeded event carries no payment_method — refusing until redelivery", "lease_request_id", lr.ID)
 				return false
 			}
-			if activated, aerr := h.billingRepo.ActivateConsent(r.Context(), lr.ID, pmID, "", "", ""); aerr != nil {
+			brand, last4, fp := h.cardForPaymentMethod(pmID, lr.ID)
+			if activated, aerr := h.billingRepo.ActivateConsent(r.Context(), lr.ID, pmID, brand, last4, fp); aerr != nil {
 				h.logger.Error("rolling consent: activate", "error", aerr, "lease_request_id", lr.ID)
 				return false
 			} else if activated {
@@ -2718,4 +2725,23 @@ func (h *LeaseRequestHandler) ListSharedDocuments(w http.ResponseWriter, r *http
 func publicURLForDocument(userID uuid.UUID, filePath string) string {
 	diskName := filepath.Base(filePath)
 	return fmt.Sprintf("/uploads/%s/%s", userID.String(), diskName)
+}
+
+// cardForPaymentMethod fetches the saved card's brand, last4 and fingerprint
+// for the consent row. Best-effort by design: activation is the money-
+// critical step and must not fail because a lookup did — the row activates
+// without card details and the card-update path fills them in later. The
+// fingerprint is what recognises a returning debtor across accounts (a flag
+// for a human; never an automatic block).
+func (h *LeaseRequestHandler) cardForPaymentMethod(pmID string, leaseID uuid.UUID) (brand, last4, fingerprint string) {
+	if h.stripe == nil || pmID == "" {
+		return "", "", ""
+	}
+	card, err := h.stripe.RetrievePaymentMethodCard(pmID)
+	if err != nil {
+		h.logger.Warn("rolling consent: card details unavailable — activating without them",
+			"error", err, "lease_request_id", leaseID, "payment_method", pmID)
+		return "", "", ""
+	}
+	return card.Brand, card.Last4, card.Fingerprint
 }
