@@ -48,6 +48,10 @@ type LeaseRequestHandler struct {
 	// scanner's sustained-overdue phase can escalate to a real support
 	// ticket instead of shouting into logs.
 	ticketRepo *repository.TicketRepository
+	// ownerTermsRepo gates an owner's acceptance of a ROLLING lease request
+	// on their recorded acceptance of the owner package. Optional (nil = no
+	// gate); wired via SetOwnerTermsRepository.
+	ownerTermsRepo *repository.OwnerTermsRepository
 	// Dispute/refund webhook collaborators (batch 1, audit M2) — wired via
 	// SetDisputeDependencies / SetReturnRepositoryForDisputes.
 	disputeRepo           *repository.ChargeDisputeRepository
@@ -546,6 +550,13 @@ func (h *LeaseRequestHandler) handleLeaseAction(w http.ResponseWriter, r *http.R
 				}
 			}
 		}
+	}
+
+	// Owner terms: a rolling lease request cannot be accepted by an owner
+	// who has not accepted the owner package. Fixed-term requests never
+	// pass through this (the helper checks billing_mode first).
+	if action == "accept" && h.requireOwnerTermsForRollingAccept(w, r, leaseID, userID) {
+		return
 	}
 
 	var updated *models.LeaseRequest

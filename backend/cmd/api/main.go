@@ -269,6 +269,7 @@ func main() {
 	// creation and cycle-1 consent; the engine's sweeps match zero rows
 	// until a rolling lease exists, so starting them is always safe.
 	leaseHandler.SetBillingDependencies(repository.NewBillingRepository(db), cfg.PlatformFeeBPS, cfg.RollingRentalsEnabled)
+	leaseHandler.SetOwnerTermsRepository(repository.NewOwnerTermsRepository(db))
 	driverDebtRepo := repository.NewDriverDebtRepository(db)
 	leaseHandler.SetDebtDependencies(driverDebtRepo, cfg.DebtEnforcementEnabled)
 
@@ -405,6 +406,10 @@ func main() {
 			// Driver debt: the running balance the app shows and the block
 			// on new bookings enforces.
 			r.Get("/me/balance", leaseHandler.GetMyBalance)
+			// Owner terms for weekly rentals: read the current package, record
+			// acceptance. Accepting a rolling lease request requires it.
+			r.Get("/me/owner-terms", leaseHandler.GetOwnerTerms)
+			r.Post("/me/owner-terms/accept", leaseHandler.AcceptOwnerTerms)
 			r.Patch("/profile", userHandler.UpdateProfile)
 			// OTP-confirmed email/phone change (batch items 7+8): nothing
 			// commits until the code sent to the (new) address verifies.
@@ -655,6 +660,9 @@ func main() {
 				// Admin-triggered password reset (D7): 202, never returns
 				// the token — the user gets the standard reset email.
 				r.Post("/users/{id}/reset-password", adminHandler.ResetUserPassword)
+				// Record an owner's acceptance of the weekly-rental owner terms
+				// on their behalf (note required: how the agreement was obtained).
+				r.Post("/users/{id}/owner-terms", leaseHandler.AdminRecordOwnerTerms)
 				// Driver-license (and other personal-doc) review: list with
 				// signed URLs + approve/decline with required decline reason.
 				r.Get("/users/{id}/documents", adminHandler.ListUserDocuments)
