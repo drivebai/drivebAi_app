@@ -87,8 +87,11 @@ func RollingAmendmentDisclosure(newAmountCents, oldAmountCents int64) string {
 // the car is backwards for a policy whose purpose is keeping owners.
 //
 // RollingOwnerTermsSentence above is preserved BYTE-IDENTICAL as the v1
-// record. It was never written to a row and no owner terms page exists yet,
-// but it is the text that was approved on 2026-09-07 and it stays untouched.
+// record. It was never written to a row; it is the text that was approved
+// on 2026-09-07 and it stays untouched. Since migration 000062 the owner's
+// acceptance of the CURRENT package is recorded verbatim in
+// owner_terms_acceptances (GET/POST /me/owner-terms, admin record), and an
+// owner cannot accept a rolling lease request without one.
 
 // TermsVersionOwnerRollingV2 identifies the owner-facing package that
 // replaces the owner-bears-everything term.
