@@ -206,6 +206,10 @@ protocol APIClientProtocol {
     func fetchSharedDocuments(chatId: UUID) async throws -> SharedDocumentsListAPIResponse
     func acceptLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     func declineLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
+    /// Owner terms for weekly rentals: the current package and whether the
+    /// caller accepted it; recording acceptance of the current version.
+    func fetchOwnerTerms() async throws -> OwnerTermsAPIResponse
+    func acceptOwnerTerms(termsVersion: String) async throws -> OwnerTermsAPIResponse
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     /// Owner: undo an Accept while the lease is still in `accepted`. Refused
     /// with 409 once payment is in flight.
@@ -864,6 +868,15 @@ final class APIClient: APIClientProtocol {
 
     func acceptLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse {
         try await postEmpty(path: "lease-requests/\(id.uuidString)/accept", authenticated: true)
+    }
+
+    func fetchOwnerTerms() async throws -> OwnerTermsAPIResponse {
+        try await get(path: "me/owner-terms", authenticated: true)
+    }
+
+    func acceptOwnerTerms(termsVersion: String) async throws -> OwnerTermsAPIResponse {
+        try await post(path: "me/owner-terms/accept",
+                       body: AcceptOwnerTermsAPIRequest(termsVersion: termsVersion), authenticated: true)
     }
 
     func declineLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse {

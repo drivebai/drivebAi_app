@@ -122,6 +122,14 @@ struct OwnerTodayView: View {
             .navigationDestination(item: $selectedHandover) { handover in
                 KeyHandoverDetailView(handover: handover)
             }
+            .sheet(item: $viewModel.ownerTermsPrompt) { prompt in
+                OwnerTermsSheet(
+                    onAgree: { termsVersion in
+                        await viewModel.agreeOwnerTermsAndApprove(prompt: prompt, termsVersion: termsVersion)
+                    },
+                    onCancel: { viewModel.ownerTermsPrompt = nil }
+                )
+            }
             .sheet(item: $disputeTarget) { target in
                 VehicleReturnDisputeSheet(vehicleReturn: target) { reason in
                     await viewModel.disputeVehicleReturn(target, reason: reason)

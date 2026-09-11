@@ -66,6 +66,10 @@ final class ChatViewModel: ObservableObject {
         }
     }
     @Published var error: String?
+    /// Raised when the owner tried to accept a WEEKLY request without having
+    /// accepted the owner terms (OWNER_TERMS_REQUIRED). ChatView presents the
+    /// terms sheet for it; agreeing records the terms and retries the accept.
+    @Published var ownerTermsPrompt: OwnerTermsPrompt?
 
     /// True when this chat has messages the current user hasn't viewed on
     /// the Messages tab yet. Server-derived — seeded from the GET /chats
@@ -636,9 +640,26 @@ final class ChatViewModel: ObservableObject {
             if let idx = leaseRequests.firstIndex(where: { $0.id == id }) {
                 leaseRequests[idx] = updated
             }
+        } catch let apiError as APIError where apiError.errorCode == RollingBillingErrorCode.ownerTermsRequired {
+            // Not an error to show — a step to take. The sheet records the
+            // owner's agreement, then this accept is retried.
+            ownerTermsPrompt = OwnerTermsPrompt(id: UUID(), leaseRequestId: id)
         } catch {
             self.error = describeError(error)
         }
+    }
+
+    /// Records the owner's agreement to the terms version the sheet showed,
+    /// then retries the accept that raised the prompt.
+    func agreeOwnerTermsAndAccept(prompt: OwnerTermsPrompt, termsVersion: String) async {
+        do {
+            _ = try await apiClient.acceptOwnerTerms(termsVersion: termsVersion)
+        } catch {
+            self.error = describeError(error)
+            return
+        }
+        ownerTermsPrompt = nil
+        await acceptLeaseRequest(id: prompt.leaseRequestId)
     }
 
     func declineLeaseRequest(id: UUID) async {

@@ -199,6 +199,29 @@ struct AppConfigAPIResponse: Codable {
     var rollingRentals: Bool { rollingRentalsEnabled ?? false }
 }
 
+/// GET /me/owner-terms and POST /me/owner-terms/accept — the owner-side
+/// package for weekly rentals, served verbatim by the server, and whether
+/// the caller has accepted it.
+struct OwnerTermsAPIResponse: Codable {
+    let termsVersion: String
+    let termsText: String
+    let acceptedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case termsVersion = "terms_version"
+        case termsText = "terms_text"
+        case acceptedAt = "accepted_at"
+    }
+}
+
+struct AcceptOwnerTermsAPIRequest: Codable {
+    let termsVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case termsVersion = "terms_version"
+    }
+}
+
 /// `{ "ok": true, … }` — the shape of a plain success. `ok` is optional so a
 /// 2xx whose body carries other fields (accept-amendment returns the new
 /// mandate summary) is still a success: build 36 decoded a non-optional `ok`
@@ -218,6 +241,9 @@ struct ProposeAmendmentAPIResponse: Codable {
 enum RollingBillingErrorCode {
     /// The flag is off server-side — weekly rentals cannot be created.
     static let rollingDisabled = "ROLLING_DISABLED"
+    /// The owner must accept the weekly-rental owner terms before accepting
+    /// a weekly request. The app shows the terms and records agreement.
+    static let ownerTermsRequired = "OWNER_TERMS_REQUIRED"
     /// Nothing is owed: the charge settled, or was waived, before we asked.
     static let nothingDue = "NOTHING_DUE"
     /// The money is already in — the UI should refresh, not charge again.

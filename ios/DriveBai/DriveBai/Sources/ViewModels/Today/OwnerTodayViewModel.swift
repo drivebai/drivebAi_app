@@ -38,6 +38,9 @@ final class OwnerTodayViewModel: ObservableObject {
 
     @Published var isLoadingActions = false
     @Published var actionsError: String?
+    /// See ChatViewModel.ownerTermsPrompt — the same step, raised from a
+    /// Today task's Approve.
+    @Published var ownerTermsPrompt: OwnerTermsPrompt?
 
     /// Active key-handover tasks (pending / awaiting driver) for this user
     @Published var keyHandovers: [KeyHandover] = []
@@ -449,6 +452,8 @@ final class OwnerTodayViewModel: ObservableObject {
                     _ = try await apiClient.respondToRequest(chatId: chatId, requestId: requestId, request: request)
                 }
                 tasks.removeAll { $0.id == requestId }
+            } catch let apiError as APIError where apiError.errorCode == RollingBillingErrorCode.ownerTermsRequired {
+                ownerTermsPrompt = OwnerTermsPrompt(id: UUID(), leaseRequestId: requestId)
             } catch {
                 #if DEBUG
                 print("[OwnerTodayVM] respondToAction error: \(error)")
@@ -475,4 +480,21 @@ final class OwnerTodayViewModel: ObservableObject {
         Task { await fetchActions() }
     }
 
+}
+
+extension OwnerTodayViewModel {
+    /// Records the owner's agreement, then retries the Approve that raised
+    /// the prompt.
+    func agreeOwnerTermsAndApprove(prompt: OwnerTermsPrompt, termsVersion: String) async {
+        do {
+            _ = try await apiClient.acceptOwnerTerms(termsVersion: termsVersion)
+        } catch {
+            actionsError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+            return
+        }
+        ownerTermsPrompt = nil
+        if let task = tasks.first(where: { $0.id == prompt.leaseRequestId }) {
+            respondToAction(task: task, action: "approve")
+        }
+    }
 }

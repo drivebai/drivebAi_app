@@ -206,6 +206,14 @@ struct ChatView: View {
                 }
             )
         }
+        .sheet(item: $viewModel.ownerTermsPrompt) { prompt in
+            OwnerTermsSheet(
+                onAgree: { termsVersion in
+                    await viewModel.agreeOwnerTermsAndAccept(prompt: prompt, termsVersion: termsVersion)
+                },
+                onCancel: { viewModel.ownerTermsPrompt = nil }
+            )
+        }
         .sheet(item: $inspectPurchase) { purchase in
             InspectionView(
                 purchaseRequest: purchase,
