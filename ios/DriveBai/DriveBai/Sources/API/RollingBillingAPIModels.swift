@@ -199,9 +199,18 @@ struct AppConfigAPIResponse: Codable {
     var rollingRentals: Bool { rollingRentalsEnabled ?? false }
 }
 
-/// `{ "ok": true }` — stop-renewal's response shape.
+/// `{ "ok": true, … }` — the shape of a plain success. `ok` is optional so a
+/// 2xx whose body carries other fields (accept-amendment returns the new
+/// mandate summary) is still a success: build 36 decoded a non-optional `ok`
+/// and told drivers their accepted price change had failed.
 struct OKAPIResponse: Codable {
-    let ok: Bool
+    let ok: Bool?
+}
+
+/// POST /lease-requests/{id}/billing/amendments — the server wraps the created
+/// offer as `{ "amendment": … }` (and, for build 36, also at the top level).
+struct ProposeAmendmentAPIResponse: Codable {
+    let amendment: BillingAmendmentAPIModel
 }
 
 /// Error codes these endpoints return that the UI must handle by name

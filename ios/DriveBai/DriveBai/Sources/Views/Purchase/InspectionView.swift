@@ -14,6 +14,8 @@ struct InspectionView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var isAccepting = false
+    @State private var isCompletingNow = false
+    @State private var showCompleteNowConfirm = false
     @State private var showRejectionForm = false
     @State private var errorMessage: String?
     @State private var now = Date()
@@ -57,6 +59,7 @@ struct InspectionView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     headerCard
                     countdownCard
+                    windowWarningCard
                     checklistCard
                     paymentHeldCard
                 }
@@ -82,6 +85,12 @@ struct InspectionView: View {
                 Button("OK") { errorMessage = nil }
             } message: {
                 Text(errorMessage ?? "")
+            }
+            .alert("Complete the sale now?", isPresented: $showCompleteNowConfirm) {
+                Button("Complete and pay \(purchaseRequest.formattedOfferAmount)", role: .destructive) { completeSaleNow() }
+                Button("Not yet", role: .cancel) {}
+            } message: {
+                Text("This completes your purchase right now and pays the seller \(purchaseRequest.formattedOfferAmount) — without waiting for the title upload or for the inspection window to close. Only do this if you have the car and you're happy with it.")
             }
             .navigationDestination(isPresented: $showRejectionForm) {
                 RejectionEvidenceFormView(
@@ -140,12 +149,54 @@ struct InspectionView: View {
                 Text("Deadline: \(deadline.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                Text(PurchaseCopy.windowClosesSentence)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
             .background(Color(.systemGray6))
             .cornerRadius(12)
         }
+    }
+
+    /// Matches the server's T-24h / T-2h pushes so the screen says exactly
+    /// what the notification said.
+    @ViewBuilder
+    private var windowWarningCard: some View {
+        switch purchaseRequest.inspectionWarning(now: now) {
+        case .day:
+            warningBanner("Less than 24 hours left",
+                          "Accept or reject before the deadline. \(PurchaseCopy.windowClosesSentence)",
+                          color: .orange)
+        case .twoHours:
+            warningBanner("Less than 2 hours left",
+                          "The sale completes and your payment of \(purchaseRequest.formattedOfferAmount) goes through at the deadline unless you accept or reject now.",
+                          color: .red)
+        case .closed:
+            warningBanner("The inspection window has closed",
+                          "The sale is completing. If you have a problem with the car, contact DrivaBai support.",
+                          color: .red)
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private func warningBanner(_ title: String, _ body: String, color: Color) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(color)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundColor(color)
+                Text(body).font(.caption).foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(color.opacity(0.10))
+        .cornerRadius(12)
     }
 
     private var checklistCard: some View {
@@ -220,7 +271,7 @@ struct InspectionView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(PurchaseCopy.paymentHoldHeadline)
                     .font(.subheadline.weight(.semibold))
-                Text("Accepting the vehicle completes your payment. Rejecting with valid evidence releases the hold — you won't be charged.")
+                Text("Accepting the vehicle completes your payment. \(PurchaseCopy.windowClosesSentence) Rejecting with valid evidence releases the hold — you won't be charged.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -258,6 +309,29 @@ struct InspectionView: View {
             }
             .disabled(isAccepting || !allChecked || titleBlocksAccept)
             .onboardingTarget(.inspectionCTA)
+
+            // The accelerator. When Accept is blocked only by the seller's
+            // missing title upload, the buyer can still end the wait — the
+            // window would complete the sale without that title anyway.
+            // Same checklist, same acknowledgement, an explicit confirm.
+            if titleBlocksAccept && allChecked {
+                Button {
+                    showCompleteNowConfirm = true
+                } label: {
+                    HStack(spacing: 8) {
+                        if isCompletingNow { ProgressView().scaleEffect(0.85) }
+                        Image(systemName: "checkmark.circle")
+                        Text(isCompletingNow ? "Completing…" : "I have the car — complete the sale now")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundColor(.driveBaiPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.driveBaiPrimary.opacity(0.10))
+                    .cornerRadius(12)
+                }
+                .disabled(isAccepting || isCompletingNow)
+            }
 
             Button {
                 showRejectionForm = true
@@ -340,6 +414,51 @@ struct InspectionView: View {
                 dismiss()
             } catch let apiError as APIError {
                 errorMessage = friendlyAcceptError(apiError)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func completeSaleNow() {
+        guard !isCompletingNow, allChecked else { return }
+        isCompletingNow = true
+        Task {
+            defer { isCompletingNow = false }
+            let checklist = InspectVehicleAcceptAPIRequest(
+                vinMatches: vinMatches,
+                odometerReviewed: odometerReviewed,
+                exteriorOk: exteriorOk,
+                interiorOk: interiorOk,
+                mechanicalTestDriveOk: mechanicalTestDriveOk,
+                titleReviewed: titleReviewed,
+                keysHandedOver: keysHandedOver,
+                buyerUnderstandsAcceptanceCompletesPayment: buyerUnderstands
+            )
+            do {
+                let response = try await APIClient.shared.confirmPurchaseHandover(
+                    purchaseRequestId: purchaseRequest.id,
+                    checklist: checklist
+                )
+                onPurchaseUpdated(response.toDomain())
+                dismiss()
+            } catch let apiError as APIError {
+                switch apiError.errorCode {
+                case "CAPTURE_PENDING":
+                    // Claimed — the payment is completing in the background.
+                    // Re-read the row so the card shows the real state.
+                    if let fresh = try? await APIClient.shared.fetchPurchaseRequest(id: purchaseRequest.id) {
+                        onPurchaseUpdated(fresh.toDomain())
+                    }
+                    dismiss()
+                case "NOT_AWAITING_INSPECTION":
+                    errorMessage = "This sale isn't waiting on your inspection any more. Check the chat for its current state."
+                    if let fresh = try? await APIClient.shared.fetchPurchaseRequest(id: purchaseRequest.id) {
+                        onPurchaseUpdated(fresh.toDomain())
+                    }
+                default:
+                    errorMessage = apiError.errorDescription ?? "Couldn't complete the sale."
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }

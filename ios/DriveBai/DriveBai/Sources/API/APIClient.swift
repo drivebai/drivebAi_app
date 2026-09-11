@@ -901,8 +901,10 @@ final class APIClient: APIClientProtocol {
 
     func proposeAmendment(leaseRequestId: UUID, newAmountCents: Int64) async throws -> BillingAmendmentAPIModel {
         let body = ProposeAmendmentAPIRequest(kind: "price", newAmountCents: newAmountCents)
-        return try await post(path: "lease-requests/\(leaseRequestId.uuidString)/billing/amendments",
-                              body: body, authenticated: true)
+        let wrapped: ProposeAmendmentAPIResponse = try await post(
+            path: "lease-requests/\(leaseRequestId.uuidString)/billing/amendments",
+            body: body, authenticated: true)
+        return wrapped.amendment
     }
 
     func acceptAmendment(amendmentId: UUID) async throws -> OKAPIResponse {

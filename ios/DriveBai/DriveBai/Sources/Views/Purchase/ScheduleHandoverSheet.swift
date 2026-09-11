@@ -29,8 +29,26 @@ struct ScheduleHandoverSheet: View {
             && longitude != nil
     }
 
+    /// The server refuses a handover later than hold end − 48h window − 24h
+    /// margin (HANDOVER_TOO_LATE). Keep the picker inside that so the seller
+    /// never schedules something the buyer's payment cannot cover.
+    private var latestHandover: Date? { purchaseRequest.latestHandoverAt }
+
+    private var pickerRange: ClosedRange<Date> {
+        if let latest = latestHandover, latest > Date() {
+            return Date()...latest
+        }
+        return Date()...Date.distantFuture
+    }
+
+    private var holdTooShort: Bool {
+        if let latest = latestHandover { return latest <= Date() }
+        return false
+    }
+
     private var isValid: Bool {
-        hasLocation && scheduledAt > Date()
+        hasLocation && scheduledAt > Date() && !holdTooShort
+            && (latestHandover.map { scheduledAt <= $0 } ?? true)
     }
 
     private var initialPickerCoordinate: CLLocationCoordinate2D? {
@@ -45,9 +63,22 @@ struct ScheduleHandoverSheet: View {
                     DatePicker(
                         "Meetup time",
                         selection: $scheduledAt,
-                        in: Date()...,
+                        in: pickerRange,
                         displayedComponents: [.date, .hourAndMinute]
                     )
+                    if let latest = latestHandover {
+                        if holdTooShort {
+                            Label("The buyer's payment hold ends too soon for the 48-hour inspection window. Don't hand over the keys under this payment — once the hold lapses the buyer can make a new offer.",
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        } else {
+                            Label("Hand over by \(latest.formatted(date: .abbreviated, time: .shortened)) — the buyer's 48-hour inspection window has to close before their payment hold ends.",
+                                  systemImage: "clock.badge.exclamationmark")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
                 Section("Where") {
                     Button {

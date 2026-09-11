@@ -61,6 +61,23 @@ extension APIClient {
         )
     }
 
+    /// POST /purchase-requests/{id}/confirm-handover — the buyer has the car
+    /// and completes the sale NOW instead of waiting out the inspection
+    /// window. Sends the same checklist Accept sends (the server persists it
+    /// and requires the payment-completion acknowledgement); unlike Accept
+    /// it is not gated on the seller's title upload, exactly as the window
+    /// closing is not. 502 CAPTURE_PENDING means the sale is claimed and the
+    /// payment is completing in the background — refresh, don't retry.
+    func confirmPurchaseHandover(
+        purchaseRequestId: UUID,
+        checklist: InspectVehicleAcceptAPIRequest
+    ) async throws -> PurchaseRequestAPIResponse {
+        try await purchasePost(
+            path: "purchase-requests/\(purchaseRequestId.uuidString)/confirm-handover",
+            body: checklist
+        )
+    }
+
     /// POST /purchase-requests/{id}/inspect/reject — buyer flags a problem
     /// and hands the case to admin adjudication.
     func buyerRejectVehicle(

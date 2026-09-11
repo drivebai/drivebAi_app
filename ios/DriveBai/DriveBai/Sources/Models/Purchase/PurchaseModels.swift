@@ -116,13 +116,17 @@ enum PurchaseRefundStatus: String, Codable {
 /// stays identical across surfaces.
 enum PurchaseCopy {
     static let paymentHoldHeadline = "Payment held by platform until you inspect and accept the vehicle"
+    /// The one sentence every surface must carry once keys are handed over.
+    static let windowClosesSentence = "If the inspection window closes without a response, the sale completes and the payment goes through."
 
     static let paymentHoldDetail: String = """
 When you tap Authorize payment, DrivaBai places a hold on your card for the sale amount through Stripe. \
 No funds are transferred to the seller yet — your bank simply reserves the amount.
 
-When you accept the vehicle after inspection, the held amount is charged and paid to the seller. If you reject the \
-vehicle with valid evidence and DrivaBai support agrees, the hold is released and you are not charged.
+When you accept the vehicle after inspection, the held amount is charged and paid to the seller. You have 48 hours \
+from the key handover to inspect: if that window closes without you accepting or rejecting, the sale completes \
+automatically and the held amount is charged. If you reject the vehicle with valid evidence and DrivaBai support \
+agrees, the hold is released and you are not charged.
 
 DrivaBai does not hold or transmit funds on behalf of the buyer or seller and does not guarantee the sale. \
 Title transfer, registration, and any additional DMV or state-required paperwork are the \
@@ -220,5 +224,24 @@ struct PurchaseRequest: Identifiable, Equatable, Hashable {
             return nil
         }
         return max(0, deadline.timeIntervalSince(now))
+    }
+
+    /// How loudly to warn about the closing window. Mirrors the server's own
+    /// T-24h / T-2h pushes so the app and the notifications say the same thing.
+    enum InspectionWarning { case none, day, twoHours, closed }
+
+    func inspectionWarning(now: Date = Date()) -> InspectionWarning {
+        guard let remaining = inspectionTimeRemaining(now: now) else { return .none }
+        if remaining <= 0 { return .closed }
+        if remaining <= 2 * 3600 { return .twoHours }
+        if remaining <= 24 * 3600 { return .day }
+        return .none
+    }
+
+    /// Latest moment the seller may hand over the keys under this payment
+    /// hold: the 48-hour inspection window plus a day of capture margin must
+    /// still fit inside it (server rule, HANDOVER_TOO_LATE / AUTH_EXPIRING).
+    var latestHandoverAt: Date? {
+        authExpiresAt?.addingTimeInterval(-(48 * 3600 + 24 * 3600))
     }
 }

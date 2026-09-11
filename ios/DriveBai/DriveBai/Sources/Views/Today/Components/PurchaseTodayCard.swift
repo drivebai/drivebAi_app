@@ -28,6 +28,11 @@ struct PurchaseTodayCard: View {
     @State private var showRatingSheet = false
     @State private var hasRated = false
 
+    /// Minute-resolution clock for the inspection countdown; a per-second
+    /// ticker on every card in the feed is not worth it.
+    @State private var now = Date()
+    private let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
     /// True once the purchase has reached (or passed) the fully-signed BoS
     /// stage — the only point at which a finalized PDF can exist.
     private var bosStageReached: Bool {
@@ -48,6 +53,10 @@ struct PurchaseTodayCard: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if purchaseRequest.status == .awaitingInspection {
+                inspectionWindowBanner
+            }
 
             if purchaseRequest.status == .paymentAuthorized
                 || purchaseRequest.status == .handoverScheduled
@@ -76,6 +85,7 @@ struct PurchaseTodayCard: View {
         .contentShape(Rectangle())
         .onTapGesture { primaryTap() }
         .task(id: purchaseRequest.status) { await loadBoSIfNeeded() }
+        .onReceive(minuteTicker) { now = $0 }
         .sheet(isPresented: $showRatingSheet) {
             RatingPromptSheet(
                 transactionType: "purchase",
@@ -166,7 +176,7 @@ struct PurchaseTodayCard: View {
                 Text(PurchaseCopy.paymentHoldHeadline)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.primary)
-                Text("Charged only when the buyer accepts after inspection.")
+                Text("Charged when the buyer accepts — or automatically when the 48-hour inspection window closes.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -175,6 +185,56 @@ struct PurchaseTodayCard: View {
         .padding(10)
         .background(TodayLayout.tealAccent.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// The window, counted down, with the same T-24h / T-2h escalation the
+    /// server pushes. Both sides see it: the buyer because it is their money,
+    /// the seller because it is when they get paid.
+    @ViewBuilder
+    private var inspectionWindowBanner: some View {
+        if let deadline = purchaseRequest.inspectionDeadlineAt {
+            let warning = purchaseRequest.inspectionWarning(now: now)
+            let color: Color = {
+                switch warning {
+                case .twoHours, .closed: return .red
+                case .day: return .orange
+                case .none: return TodayLayout.tealAccent
+                }
+            }()
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: warning == .none ? "clock" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(color)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(inspectionWindowHeadline(deadline: deadline, warning: warning))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(warning == .none ? .primary : color)
+                    Text(isBuyer
+                         ? PurchaseCopy.windowClosesSentence
+                         : "If the buyer doesn't respond by then, the sale completes and your payout starts.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(color.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private func inspectionWindowHeadline(deadline: Date, warning: PurchaseRequest.InspectionWarning) -> String {
+        let remaining = max(0, deadline.timeIntervalSince(now))
+        let hours = Int(remaining) / 3600
+        let minutes = (Int(remaining) % 3600) / 60
+        let left = hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+        switch warning {
+        case .closed: return "Inspection window closed — sale completing"
+        case .twoHours: return "Less than 2 hours left to inspect (\(left))"
+        case .day: return "Less than 24 hours left to inspect (\(left))"
+        case .none: return "Inspection window: \(left) left (until \(deadline.formatted(date: .abbreviated, time: .shortened)))"
+        }
     }
 
     /// "Rate your experience" CTA on the completed sale card.
@@ -294,10 +354,7 @@ struct PurchaseTodayCard: View {
             }
             return "Handover scheduled — check the chat for details."
         case .awaitingInspection where isBuyer:
-            if let deadline = purchaseRequest.inspectionDeadlineAt {
-                return "Inspect the vehicle before \(deadline.formatted(date: .abbreviated, time: .shortened)) and accept or reject."
-            }
-            return "Inspect the vehicle and accept or reject."
+            return "Inspect the vehicle and accept or reject before the deadline."
         case .awaitingInspection where isSeller:
             return "Buyer has the car and is inspecting."
         case .inspectionAccepted:
