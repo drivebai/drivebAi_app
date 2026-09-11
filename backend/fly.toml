@@ -17,10 +17,18 @@ primary_region = 'ewr'
   PICKUP_DEADLINE_MINUTES = "120"
   PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS = "60"
   REQUIRE_PRIVATE_UPLOAD_SIGNATURES = "true"
-  # Car sales OFF until seller payouts exist (audit M1, client decision
-  # Sep 4): buyers' money captures but no code path pays the seller.
-  # Rentals unaffected. Flip to "false" only with the seller-payout batch.
+  # Car sales: PUBLIC kill switch stays ON (client decision Sep 11 — the
+  # App Store build has a Buy button with no inspection UI). Seller payouts
+  # exist since v96; the sale flow runs as a PILOT behind this switch for
+  # the users named in the SALES_ALLOWLIST_USER_IDS secret (both parties to
+  # a sale must be listed). Flip to "false" only once build 37 (buyer
+  # inspection countdown + warnings + handover confirm) is on the store.
   DISABLE_CAR_SALES = "true"
+  # ROLLING_RENTALS_ENABLED is deliberately NOT set here yet: it is flipped
+  # to "true" by its own deploy after v98 verifies clean on production
+  # (client decision Sep 11). It is a kill switch — see
+  # docs/DESIGN_RECURRING_BILLING.md §10 for what it stops and what keeps
+  # running while it is off.
   UPLOAD_URL_TTL = "1h"
   # iOS bundle ID — public, not secret. Lives here so the APNs send loop has
   # a topic to claim without needing a separate fly secrets set step.
