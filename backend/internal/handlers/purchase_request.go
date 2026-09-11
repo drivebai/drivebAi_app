@@ -1854,6 +1854,12 @@ func (h *PurchaseRequestHandler) InspectAccept(w http.ResponseWriter, r *http.Re
 // purchase row on success, nil on failure (row stays at
 // inspection_accepted for a follow-up retry).
 func (h *PurchaseRequestHandler) capturePayment(ctx context.Context, p *models.PurchaseRequest) *models.PurchaseRequest {
+	if h.stripe == nil {
+		// No Stripe wired (tests): nothing can be captured; the row stays
+		// where the claim left it and the capture retry sweep owns it.
+		h.logger.Error("purchase: capture requested with no Stripe service", "id", p.ID)
+		return nil
+	}
 	if p.PaymentIntentID == nil || *p.PaymentIntentID == "" {
 		h.logger.Error("purchase: capture with no payment intent", "id", p.ID)
 		return nil
@@ -1941,6 +1947,35 @@ func (h *PurchaseRequestHandler) ConfirmHandover(w http.ResponseWriter, r *http.
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NOT_AWAITING_INSPECTION",
 			"This sale isn't waiting on your inspection."))
 		return
+	}
+	// The same checklist Accept records, sent by build 37. It is optional
+	// on the wire (an empty body is the build-36 shape) but when a body is
+	// sent it must carry the payment-completion acknowledgement — this
+	// button pays the seller — and it is persisted BEFORE the claim, as
+	// Accept does, so "the buyer agreed this completes payment" is on file.
+	var body models.InspectVehicleAcceptBody
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := httputil.DecodeJSON(r, &body); err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+			return
+		}
+		if body != (models.InspectVehicleAcceptBody{}) {
+			if !body.BuyerUnderstandsAcceptanceCompletesPayment {
+				httputil.WriteError(w, http.StatusBadRequest, models.ErrInspectionChecklistIncomplete)
+				return
+			}
+			if _, err := h.repo.SaveInspectionChecklist(r.Context(), id, models.PurchaseInspectionChecklist{
+				VINMatches: body.VINMatches, OdometerReviewed: body.OdometerReviewed,
+				ExteriorOK: body.ExteriorOK, InteriorOK: body.InteriorOK,
+				MechanicalTestDriveOK: body.MechanicalTestDriveOK, TitleReviewed: body.TitleReviewed,
+				KeysHandedOver: body.KeysHandedOver,
+				BuyerUnderstandsAcceptanceCompletesPayment: body.BuyerUnderstandsAcceptanceCompletesPayment,
+			}); err != nil {
+				h.logger.Error("purchase: save confirm-handover checklist", "error", err, "id", id)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+		}
 	}
 
 	claimed, cerr := h.repo.ClaimBuyerHandoverConfirm(r.Context(), id)

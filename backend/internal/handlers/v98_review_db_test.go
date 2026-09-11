@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -537,5 +538,49 @@ func TestStuckReturnPastHealWindowIsTicketedNotHealed(t *testing.T) {
 	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM support_tickets WHERE vehicle_return_id=$1`, old).Scan(&n)
 	if n != 1 {
 		t.Errorf("second sweep: tickets = %d, want 1 (deduped)", n)
+	}
+}
+
+// The accelerator records the same consent Accept does: a body without the
+// payment-completion acknowledgement is refused; with it, the checklist is
+// on file before the claim, and a capture that cannot run leaves the row
+// claimed for the retry sweep with an honest CAPTURE_PENDING.
+func TestConfirmHandoverPersistsTheChecklistBeforeClaiming(t *testing.T) {
+	e := newSalesGateEnv(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	seller := e.seedUser(t, "car_owner", "chk_seller_"+run+"@example.com")
+	buyer := e.seedUser(t, "driver", "chk_buyer_"+run+"@example.com")
+	e.seedLicense(t, buyer)
+	car := e.seedCar(t, seller, "available", true, false)
+	e.listForSale(t, car, 9000)
+	pid := e.seedPurchase(t, car, seller, buyer, "awaiting_inspection", 4*24*time.Hour)
+	t.Cleanup(func() {
+		e.db.Pool.Exec(ctx, `DELETE FROM purchase_inspection_checklists WHERE purchase_request_id = $1`, pid)
+	})
+
+	noAck := `{"vin_matches":true,"odometer_reviewed":true,"exterior_ok":true,"interior_ok":true,"mechanical_test_drive_ok":true,"title_reviewed":true,"keys_handed_over":true,"buyer_understands_acceptance_completes_payment":false}`
+	rr := httptest.NewRecorder()
+	e.purchaseH.ConfirmHandover(rr, purchaseReq(t, buyer, pid, "confirm-handover", noAck))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("confirm without the payment ack: %d %s, want 400", rr.Code, rr.Body.String())
+	}
+	if st := e.purchaseStatus(t, pid); st != "awaiting_inspection" {
+		t.Fatalf("refused confirm moved the sale to %s", st)
+	}
+
+	withAck := strings.Replace(noAck, `"buyer_understands_acceptance_completes_payment":false`, `"buyer_understands_acceptance_completes_payment":true`, 1)
+	rr = httptest.NewRecorder()
+	e.purchaseH.ConfirmHandover(rr, purchaseReq(t, buyer, pid, "confirm-handover", withAck))
+	if rr.Code != http.StatusBadGateway || errCodeOf(t, rr) != "CAPTURE_PENDING" {
+		t.Fatalf("confirm with no Stripe wired: %d %s, want 502 CAPTURE_PENDING", rr.Code, rr.Body.String())
+	}
+	if st := e.purchaseStatus(t, pid); st != "inspection_accepted" {
+		t.Errorf("after the claim the sale is %s, want inspection_accepted (retry sweep owns the capture)", st)
+	}
+	var n int
+	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM purchase_inspection_checklists WHERE purchase_request_id = $1 AND buyer_understands_acceptance_completes_payment`, pid).Scan(&n)
+	if n != 1 {
+		t.Errorf("acknowledged checklist rows on file = %d, want 1", n)
 	}
 }
