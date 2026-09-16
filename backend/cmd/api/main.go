@@ -272,10 +272,16 @@ func main() {
 	leaseHandler.SetBillingDependencies(repository.NewBillingRepository(db), cfg.PlatformFeeBPS, cfg.RollingRentalsEnabled)
 	leaseHandler.SetOwnerTermsRepository(repository.NewOwnerTermsRepository(db))
 	leaseHandler.SetRollingAllowlist(cfg.RollingAllowlistUserIDs)
+	leaseHandler.SetRollingAllowlistClosed(cfg.RollingAllowlistMalformed)
 	if cfg.RollingRentalsEnabled {
 		logger.Info("weekly rentals: ON",
 			"allowlisted_drivers", len(cfg.RollingAllowlistUserIDs),
-			"open_to_everyone", len(cfg.RollingAllowlistUserIDs) == 0)
+			"rejected_entries", cfg.RollingAllowlistRejected,
+			"open_to_everyone", len(cfg.RollingAllowlistUserIDs) == 0 && !cfg.RollingAllowlistMalformed)
+		if cfg.RollingAllowlistMalformed {
+			logger.Error("weekly rentals: ROLLING_ALLOWLIST_USER_IDS is set but no id parsed — offering weekly rentals to NOBODY until it is fixed",
+				"rejected_entries", cfg.RollingAllowlistRejected)
+		}
 	}
 	driverDebtRepo := repository.NewDriverDebtRepository(db)
 	leaseHandler.SetDebtDependencies(driverDebtRepo, cfg.DebtEnforcementEnabled)

@@ -201,6 +201,16 @@ const LeaseAcceptTTL = 72 * time.Hour
 // pickup window, and the scanner owns it.
 const LeaseOwnerReleaseMinAge = 24 * time.Hour
 
+// LeaseRefundMaxAge bounds how old a charge may be before we stop TELLING a
+// driver their money is coming back.
+//
+// Stripe will not refund indefinitely, and a charge old enough to fail that
+// way is usually one that predates the Stripe account we now run on. Beyond
+// this the refund is parked as unrecoverable with a ticket — a human decision
+// — instead of a promise the code cannot keep and a sweep that retries it
+// forever.
+const LeaseRefundMaxAge = 180 * 24 * time.Hour
+
 // LeaseAcceptWarnBefore: both parties are warned this long before the
 // accepted lease expires (i.e. at accepted_at + 48h).
 const LeaseAcceptWarnBefore = 24 * time.Hour

@@ -110,7 +110,14 @@ type Config struct {
 	// who has never been shown the owner terms. A pilot with no list of
 	// participants is not a pilot. Empty list + flag on = open to everyone,
 	// which is the pre-pilot behaviour and must be a deliberate choice.
-	RollingAllowlistUserIDs []uuid.UUID
+	RollingAllowlistUserIDs  []uuid.UUID
+	RollingAllowlistRejected []string
+	// RollingAllowlistMalformed is true when ROLLING_ALLOWLIST_USER_IDS was
+	// set to something non-empty that yielded no usable ids. Treated as a
+	// pilot of NOBODY rather than a rollout to EVERYONE: a typo in an env
+	// var must not be the thing that opens recurring billing to the whole
+	// user base.
+	RollingAllowlistMalformed bool
 
 	// DebtEnforcementEnabled turns the driver-debt block on new bookings on.
 	// Defaults TRUE because the app already tells drivers "new bookings are
@@ -178,15 +185,17 @@ func Load() (*Config, error) {
 		StripeConnectWebhookSecret: getEnv("STRIPE_CONNECT_WEBHOOK_SECRET", ""),
 		PlatformFeeBPS:             getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
 
-		MinWeeklyRentPrice:      getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
-		AutoApproveCars:         getEnv("AUTO_APPROVE_CARS", "false") == "true",
-		DisableCarSales:         getEnv("DISABLE_CAR_SALES", "false") == "true",
-		SalesAllowlistUserIDs:   uuidListEnv("SALES_ALLOWLIST_USER_IDS"),
-		SalesAllowlistRejected:  uuidListRejects("SALES_ALLOWLIST_USER_IDS"),
-		RollingRentalsEnabled:   getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
-		RollingAllowlistUserIDs: uuidListEnv("ROLLING_ALLOWLIST_USER_IDS"),
-		DebtEnforcementEnabled:  getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
-		OwnerGuaranteeEnabled:   getEnv("OWNER_GUARANTEE_ENABLED", "false") == "true",
+		MinWeeklyRentPrice:        getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
+		AutoApproveCars:           getEnv("AUTO_APPROVE_CARS", "false") == "true",
+		DisableCarSales:           getEnv("DISABLE_CAR_SALES", "false") == "true",
+		SalesAllowlistUserIDs:     uuidListEnv("SALES_ALLOWLIST_USER_IDS"),
+		SalesAllowlistRejected:    uuidListRejects("SALES_ALLOWLIST_USER_IDS"),
+		RollingRentalsEnabled:     getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
+		RollingAllowlistUserIDs:   uuidListEnv("ROLLING_ALLOWLIST_USER_IDS"),
+		RollingAllowlistRejected:  uuidListRejects("ROLLING_ALLOWLIST_USER_IDS"),
+		RollingAllowlistMalformed: strings.TrimSpace(os.Getenv("ROLLING_ALLOWLIST_USER_IDS")) != "" && len(uuidListEnv("ROLLING_ALLOWLIST_USER_IDS")) == 0,
+		DebtEnforcementEnabled:    getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
+		OwnerGuaranteeEnabled:     getEnv("OWNER_GUARANTEE_ENABLED", "false") == "true",
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),

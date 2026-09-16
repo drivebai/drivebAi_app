@@ -553,6 +553,7 @@ private struct StaleCarHoldSection: View {
 
     @State private var hold: StaleCarHoldAPIModel?
     @State private var isReleasing = false
+    @State private var showReleaseConfirm = false
     @State private var errorMessage: String?
     @State private var released = false
 
@@ -583,7 +584,7 @@ private struct StaleCarHoldSection: View {
                             .foregroundColor(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Button(action: release) {
+                    Button { showReleaseConfirm = true } label: {
                         HStack(spacing: 8) {
                             if isReleasing { ProgressView().scaleEffect(0.85) }
                             Text(isReleasing ? "Releasing…" : "Release my car")
@@ -601,6 +602,15 @@ private struct StaleCarHoldSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.orange.opacity(0.08))
                 .cornerRadius(12)
+                .confirmationDialog("Release this car?", isPresented: $showReleaseConfirm, titleVisibility: .visible) {
+                    Button(hold.hasSucceededPayment ? "Release and refund the driver" : "Release my car",
+                           role: .destructive, action: release)
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text(hold.hasSucceededPayment
+                         ? "This cancels the rental and refunds the driver in full. \(hold.carTitle) goes back on the market. This can't be undone."
+                         : "This cancels the rental and puts \(hold.carTitle) back on the market. This can't be undone.")
+                }
             }
         }
         .task { await load() }

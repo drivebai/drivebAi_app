@@ -64,6 +64,8 @@ type LeaseRequestHandler struct {
 	// rollingAllowlist confines weekly rentals to a named pilot while the
 	// flag is on. Empty = open to everyone (see config.RollingAllowlistUserIDs).
 	rollingAllowlist map[uuid.UUID]struct{}
+	// rollingClosed: the allowlist was configured but unusable. Fail closed.
+	rollingClosed bool
 	// Driver debt ledger — wired via SetDebtDependencies. Optional: when
 	// absent the engine behaves exactly as before, which keeps every
 	// existing test constructor working untouched.
@@ -1850,14 +1852,18 @@ func (h *LeaseRequestHandler) OwnerReleaseStalePickup(w http.ResponseWriter, r *
 
 	// Identical tail to the scanner's: revoke any rolling consent, tell both
 	// parties, refund the driver in full.
+	// Detached from the request: the claim has committed and the car is
+	// already free, so the driver's money must not depend on the owner's
+	// phone keeping the connection open long enough.
+	bg := context.WithoutCancel(r.Context())
 	if h.billingRepo != nil {
-		if _, rerr := h.billingRepo.RevokeConsent(r.Context(), lr.ID, "pickup_no_show"); rerr != nil {
+		if _, rerr := h.billingRepo.RevokeConsent(bg, lr.ID, "pickup_no_show"); rerr != nil {
 			h.logger.Warn("owner release: revoke rolling consent", "error", rerr, "lease_request_id", lr.ID)
 		}
 	}
-	h.broadcastLeaseUpdate(r.Context(), lr)
-	h.notifyExpiry(r.Context(), lr)
-	h.issueAndFinalizeRefund(r.Context(), lr, "owner-release")
+	h.broadcastLeaseUpdate(bg, lr)
+	h.notifyOwnerRelease(bg, lr, h.refundLooksPayable(bg, lr))
+	h.issueAndFinalizeRefund(bg, lr, "owner-release")
 
 	fresh, _ := h.leaseRepo.GetByID(r.Context(), lr.ID)
 	if fresh == nil {
@@ -1877,24 +1883,25 @@ func (h *LeaseRequestHandler) ListMyStalePickupHolds(w http.ResponseWriter, r *h
 		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
 		return
 	}
-	all, err := h.leaseRepo.ListStalePickupHolds(r.Context(), models.LeaseOwnerReleaseMinAge, 100)
+	// Scoped in SQL, not by a loop afterwards: a filter that lives in Go is
+	// one refactor away from returning every owner's cars to any caller, and
+	// a global LIMIT would hide this owner's only exit behind other people's
+	// older rows.
+	mine, err := h.leaseRepo.ListStalePickupHolds(r.Context(), &userID, models.LeaseOwnerReleaseMinAge, 100)
 	if err != nil {
 		h.logger.Error("stale car holds: list", "error", err, "owner_id", userID)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
 		return
 	}
-	mine := []models.StalePickupHold{}
-	for _, h2 := range all {
-		if h2.OwnerID == userID {
-			mine = append(mine, h2)
-		}
+	if mine == nil {
+		mine = []models.StalePickupHold{}
 	}
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"holds": mine})
 }
 
 // AdminListStalePickupHolds — GET /api/v1/admin/stale-car-holds
 func (h *LeaseRequestHandler) AdminListStalePickupHolds(w http.ResponseWriter, r *http.Request) {
-	holds, err := h.leaseRepo.ListStalePickupHolds(r.Context(), models.LeaseOwnerReleaseMinAge, 200)
+	holds, err := h.leaseRepo.ListStalePickupHolds(r.Context(), nil, models.LeaseOwnerReleaseMinAge, 200)
 	if err != nil {
 		h.logger.Error("admin stale car holds: list", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
@@ -1937,12 +1944,13 @@ func (h *LeaseRequestHandler) AdminReleaseStalePickup(w http.ResponseWriter, r *
 	}
 	h.logger.Info("admin release: claimed a stale pickup hold",
 		"lease_request_id", lr.ID, "admin_id", adminID, "owner_id", lr.OwnerID, "car_id", lr.ListingID)
+	bg := context.WithoutCancel(r.Context())
 	if h.billingRepo != nil {
-		_, _ = h.billingRepo.RevokeConsent(r.Context(), lr.ID, "pickup_no_show")
+		_, _ = h.billingRepo.RevokeConsent(bg, lr.ID, "pickup_no_show")
 	}
-	h.broadcastLeaseUpdate(r.Context(), lr)
-	h.notifyExpiry(r.Context(), lr)
-	h.issueAndFinalizeRefund(r.Context(), lr, "admin-release")
+	h.broadcastLeaseUpdate(bg, lr)
+	h.notifyOwnerRelease(bg, lr, h.refundLooksPayable(bg, lr))
+	h.issueAndFinalizeRefund(bg, lr, "admin-release")
 
 	fresh, _ := h.leaseRepo.GetByID(r.Context(), lr.ID)
 	if fresh == nil {
@@ -1999,11 +2007,26 @@ func (h *LeaseRequestHandler) issueAndFinalizeRefund(ctx context.Context, lr *mo
 		return
 	}
 
+	// Never promise money back on a charge too old to refund. A charge past
+	// this age is typically on a Stripe account we no longer run on, and the
+	// old behaviour was to call anyway, fail, and either retry forever or
+	// tell the driver a refund was coming that never could.
+	if age := time.Since(payment.CreatedAt); age > models.LeaseRefundMaxAge {
+		h.markLeaseRefundUnrecoverable(ctx, lr, payment.Amount,
+			fmt.Sprintf("charge is %.0f days old — beyond the refundable window; refund by hand if it is still owed", age.Hours()/24))
+		return
+	}
+
 	idemKey := fmt.Sprintf("refund-%s", lr.ID.String())
 	// amountCents=0 → full refund (pickup expiry reverses the entire payment).
 	refund, err := h.stripe.CreateRefund(*payment.PaymentIntentID, idemKey, "requested_by_customer", 0)
 	if err != nil {
-		if strings.Contains(err.Error(), "resource_missing") {
+		// Permanent Stripe refusals: no retry can change them, so they exit
+		// to a human instead of riding the stuck-refund sweep forever.
+		// charge_already_refunded is the one support creates by refunding
+		// from the dashboard first, which is the natural thing to do.
+		if strings.Contains(err.Error(), "resource_missing") ||
+			strings.Contains(err.Error(), "charge_already_refunded") {
 			// PERMANENT: the intent no longer exists at Stripe — the exact
 			// failure the vehicle-return side already parks as
 			// 'unrecoverable' (000051). Same exit here.
@@ -2930,6 +2953,11 @@ func (h *LeaseRequestHandler) cardForPaymentMethod(pmID string, leaseID uuid.UUI
 // SetRollingAllowlist names the drivers for whom weekly rentals are offered
 // while ROLLING_RENTALS_ENABLED is on. An empty list leaves the feature open
 // to everyone, which is what the flag meant before a pilot existed.
+// SetRollingAllowlistClosed marks the allowlist unusable (it was configured
+// but nothing parsed), so weekly rentals are offered to nobody until it is
+// fixed — the safe direction for a feature that opens recurring mandates.
+func (h *LeaseRequestHandler) SetRollingAllowlistClosed(closed bool) { h.rollingClosed = closed }
+
 func (h *LeaseRequestHandler) SetRollingAllowlist(ids []uuid.UUID) {
 	if len(ids) == 0 {
 		h.rollingAllowlist = nil
@@ -2946,7 +2974,7 @@ func (h *LeaseRequestHandler) SetRollingAllowlist(ids []uuid.UUID) {
 // before rendering the CTA and the refusal on lease creation — an option that
 // is shown but then refused is the failure mode the CTA gate exists to avoid.
 func (h *LeaseRequestHandler) RollingOpenFor(userID uuid.UUID) bool {
-	if !h.rollingEnabled {
+	if !h.rollingEnabled || h.rollingClosed {
 		return false
 	}
 	if h.rollingAllowlist == nil {
@@ -2954,4 +2982,66 @@ func (h *LeaseRequestHandler) RollingOpenFor(userID uuid.UUID) bool {
 	}
 	_, ok := h.rollingAllowlist[userID]
 	return ok
+}
+
+// refundLooksPayable answers, before we say anything to anyone, whether a
+// refund on this lease can plausibly succeed: there is a succeeded payment,
+// it carries an intent, and the charge is young enough to refund. It is only
+// used to choose HONEST COPY — issueAndFinalizeRefund re-checks and is the
+// authority on what actually happens.
+func (h *LeaseRequestHandler) refundLooksPayable(ctx context.Context, lr *models.LeaseRequest) bool {
+	payment, err := h.leaseRepo.GetPaymentByLeaseRequestID(ctx, lr.ID)
+	if err != nil || payment == nil || payment.PaymentIntentID == nil || *payment.PaymentIntentID == "" {
+		return false
+	}
+	if time.Since(payment.CreatedAt) > models.LeaseRefundMaxAge {
+		return false
+	}
+	// Ask Stripe rather than guess. The rows this path can actually reach in
+	// production are old enough to predate the Stripe account we run on now,
+	// and their intents simply do not exist here — but they are still inside
+	// the refundable age window, so age alone would let us promise a refund
+	// that can never arrive. One retrieve on a rare, owner-initiated action
+	// is worth not telling someone their money is coming back when it isn't.
+	if h.stripe != nil {
+		if _, cerr := h.stripe.GetLatestChargeID(*payment.PaymentIntentID); cerr != nil {
+			h.logger.Warn("release: payment intent not reachable on this Stripe account — not promising a refund",
+				"error", cerr, "lease_request_id", lr.ID, "intent_id", *payment.PaymentIntentID)
+			return false
+		}
+	}
+	return true
+}
+
+// notifyOwnerRelease tells both parties what actually happened when an owner
+// (or support) closes out a rental that never started.
+//
+// It deliberately does NOT reuse notifyExpiry's copy. That text says "You
+// didn't confirm pickup in time" — blame for a deadline that, in every row
+// this path can reach, was never armed and therefore never communicated. And
+// it asserts a refund unconditionally, which on an old charge is a promise
+// the code cannot keep.
+func (h *LeaseRequestHandler) notifyOwnerRelease(ctx context.Context, lr *models.LeaseRequest, refundExpected bool) {
+	carTitle := "the car"
+	if car, err := h.carRepo.GetByID(ctx, lr.ListingID); err == nil {
+		carTitle = car.Title
+	}
+	chatID := lr.ChatID
+	lrID := lr.ID
+
+	driverBody := fmt.Sprintf("Your rental of %s was closed because the car was never collected. You were not charged for any use of it.", carTitle)
+	if refundExpected {
+		driverBody = fmt.Sprintf("Your rental of %s was closed because the car was never collected. Your payment is being refunded — we'll confirm as soon as it's done.", carTitle)
+	} else {
+		driverBody += " If you paid for it and haven't been refunded, contact support and we'll sort it out."
+	}
+	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
+		"Rental closed — the car was never collected", driverBody, &chatID, &lrID)
+
+	ownerBody := fmt.Sprintf("%s is back on the market. The rental that was holding it never started.", carTitle)
+	if refundExpected {
+		ownerBody += " The driver's payment is being refunded."
+	}
+	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
+		"Your car has been released", ownerBody, &chatID, &lrID)
 }

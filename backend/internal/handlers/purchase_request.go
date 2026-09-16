@@ -748,7 +748,15 @@ func (h *PurchaseRequestHandler) Accept(w http.ResponseWriter, r *http.Request) 
 	// is not the one being refused. Asking the seller now, before anyone has
 	// committed anything, costs nobody the car. The acceptance check stays as
 	// the backstop.
-	if titleURL, terr := h.repo.GetCarTitleDocumentURL(r.Context(), existing.CarID); terr == nil && titleURL == nil {
+	titleURL, terr := h.repo.GetCarTitleDocumentURL(r.Context(), existing.CarID)
+	if terr != nil {
+		// Fail CLOSED and say so. Silently proceeding would restore exactly
+		// the failure this gate exists to prevent, with nothing in the log.
+		h.logger.Error("purchase accept: title lookup", "error", terr, "car_id", existing.CarID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	if titleURL == nil {
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("TITLE_REQUIRED",
 			"Upload the vehicle title before accepting this offer — the buyer can't complete the purchase without it on file. Open the car in My Cars and add it under Documents."))
 		return
@@ -1011,7 +1019,10 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 	// as the signature (which is also the moment the certification is
 	// legally made), and the document prints an explicit "not declared"
 	// when it was never given, rather than quietly omitting the line.
-	if role == "seller" {
+	if role == "seller" && !curBOS.SellerSigned() {
+		// Skipped once the seller has signed: the declaration is locked with
+		// the signature, and a retried sign request that still carries the
+		// fields must stay the idempotent 200 it was, not become a 400.
 		if patch, ok := odometerPatchFromForm(w, r); !ok {
 			return // odometerPatchFromForm has written the error
 		} else if patch != nil {

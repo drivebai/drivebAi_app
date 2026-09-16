@@ -153,17 +153,28 @@ extension APIClient {
 
     /// POST /purchase-requests/{id}/bos/sign — multipart PNG signature +
     /// `role` form field.  Role must be "buyer" or "seller".
+    /// - Parameters:
+    ///   - odometerReading / odometerAccuracy: the seller's federal odometer
+    ///     declaration, sent in the SAME request as the signature — which is
+    ///     also the moment the certification is legally made. Omitted for the
+    ///     buyer, and harmless when absent: the server records the signature
+    ///     either way and the document prints "NOT DECLARED BY SELLER".
     func signBillOfSale(
         purchaseRequestId: UUID,
         role: String,
-        signatureData: Data
+        signatureData: Data,
+        odometerReading: Int? = nil,
+        odometerAccuracy: OdometerAccuracy? = nil
     ) async throws -> BillOfSaleAPIResponse {
-        try await purchaseUploadMultipartWithFields(
+        var fields = ["role": role]
+        if let odometerReading { fields["odometer_reading"] = String(odometerReading) }
+        if let odometerAccuracy { fields["odometer_accuracy"] = odometerAccuracy.rawValue }
+        return try await purchaseUploadMultipartWithFields(
             path: "purchase-requests/\(purchaseRequestId.uuidString)/bos/sign",
             fileData: signatureData,
             filename: "signature.png",
             mimeType: "image/png",
-            fields: ["role": role]
+            fields: fields
         )
     }
 
@@ -182,12 +193,16 @@ extension APIClient {
     /// Convenience wrapper — seller signs.
     func sellerSignBillOfSale(
         purchaseRequestId: UUID,
-        signatureData: Data
+        signatureData: Data,
+        odometerReading: Int? = nil,
+        odometerAccuracy: OdometerAccuracy? = nil
     ) async throws -> BillOfSaleAPIResponse {
         try await signBillOfSale(
             purchaseRequestId: purchaseRequestId,
             role: "seller",
-            signatureData: signatureData
+            signatureData: signatureData,
+            odometerReading: odometerReading,
+            odometerAccuracy: odometerAccuracy
         )
     }
 

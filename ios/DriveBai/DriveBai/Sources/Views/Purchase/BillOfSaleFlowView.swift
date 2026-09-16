@@ -1495,9 +1495,16 @@ struct BillOfSaleFlowView: View {
         do {
             let response: BillOfSaleAPIResponse
             if isSeller {
+                // Carry the odometer declaration with the signature. The
+                // server also accepts it via the earlier PATCH, but sending
+                // it here means the certification and the signature that
+                // certifies it arrive in one request — and it is the only
+                // path that works if the PATCH was never made.
                 response = try await APIClient.shared.sellerSignBillOfSale(
                     purchaseRequestId: purchaseRequest.id,
-                    signatureData: data
+                    signatureData: data,
+                    odometerReading: Int(odometerReadingText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                    odometerAccuracy: selectedOdometerAccuracy
                 )
             } else {
                 response = try await APIClient.shared.buyerSignBillOfSale(

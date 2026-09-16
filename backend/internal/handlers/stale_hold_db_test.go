@@ -50,6 +50,14 @@ func (e *payoutEnv) stalePaidLease(t *testing.T, owner, driver uuid.UUID, age ti
 		`UPDATE cars SET reserved_by_lease_request_id = $2 WHERE id = $1`, carID, leaseID); err != nil {
 		t.Fatalf("reserve car: %v", err)
 	}
+	// The release floor is measured on the PAYMENT's age, so the fixture has
+	// to carry one — a lease with no succeeded payment is not releasable.
+	if _, err := e.db.Pool.Exec(ctx, `
+		INSERT INTO payments (lease_request_id, provider, amount, currency, platform_fee_amount, status, created_at, updated_at)
+		VALUES ($1, 'stripe', 35000, 'USD', 3500, 'succeeded', NOW() - $2::interval, NOW() - $2::interval)`,
+		leaseID, durText(age)); err != nil {
+		t.Fatalf("seed payment: %v", err)
+	}
 	t.Cleanup(func() {
 		e.db.Pool.Exec(ctx, `UPDATE cars SET reserved_by_lease_request_id = NULL WHERE id = $1`, carID)
 		e.db.Pool.Exec(ctx, `DELETE FROM payments WHERE lease_request_id = $1`, leaseID)
@@ -99,7 +107,7 @@ func TestStalePickupHoldIsInvisibleToTheScanner(t *testing.T) {
 	}
 
 	// But it IS visible on the surface built to show it.
-	holds, err := e.leaseRepo.ListStalePickupHolds(ctx, models.LeaseOwnerReleaseMinAge, 200)
+	holds, err := e.leaseRepo.ListStalePickupHolds(ctx, nil, models.LeaseOwnerReleaseMinAge, 200)
 	if err != nil {
 		t.Fatalf("list stale holds: %v", err)
 	}
@@ -153,7 +161,7 @@ func TestOwnerCanReleaseAStalePickupHold(t *testing.T) {
 		t.Error("the release claimed the same lease twice")
 	}
 	// And it drops off the visibility list.
-	holds, _ := e.leaseRepo.ListStalePickupHolds(ctx, models.LeaseOwnerReleaseMinAge, 200)
+	holds, _ := e.leaseRepo.ListStalePickupHolds(ctx, nil, models.LeaseOwnerReleaseMinAge, 200)
 	for _, h := range holds {
 		if h.LeaseRequestID == leaseID {
 			t.Error("a released hold is still listed as stale")
@@ -192,7 +200,7 @@ func TestOwnerReleaseRefusesLiveAndRecentRentals(t *testing.T) {
 		t.Error("a live rental's car was freed")
 	}
 	// And a live rental is not on the stale list.
-	holds, _ := e.leaseRepo.ListStalePickupHolds(ctx, models.LeaseOwnerReleaseMinAge, 200)
+	holds, _ := e.leaseRepo.ListStalePickupHolds(ctx, nil, models.LeaseOwnerReleaseMinAge, 200)
 	for _, h := range holds {
 		if h.LeaseRequestID == liveLease || h.LeaseRequestID == youngLease {
 			t.Errorf("a live/recent rental appears as a stale hold: %s", h.LeaseRequestID)
@@ -308,5 +316,107 @@ func TestSellerMustHaveTheTitleOnFileBeforeAccepting(t *testing.T) {
 	e.purchaseH.Accept(rr, purchaseReq(t, seller, pid, "accept", `{}`))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("accept with a title on file: %d %s, want 200", rr.Code, rr.Body.String())
+	}
+}
+
+// The bug the pre-flight review reproduced on its own scratch DB: the floor
+// used to be measured on the REQUEST's age, so a request made last week and
+// paid thirty seconds ago was both offered to the owner as releasable and
+// claimable — refunding a driver who was on their way to collect the car.
+func TestOwnerReleaseFloorIsOnThePaymentNotTheRequest(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	owner := e.seedUser(t, "car_owner", "clk_o_"+run+"@example.com")
+	driver := e.seedUser(t, "driver", "clk_d_"+run+"@example.com")
+	e.seedLicense(t, driver)
+
+	// Request is 5 days old; the money is 30 seconds old.
+	leaseID, carID := e.stalePaidLease(t, owner, driver, 5*24*time.Hour)
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE payments SET created_at = NOW() - interval '30 seconds', updated_at = NOW() - interval '30 seconds'
+		WHERE lease_request_id = $1`, leaseID); err != nil {
+		t.Fatalf("age the payment: %v", err)
+	}
+
+	holds, err := e.leaseRepo.ListStalePickupHolds(ctx, &owner, models.LeaseOwnerReleaseMinAge, 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, h := range holds {
+		if h.LeaseRequestID == leaseID {
+			t.Error("a rental paid 30 seconds ago was OFFERED to the owner as releasable")
+		}
+	}
+	if _, err := e.leaseRepo.ClaimForOwnerRelease(ctx, leaseID, owner, models.LeaseOwnerReleaseMinAge); err == nil {
+		t.Fatal("CLAIMED a rental paid 30 seconds ago — a paying driver's booking would have been cancelled and refunded")
+	}
+	if got := e.carReservedBy(t, carID); got == nil || *got != leaseID {
+		t.Error("the refused release touched the reservation anyway")
+	}
+
+	// Age the money past the floor and it becomes releasable.
+	if _, err := e.db.Pool.Exec(ctx, `
+		UPDATE payments SET created_at = NOW() - interval '30 days' WHERE lease_request_id = $1`, leaseID); err != nil {
+		t.Fatalf("re-age: %v", err)
+	}
+	if _, err := e.leaseRepo.ClaimForOwnerRelease(ctx, leaseID, owner, models.LeaseOwnerReleaseMinAge); err != nil {
+		t.Fatalf("a 30-day-old paid, never-collected rental should be releasable: %v", err)
+	}
+}
+
+// The executor may never reach further than the list the owner was shown: a
+// lease that holds no car has nothing to release, and releasing it would fire
+// a full refund for no stated reason.
+func TestOwnerReleaseRefusesALeaseHoldingNoCar(t *testing.T) {
+	e := newPayoutEnv(t)
+	ctx := context.Background()
+	run := uuid.NewString()[:8]
+	owner := e.seedUser(t, "car_owner", "nocar_o_"+run+"@example.com")
+	driver := e.seedUser(t, "driver", "nocar_d_"+run+"@example.com")
+	e.seedLicense(t, driver)
+	leaseID, carID := e.stalePaidLease(t, owner, driver, 200*24*time.Hour)
+
+	// Someone else's reservation now holds the car (or it was cleared).
+	if _, err := e.db.Pool.Exec(ctx,
+		`UPDATE cars SET reserved_by_lease_request_id = NULL WHERE id = $1`, carID); err != nil {
+		t.Fatalf("clear reservation: %v", err)
+	}
+	holds, _ := e.leaseRepo.ListStalePickupHolds(ctx, &owner, models.LeaseOwnerReleaseMinAge, 100)
+	for _, h := range holds {
+		if h.LeaseRequestID == leaseID {
+			t.Error("a lease holding no car is listed as a stale hold")
+		}
+	}
+	if _, err := e.leaseRepo.ClaimForOwnerRelease(ctx, leaseID, owner, models.LeaseOwnerReleaseMinAge); err == nil {
+		t.Fatal("released — and refunded — a lease that was holding no car at all")
+	}
+}
+
+// /me must be scoped in SQL: another owner's holds can never come back, and
+// this owner's hold cannot be pushed out of the window by other people's.
+func TestStaleHoldsAreScopedToTheCallerInSQL(t *testing.T) {
+	e := newPayoutEnv(t)
+	run := uuid.NewString()[:8]
+	mine := e.seedUser(t, "car_owner", "sc_a_"+run+"@example.com")
+	theirs := e.seedUser(t, "car_owner", "sc_b_"+run+"@example.com")
+	driver := e.seedUser(t, "driver", "sc_d_"+run+"@example.com")
+	e.seedLicense(t, driver)
+	// Theirs is older, so a global ORDER BY created_at + LIMIT 1 would return
+	// only their row and hide mine.
+	theirLease, _ := e.stalePaidLease(t, theirs, driver, 300*24*time.Hour)
+	myLease, _ := e.stalePaidLease(t, mine, driver, 100*24*time.Hour)
+
+	got, err := e.leaseRepo.ListStalePickupHolds(context.Background(), &mine, models.LeaseOwnerReleaseMinAge, 1)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].LeaseRequestID != myLease {
+		t.Fatalf("scoped list returned %+v, want exactly my own hold %s", got, myLease)
+	}
+	for _, h := range got {
+		if h.OwnerID != mine || h.LeaseRequestID == theirLease {
+			t.Error("another owner's hold leaked into a /me response")
+		}
 	}
 }

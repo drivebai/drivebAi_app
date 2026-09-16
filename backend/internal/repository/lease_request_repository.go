@@ -1579,7 +1579,24 @@ func (r *LeaseRequestRepository) ClaimForOwnerRelease(ctx context.Context, id, o
 		  AND status = 'paid'
 		  AND pickup_confirmed_at IS NULL
 		  AND (pickup_deadline_at IS NULL OR pickup_deadline_at <= NOW())
-		  AND created_at <= NOW() - $4::interval
+		  -- The floor is on the MONEY's clock, not the request's. created_at
+		  -- is when the driver asked, which can be days before they paid: a
+		  -- request made last week and paid thirty seconds ago would clear a
+		  -- created_at floor, and releasing it would refund a driver who is
+		  -- on their way to collect the car.
+		  AND EXISTS (
+		        SELECT 1 FROM payments p
+		        WHERE p.lease_request_id = lease_requests.id
+		          AND p.status = 'succeeded'
+		          AND p.created_at <= NOW() - $4::interval)
+		  -- Releasable means "frees my car". A lease holding no reservation
+		  -- strands nothing, so there is nothing here to release — and the
+		  -- executor must never reach further than the list the owner was
+		  -- shown.
+		  AND EXISTS (
+		        SELECT 1 FROM cars c
+		        WHERE c.id = lease_requests.listing_id
+		          AND c.reserved_by_lease_request_id = lease_requests.id)
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
 		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
@@ -1604,7 +1621,11 @@ func (r *LeaseRequestRepository) ClaimForOwnerRelease(ctx context.Context, id, o
 // reservation while being unreachable by the pickup-expiry scanner — the
 // class the Nissan Sentra fell into. Read-only: it exists so the state is
 // VISIBLE (owner card, admin page) rather than discovered by accident.
-func (r *LeaseRequestRepository) ListStalePickupHolds(ctx context.Context, minAge time.Duration, limit int) ([]models.StalePickupHold, error) {
+// ownerID scopes the result IN SQL. The /me surface must never be able to
+// return another owner's row, and the LIMIT must bound the caller's own rows
+// rather than the platform's oldest — otherwise an owner's only exit
+// disappears the moment someone else has more holds than the limit.
+func (r *LeaseRequestRepository) ListStalePickupHolds(ctx context.Context, ownerID *uuid.UUID, minAge time.Duration, limit int) ([]models.StalePickupHold, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1612,16 +1633,23 @@ func (r *LeaseRequestRepository) ListStalePickupHolds(ctx context.Context, minAg
 		SELECT lr.id, lr.listing_id, lr.owner_id, lr.driver_id, lr.created_at,
 		       lr.pickup_deadline_at,
 		       c.title,
-		       (SELECT COUNT(*) FROM payments p WHERE p.lease_request_id = lr.id AND p.status = 'succeeded') > 0
+		       EXISTS (SELECT 1 FROM payments p WHERE p.lease_request_id = lr.id AND p.status = 'succeeded')
 		FROM lease_requests lr
 		JOIN cars c ON c.id = lr.listing_id
 		WHERE lr.status = 'paid'
 		  AND lr.pickup_confirmed_at IS NULL
 		  AND (lr.pickup_deadline_at IS NULL OR lr.pickup_deadline_at <= NOW())
-		  AND lr.created_at <= NOW() - $1::interval
+		  -- Same money clock as ClaimForOwnerRelease: the two must describe
+		  -- exactly the same set, or the card offers a button that fails.
+		  AND EXISTS (
+		        SELECT 1 FROM payments p
+		        WHERE p.lease_request_id = lr.id
+		          AND p.status = 'succeeded'
+		          AND p.created_at <= NOW() - $1::interval)
 		  AND c.reserved_by_lease_request_id = lr.id
+		  AND ($3::uuid IS NULL OR lr.owner_id = $3)
 		ORDER BY lr.created_at ASC
-		LIMIT $2`, fmt.Sprintf("%d seconds", int(minAge.Seconds())), limit)
+		LIMIT $2`, fmt.Sprintf("%d seconds", int(minAge.Seconds())), limit, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("list stale pickup holds: %w", err)
 	}
