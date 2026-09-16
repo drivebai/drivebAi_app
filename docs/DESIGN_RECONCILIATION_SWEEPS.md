@@ -65,7 +65,8 @@ in the code, at the query.
 
 | Sweep | Triggering event | Plausible? |
 |---|---|---|
-| debt reconcile | the day rolling billing gains history | yes — it is the next flag we turn on |
+| debt reconcile (creation side) | the day rolling billing gains history | yes — it is the next flag we turn on |
+| ~~debt booking gate (consumption side)~~ | ~~one pilot returning a car with an uncollected week~~ | **bounded in v103 — now safe by design, see addendum** |
 | any sweep keyed to a provider object | the day we migrate provider or account | yes — it has already happened once |
 | any sweep over a table someone may backfill | the day a backfill lands | yes — backfills reach into history by design |
 
@@ -147,3 +148,87 @@ lease settled by an admin) has nothing to resolve and is unchanged.
 Floors need a voice: `ListStuckZeroRefundsOlderThan` and
 `ListRollingStalePaidThrough` list what the bounded sweeps deliberately skip,
 and their callers open one ticket per row.
+
+## Addendum (v103): classify the consumption side, not just the creation side
+
+The debt reconcile above was bounded on the side that **creates** rows
+(`ListArrearsCyclesWithoutDebt` carries `bc.created_at >= DebtLedgerLiveFrom`).
+The side that **consumes** them — the `OUTSTANDING_BALANCE` booking gate, which
+refuses a rental when `driver_debts` shows an open balance — was never
+classified at all. That omission is the v98 addendum repeating itself one layer
+up: *bounding a lister is not enough when other paths act on the same rows.*
+
+The gate had no bound in either direction, and it was armed by default. It was
+inert for one reason only: `driver_debts` was empty. That is the textbook
+safe-by-timing shape, and its trigger was closer than "the day rolling goes
+public" — **one pilot driver returning a car with an uncollected week** opens
+the first debt and arms it, with the allowlist still in force.
+
+### The failure it would have produced
+
+The refusal and the remedy read **different tables**. The gate read
+`driver_debts.status`; both exits — the driver's pay-now and the admin's cycle
+waive — read `billing_cycles.status`. Nothing forced them to agree, and two
+reachable states drove them apart:
+
+1. **cycle `paid`, debt open.** `handleArrearsPaid` flips the cycle before it
+   credits the debt. A failed credit returns false so Stripe redelivers, and
+   redelivery self-heals — but Stripe's redelivery window is finite. After it
+   closes, a driver who has **paid in full** is blocked forever.
+2. **cycle `waived`, debt open.** Worse: a driver who then tries to pay is
+   routed to `refundLateChargeOnSettledCycle`, which hands the money back and
+   never touches the debt. We take a payment, return it, and leave them blocked.
+
+In both shapes pay-now answers `NOTHING_DUE` and the waive answers
+`CYCLE_NOT_WAIVABLE`. The only remaining action is a hand-written `UPDATE`.
+And because the gate sits **before** the billing-mode branch, the driver loses
+the entire marketplace — fixed-term included — over a weekly rental they had
+already paid for.
+
+### The bound: derive the refusal from the remedy
+
+`BlockingBalanceFor` replaces `BalanceFor` **at the gate only**. Its `WHERE`
+clause *is* pay-now's precondition list, clause for clause, so a debt can block
+only when the pay button would mint a real intent for it. `GET /me/balance`
+still reports the full amount: the driver always **sees** everything they owe;
+only the **refusal** narrows.
+
+"Every state needs an exit" stops being something we audit for and becomes
+something the query cannot violate.
+
+The rule this generalises to:
+
+> **A gate that refuses an action must read the same state as the remedy it
+> points the user toward.** If the refusal and the remedy can disagree, the gap
+> between them is a dead end, and it will be discovered by a user rather than
+> by us.
+
+### Floors need a voice — in both directions
+
+Once the gate ignores orphans they stop being user pain and become a silent
+ledger lie: open debt, settled cycle, no lister, money we believe is owed that
+nothing can collect. `ListOpenDebtsWithoutLiveExit` is the **mirror** of the
+forward reconcile and carries both bounds — `DebtLedgerLiveFrom`, and a
+two-hour age window so a row caught mid-webhook self-heals first.
+
+Its two arms are deliberately asymmetric. A `paid` cycle carrying an intent id
+**self-heals** (the money demonstrably arrived; `uq_driver_debt_entries_intent`
+makes the credit idempotent). Every other shape goes to a **human** and is
+never auto-closed — forgiving real money unattended is the class of change this
+document exists to prevent. `escalated_at` makes that escalation once-only,
+which is load-bearing: the live-ticket dedupe index is keyed on
+`lease_request_id`, so without a per-debt claim the sweep would either storm a
+ticket a minute or have it silently swallowed by the arrears ticket already
+open on that lease.
+
+### And stop producing orphans
+
+The admin waive's debt close was best-effort — it logged failures and still
+returned 200, minting the very orphan the bound routes around. It now fails the
+request. That is safe because `WaiveUnpaidCycle`'s `WHERE` clause excludes
+already-waived cycles, so the retry the 500 invites skips straight past the
+waive and finishes the job.
+
+**Classification after this change: safe by design.** Not on the tier list —
+on the v98 addendum. The gate is the debt ledger's executor, and it now refuses
+to *act* when it cannot resolve a live remedy.

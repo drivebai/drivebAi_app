@@ -113,7 +113,20 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 	// charged" moments before they are (the webhook backstop would refund
 	// it, but the endpoint shouldn't manufacture that collision). Safe:
 	// dunning exhausted, arrears, or scheduled-with-no-attempt-and-no-intent.
+	//
+	// The first arm is RE-ENTRY, and it is what makes every failure below
+	// recoverable. Waiving a week is not one write: it closes the debt,
+	// clears the delinquency, lifts the renewal halt, advances paid-through
+	// and tells the driver. Those steps live ONLY here — no scanner, no
+	// driver action and no other endpoint performs them. So if the request
+	// dies after the cycle flips to 'waived', an admin must be able to run
+	// it again and finish the job. Without this arm the retry would be
+	// refused CYCLE_IN_FLIGHT by the default case below, and the lease would
+	// sit waived-but-unrepaired with SQL as the only remedy — the exact
+	// shape this batch exists to remove.
+	alreadyWaived := cycle.Status == models.CycleWaived
 	switch {
+	case alreadyWaived:
 	case cycle.Status == models.CycleFailedFinal || cycle.Status == models.CycleArrearsDue:
 	case cycle.Status == models.CycleScheduled && cycle.AttemptCount == 0 &&
 		(cycle.StripePaymentIntentID == nil || *cycle.StripePaymentIntentID == ""):
@@ -123,30 +136,68 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 		return
 	}
 
-	waived, err := h.billingRepo.WaiveUnpaidCycle(r.Context(), cycleID, "admin waive: "+note)
-	if err != nil {
-		h.logger.Error("admin waive cycle: waive", "error", err, "cycle_id", cycleID)
-		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
-		return
-	}
-	if !waived {
-		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("CYCLE_NOT_WAIVABLE",
-			"only an unpaid cycle can be waived — paid weeks settle through refunds, and this one may already be closed"))
-		return
+	// Every step after this point is replay-safe: Close is claim-once,
+	// ClearDelinquency and ClearRenewalHaltReporting are claimed-once, and
+	// AdvanceOnCycleWaived uses GREATEST. A second pass therefore completes
+	// what the first one dropped without double-effect.
+	if !alreadyWaived {
+		waived, werr := h.billingRepo.WaiveUnpaidCycle(r.Context(), cycleID, "admin waive: "+note)
+		if werr != nil {
+			h.logger.Error("admin waive cycle: waive", "error", werr, "cycle_id", cycleID)
+			httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+			return
+		}
+		if !waived {
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("CYCLE_NOT_WAIVABLE",
+				"only an unpaid cycle can be waived — paid weeks settle through refunds, and this one may already be closed"))
+			return
+		}
+	} else {
+		h.logger.Info("admin waive cycle: re-entry on an already-waived cycle — finishing the remaining steps",
+			"cycle_id", cycleID, "lease_request_id", cycle.LeaseRequestID)
 	}
 
 	// Forgiving the week must also forgive the DEBT it raised. Without this
 	// the driver's balance stays open, and since a balance blocks new
 	// bookings the waive would leave them stuck with no exit — the opposite
 	// of what an admin pressing "waive" intends.
+	//
+	// This is NOT best-effort, and the difference matters. The cycle is
+	// already 'waived' by the time we get here, and a waived cycle is
+	// invisible to every exit the driver has: pay-now answers NOTHING_DUE
+	// (GetOpenOrLatestPaidCycle excludes 'waived'), a second waive answers
+	// CYCLE_NOT_WAIVABLE, and a driver who somehow does pay is routed to
+	// refundLateChargeOnSettledCycle, which returns the money and leaves the
+	// debt open. So a swallowed failure here mints exactly the orphan debt
+	// BlockingBalanceFor now has to route around — we would be fighting a
+	// producer we control.
+	//
+	// Failing the request is safe ONLY because of the re-entry arm added to
+	// the status guard above: a retry re-enters with the cycle already
+	// 'waived', skips the waive itself, and lands here again to finish the
+	// job. Without that arm this 500 would be a dead end — the guard would
+	// answer CYCLE_IN_FLIGHT forever. If you ever remove the re-entry arm,
+	// remove this fail-closed too.
+	debtClosed := false
 	if h.debtRepo != nil {
-		if debt, derr := h.debtRepo.GetByCycle(r.Context(), cycleID); derr != nil {
+		debt, derr := h.debtRepo.GetByCycle(r.Context(), cycleID)
+		if derr != nil {
 			h.logger.Error("admin waive cycle: load debt", "error", derr, "cycle_id", cycleID)
-		} else if debt != nil {
-			if closed, cerr := h.debtRepo.Close(r.Context(), debt.ID, models.DebtWaived, "admin",
-				"admin waive: "+note); cerr != nil {
-				h.logger.Error("admin waive cycle: close debt", "error", cerr, "debt_id", debt.ID)
-			} else if closed {
+			httputil.WriteError(w, http.StatusInternalServerError, models.NewAPIError("DEBT_NOT_FORGIVEN",
+				"the week was waived but its debt could not be read — retry this waive; it is safe to repeat"))
+			return
+		}
+		if debt != nil {
+			closed, cerr := h.debtRepo.Close(r.Context(), debt.ID, models.DebtWaived, "admin",
+				"admin waive: "+note)
+			if cerr != nil {
+				h.logger.Error("admin waive cycle: close debt", "error", cerr, "debt_id", debt.ID, "cycle_id", cycleID)
+				httputil.WriteError(w, http.StatusInternalServerError, models.NewAPIError("DEBT_NOT_FORGIVEN",
+					"the week was waived but its debt is still open — retry this waive; it is safe to repeat"))
+				return
+			}
+			if closed {
+				debtClosed = true
 				h.logger.Info("driver debt waived with cycle", "debt_id", debt.ID, "cycle_id", cycleID)
 			}
 		}
@@ -182,7 +233,24 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 	if updated == nil {
 		updated = cycle
 	}
-	if lr, gerr := h.leaseRepo.GetByID(r.Context(), cycle.LeaseRequestID); gerr == nil && lr != nil {
+	// A re-entry that repaired nothing is a no-op and must not tell the
+	// driver a second time that their week was waived. A re-entry that DID
+	// finish an interrupted waive still notifies, because the first attempt
+	// may well have died before this line.
+	// Deliberately NOT including `advanced`: AdvanceOnCycleWaived returns
+	// RowsAffected()==1 whenever the lease matches its WHERE clause, so it
+	// reports ELIGIBILITY, not an actual change — GREATEST makes the replay a
+	// no-op while still touching the row. Only the three claim-once signals
+	// above prove this pass did real work.
+	//
+	// Known, accepted gap: if an interrupted waive got as far as clearing the
+	// halt and died before the advance, the re-entry finishes the advance but
+	// stays silent, so that driver is never told. A missed notice on a rare
+	// interrupted waive is a smaller harm than telling every driver twice
+	// whenever support re-presses the button, and the waive is visible in the
+	// app either way.
+	changedSomething := !alreadyWaived || debtClosed || delinquencyCleared || haltCleared
+	if lr, gerr := h.leaseRepo.GetByID(r.Context(), cycle.LeaseRequestID); gerr == nil && lr != nil && changedSomething {
 		chatID := lr.ChatID
 		leaseRef := lr.ID
 		go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
@@ -194,5 +262,10 @@ func (h *LeaseRequestHandler) AdminWaiveBillingCycle(w http.ResponseWriter, r *h
 		"cycle":                 updated,
 		"delinquency_cleared":   delinquencyCleared,
 		"paid_through_advanced": advanced,
+		// True when this call found the week already waived. The console
+		// should say "already waived — remaining steps completed" rather
+		// than reporting a fresh waive.
+		"already_waived": alreadyWaived,
+		"repaired":       alreadyWaived && changedSomething,
 	})
 }

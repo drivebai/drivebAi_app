@@ -295,12 +295,29 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	// nothing enforced it — a false statement in a payment notification.
 	// Applies to BOTH billing modes on purpose: the debt is the driver's,
 	// not the rental's. It is inert for anyone who owes nothing.
+	//
+	// The number read here is BlockingBalanceFor, NOT BalanceFor. They are
+	// deliberately different: the app shows everything owed, but only a debt
+	// the driver can actually pay right now may refuse a booking. See the
+	// comment on BlockingBalanceFor — the refusal and the remedy used to read
+	// different tables, and two reachable states drove them apart into a dead
+	// end whose only exit was hand-written SQL. Since the gate sits before the
+	// billing-mode branch below, that dead end cost the driver the whole
+	// marketplace, fixed-term included.
 	if h.debtEnforce && h.debtRepo != nil {
-		bal, berr := h.debtRepo.BalanceFor(r.Context(), userID)
+		bal, berr := h.debtRepo.BlockingBalanceFor(r.Context(), userID)
 		if berr != nil {
 			// Fail OPEN: a ledger read failure must not stop an honest
 			// driver renting. The debt does not disappear; the next attempt
 			// re-checks it.
+			//
+			// GET /me/balance fails CLOSED on the same read (500), which is
+			// the correct pairing: we refuse to SHOW a number we cannot
+			// compute, and we refuse to ACT on one we cannot compute. What
+			// must never happen is the inverse — telling someone here that
+			// they owe money and then 500ing on the only screen that itemises
+			// it. That asymmetry is why this arm logs loudly instead of
+			// silently allowing.
 			h.logger.Error("lease create: debt balance read failed", "error", berr, "driver_id", userID)
 		} else if bal.HasBalance() {
 			apiErr := models.NewAPIError("OUTSTANDING_BALANCE", fmt.Sprintf(
@@ -311,6 +328,11 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 				"currency":          bal.Currency,
 				"open_debt_count":   bal.OpenDebtCount,
 			}
+			// Note: every iOS build installed today discards this map —
+			// APIErrorDetails decodes only missing_types. It is populated for
+			// the admin console and future clients, and must never be
+			// mistaken for the fix. The fix is that this arm can now only
+			// fire for a debt pay-now would accept.
 			httputil.WriteError(w, http.StatusConflict, apiErr)
 			return
 		}

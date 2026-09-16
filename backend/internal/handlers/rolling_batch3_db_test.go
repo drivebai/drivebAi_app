@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"reflect"
 	"testing"
@@ -628,11 +629,45 @@ func TestBatch3_AdminGuardsAndWaive(t *testing.T) {
 		t.Errorf("delinquency not lifted: since=%v halt=%v", delinquentSince, halt)
 	}
 
-	// Claimed-once: a second waive and a paid-cycle waive both refuse.
+	// A second waive is now ACCEPTED as re-entry, not refused.
+	//
+	// EXPECTATION CHANGED DELIBERATELY (v103, adversarial review). Waiving a
+	// week is not one write: it closes the debt, clears the delinquency,
+	// lifts the renewal halt, advances paid-through and notifies the driver.
+	// Those steps live ONLY in this handler — no scanner, no driver action
+	// and no other endpoint performs them. When the debt close became
+	// fail-closed, a transient error after the cycle had already flipped left
+	// the lease waived-but-unrepaired, and the old 409 below made that
+	// PERMANENT: every retry was refused, so renewals stalled forever with
+	// hand-written SQL as the only remedy.
+	//
+	// The claimed-once guarantee still holds where it matters — at the data
+	// level. Close, ClearDelinquency and ClearRenewalHaltReporting are each
+	// claimed-once and AdvanceOnCycleWaived uses GREATEST, so replaying
+	// cannot double-apply; the waive note is not rewritten; and a re-entry
+	// that repairs nothing sends no second notification to the driver. The
+	// response says already_waived so the console can report it honestly.
 	rr = httptest.NewRecorder()
 	e.leaseH.AdminWaiveBillingCycle(rr, returnReq(t, admin, c2, `{"note":"double waive"}`))
-	if rr.Code != 409 {
-		t.Errorf("second waive = %d, want 409", rr.Code)
+	if rr.Code != 200 {
+		t.Errorf("second waive = %d, want 200 (re-entry must be able to finish an interrupted waive)", rr.Code)
+	}
+	var reentry struct {
+		AlreadyWaived bool `json:"already_waived"`
+		Repaired      bool `json:"repaired"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &reentry)
+	if !reentry.AlreadyWaived {
+		t.Error("re-entry did not report already_waived — the console would announce a fresh waive")
+	}
+	if reentry.Repaired {
+		t.Error("a no-op re-entry reported repaired=true; nothing was left to fix")
+	}
+	// The cycle must be untouched by the replay.
+	var afterStatus string
+	e.db.Pool.QueryRow(ctx, `SELECT status FROM billing_cycles WHERE id=$1`, c2).Scan(&afterStatus)
+	if afterStatus != "waived" {
+		t.Errorf("cycle after re-entry = %s, want waived", afterStatus)
 	}
 	rr = httptest.NewRecorder()
 	e.leaseH.AdminWaiveBillingCycle(rr, returnReq(t, admin, c1, `{"note":"paid cycle waive"}`))
@@ -743,8 +778,8 @@ func TestBatch3_PostReturnListerSelection(t *testing.T) {
 		UPDATE lease_requests SET vehicle_returned_at = $2 WHERE id = $1`, f.leaseID, returnedAt); err != nil {
 		t.Fatalf("stamp return: %v", err)
 	}
-	seedCycleRow(t, e, f.leaseID, 1, f.pickup, returnedAt, 15000, "paid", strPtr("pi_b3_rc_c1"), nil, 0)                                                        // before return
-	boundary := seedCycleRow(t, e, f.leaseID, 2, returnedAt, returnedAt.AddDate(0, 0, 7), 15000, "paid", strPtr("pi_b3_rc_c2"), nil, 0)                         // starts AT return
+	seedCycleRow(t, e, f.leaseID, 1, f.pickup, returnedAt, 15000, "paid", strPtr("pi_b3_rc_c1"), nil, 0)                                                           // before return
+	boundary := seedCycleRow(t, e, f.leaseID, 2, returnedAt, returnedAt.AddDate(0, 0, 7), 15000, "paid", strPtr("pi_b3_rc_c2"), nil, 0)                            // starts AT return
 	after := seedCycleRow(t, e, f.leaseID, 3, returnedAt.Add(time.Hour), returnedAt.Add(time.Hour).AddDate(0, 0, 7), 15000, "paid", strPtr("pi_b3_rc_c3"), nil, 0) // strictly after
 	seedCycleRow(t, e, f.leaseID, 4, returnedAt.AddDate(0, 0, 8), returnedAt.AddDate(0, 0, 15), 15000, "refunded", strPtr("pi_b3_rc_c4"), strPtr("re_b3_rc_c4"), 15000)
 

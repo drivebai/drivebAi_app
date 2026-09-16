@@ -15,6 +15,23 @@ import (
 // the design. See docs/DESIGN_RECONCILIATION_SWEEPS.md.
 var DebtLedgerLiveFrom = time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
 
+// DebtBlocksNewRentalsFor bounds how long a debt with NO billing cycle behind
+// it may block new bookings.
+//
+// It applies to exactly one shape: driver_debts.billing_cycle_id IS NULL,
+// which migration 000058 permits for "a future debt source (a sale, an admin
+// adjustment)". No product exit exists for that shape today — pay-now is
+// cycle-keyed — so without a floor the first such debt would block its driver
+// from the entire marketplace forever, and support SQL would be the only way
+// out. The house rule forbids that: every state needs an exit.
+//
+// "Wait" is a weak exit and this is deliberately NOT the primary bound. For
+// cycle-backed debts the remedy is the coupling in BlockingBalanceFor, not a
+// timer; do not extend this window to them. This is the doctrine's tier-3
+// grace-window-with-a-floor covering the one shape that coupling cannot see,
+// and it ships inert because nothing creates a NULL-cycle debt yet.
+var DebtBlocksNewRentalsFor = 30 * 24 * time.Hour
+
 // Debt statuses. A debt is 'open' until the money is collected, waived by an
 // admin, or written off; every one of those is an exit.
 const (

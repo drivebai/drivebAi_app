@@ -1337,6 +1337,128 @@ func (h *LeaseRequestHandler) runDebtReconcilePhase(ctx context.Context) {
 			"cycle_id", m.CycleID, "lease_request_id", m.LeaseID, "amount_cents", m.AmountCents)
 		openDriverDebtLedger(ctx, h.logger, h.debtRepo, h.userRepo, h.billingRepo, lr, m.CycleID, m.AmountCents)
 	}
+
+	// ...and the same sweep in the other direction.
+	h.runOrphanDebtPhase(ctx)
+}
+
+// runOrphanDebtPhase gives a voice to what BlockingBalanceFor stopped
+// blocking on.
+//
+// An open debt whose cycle has already settled is a debt the driver cannot
+// pay (pay-now is cycle-keyed and answers NOTHING_DUE) and an admin cannot
+// waive (the waive refuses a settled cycle). Until BlockingBalanceFor landed,
+// such a row silently cost its owner the entire marketplace. Now it costs
+// them nothing — which is right, and which is exactly why it must not also
+// cost us our knowledge of it. An uncollectable balance nobody is looking at
+// is a ledger lie.
+//
+// Two arms, and the asymmetry between them is deliberate.
+//
+// The 'paid' arm SELF-HEALS, because there the money demonstrably arrived:
+// ArrearsPaidClaim only fires from 'arrears_due' and stamps the intent id as
+// it flips the cycle, so a paid cycle carrying an intent is proof of payment
+// whose only missing step is the ledger credit. uq_driver_debt_entries_intent
+// makes that credit idempotent against a late webhook, so replaying it cannot
+// double-credit.
+//
+// Every other shape — waived, refunded, partially refunded, or paid with no
+// intent recorded — goes to a HUMAN and is never auto-closed. Writing off
+// real money from a background sweep, unattended, is the precise class of
+// change docs/DESIGN_RECONCILIATION_SWEEPS.md exists to prevent. The sweep's
+// job here is to notice and to escalate, not to decide.
+func (h *LeaseRequestHandler) runOrphanDebtPhase(ctx context.Context) {
+	if h.debtRepo == nil {
+		return
+	}
+	orphans, err := h.debtRepo.ListOpenDebtsWithoutLiveExit(ctx, 50)
+	if err != nil {
+		h.logger.Error("orphan debt sweep: list", "error", err)
+		return
+	}
+	for i := range orphans {
+		o := orphans[i]
+
+		// Self-healing arm: the driver already paid, only the credit is missing.
+		if models.BillingCycleStatus(o.CycleStatus) == models.CyclePaid && o.IntentID != nil && *o.IntentID != "" {
+			// actor is CHECK-constrained to system/driver/admin (migration
+			// 000058); the provenance lives in the log line below and in the
+			// entry's intent id, which is the real audit anchor.
+			if _, applied, aerr := h.debtRepo.ApplyPayment(ctx, o.DebtID, o.AmountCents, *o.IntentID, "system"); aerr != nil {
+				// Do NOT fall through to escalation. This row is provably
+				// self-healable — the money arrived and only the credit is
+				// missing — so a transient failure must leave it listed for
+				// the next tick. Escalating here would burn the once-only
+				// claim on a blip and hand a human a ticket asking them to
+				// collect money the driver has already paid.
+				h.logger.Error("orphan debt sweep: apply payment — leaving the row for the next pass",
+					"error", aerr, "debt_id", o.DebtID, "cycle_id", o.CycleID, "intent_id", *o.IntentID)
+				continue
+			} else {
+				h.logger.Warn("orphan debt sweep: credited a debt whose cycle was already paid",
+					"debt_id", o.DebtID, "cycle_id", o.CycleID, "amount_cents", o.AmountCents, "applied", applied)
+				continue
+			}
+		}
+
+		// Everything else exits to a person — once, and only once a person
+		// has actually been reached.
+		//
+		// ORDER MATTERS. The claim stamp is taken AFTER the ticket exists,
+		// never before. CreateSystemTicket dedupes on lease_request_id among
+		// live tickets and returns (nil, nil) — not an error — when it drops
+		// one. The arrears ticket openArrearsTicket raised on this very lease
+		// is normally still open, so the natural case is that this ticket is
+		// silently swallowed. Stamping first would burn the one escalation on
+		// a ticket that was never created, and the debt would end up neither
+		// blocking, nor ticketed, nor listable: invisible in every direction,
+		// which is strictly worse than the trap this batch set out to remove.
+		//
+		// Leaving it unclaimed is the correct deferral, not a retry storm:
+		// the row stays listed, the INSERT stays a cheap no-op, and the
+		// escalation lands the moment the human resolves the ticket they
+		// already have on that lease.
+		if h.ticketRepo == nil {
+			continue
+		}
+		leaseID := o.LeaseID
+		subject := "Unpayable driver balance needs a decision"
+		desc := fmt.Sprintf(
+			"Driver %s has an open balance of $%.2f (debt %s) whose billing week %s is already '%s'."+
+				"\n\nThis balance can no longer be collected through the product: the driver's pay-now button "+
+				"reports nothing due on a settled week, and the admin cycle waive refuses a settled week. "+
+				"It is therefore NOT blocking their bookings — that block was removed deliberately, because "+
+				"a balance with no way to pay it is a trap rather than a collection."+
+				"\n\nDecide and record it here: write the balance off, or collect it outside the app. "+
+				"Do not leave it open — an open debt nobody can pay is a number in the ledger that is not true."+
+				"\n\nLease: %s\nCycle: %s (%s)\nDriver: %s\nAmount: $%.2f %s",
+			o.DriverID, float64(o.AmountCents)/100, o.DebtID, o.CycleID, o.CycleStatus,
+			leaseID, o.CycleID, o.CycleStatus, o.DriverID, float64(o.AmountCents)/100, o.Currency)
+		ticket, terr := h.ticketRepo.CreateSystemTicket(ctx, o.DriverID, models.TicketCategoryPayments,
+			subject, desc, &leaseID, nil)
+		if terr != nil {
+			h.logger.Error("orphan debt sweep: ticket — leaving the row for the next pass",
+				"error", terr, "debt_id", o.DebtID)
+			continue
+		}
+		if ticket == nil {
+			// Deduped against a live ticket already open on this lease.
+			// Deliberately NOT claimed: see the note above.
+			h.logger.Info("orphan debt sweep: escalation deferred behind a live ticket on the same lease",
+				"debt_id", o.DebtID, "lease_request_id", leaseID, "cycle_status", o.CycleStatus)
+			continue
+		}
+		if claimed, cerr := h.debtRepo.ClaimForEscalation(ctx, o.DebtID); cerr != nil {
+			// The ticket exists and the human has it. A failed stamp only
+			// risks a duplicate on a later tick, which the dedupe index then
+			// absorbs — far cheaper than losing the escalation entirely.
+			h.logger.Error("orphan debt sweep: claim after ticket", "error", cerr, "debt_id", o.DebtID)
+		} else if claimed {
+			h.logger.Warn("orphan debt sweep: open debt with no live exit — escalated",
+				"debt_id", o.DebtID, "cycle_id", o.CycleID, "cycle_status", o.CycleStatus,
+				"driver_id", o.DriverID, "amount_cents", o.AmountCents, "ticket_id", ticket.ID)
+		}
+	}
 }
 
 // noteUnbilledDays puts the days a driver had the car while renewals were

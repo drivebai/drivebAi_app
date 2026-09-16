@@ -82,6 +82,15 @@ func TestDebtBookingBlock(t *testing.T) {
 		VALUES ($1, 1, NOW() - INTERVAL '7 days', NOW(), 6426, 'arrears_due') RETURNING id`, leaseID).Scan(&cycleID); err != nil {
 		t.Fatalf("seed cycle: %v", err)
 	}
+	// Stamp the return. Every debt production can create is opened on a
+	// RETURNED lease: all three SettleArrearsProRata callers dereference
+	// lr.VehicleReturnedAt, and that call is the only setter of 'arrears_due'.
+	// The gate now reads the same precondition pay-now does, so a fixture
+	// without this stamp describes a state the system cannot produce.
+	if _, err := e.db.Pool.Exec(ctx,
+		`UPDATE lease_requests SET vehicle_returned_at = NOW() - INTERVAL '1 hour' WHERE id=$1`, leaseID); err != nil {
+		t.Fatalf("stamp return: %v", err)
+	}
 	if _, _, err := debtRepo.OpenForCycle(ctx, driverID, leaseID, cycleID, 6426, "USD", models.DriverDebtSnapshot{}); err != nil {
 		t.Fatalf("open debt: %v", err)
 	}

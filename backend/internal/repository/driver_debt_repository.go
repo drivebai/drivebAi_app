@@ -117,6 +117,111 @@ func (r *DriverDebtRepository) BalanceFor(ctx context.Context, driverID uuid.UUI
 	return b, nil
 }
 
+// BlockingBalanceFor is the number the BOOKING GATE reads — deliberately not
+// the same number the app displays.
+//
+// BalanceFor answers "what does this driver owe". This answers the narrower,
+// harder question: "what does this driver owe THAT THEY CAN ACTUALLY PAY
+// RIGHT NOW". Only the second may refuse a booking.
+//
+// The reason the two must differ is that the refusal and the remedy read
+// different tables. The gate reads driver_debts.status; both exits — the
+// driver's POST /lease-requests/{id}/billing/pay-now and the admin's cycle
+// waive — read billing_cycles.status. Nothing forces those to agree, and two
+// reachable states drive them apart:
+//
+//  1. cycle 'paid', debt still open. handleArrearsPaid flips the cycle to
+//     'paid' before it credits the debt; if the credit fails it returns
+//     false so Stripe redelivers, and redelivery self-heals — but Stripe's
+//     redelivery window is finite. After it closes the driver has PAID IN
+//     FULL and is blocked forever.
+//  2. cycle 'waived', debt still open. The waive's debt close used to be
+//     best-effort. Worse, a driver who then tries to pay is routed to
+//     refundLateChargeOnSettledCycle, which hands the money back and never
+//     touches the debt — we take a payment, return it, and leave them
+//     blocked.
+//
+// In both shapes PayNow answers NOTHING_DUE and the admin waive answers
+// CYCLE_NOT_WAIVABLE, so the only remaining action is a hand-written UPDATE.
+// "Support runs SQL" is not an exit. And because the gate sits BEFORE the
+// billing-mode branch, a driver stranded this way loses the ENTIRE
+// marketplace, fixed-term included — over a weekly rental they already paid.
+//
+// So the predicate below IS PayNow's precondition list, clause for clause.
+// A debt can only block when the pay button would mint a real intent for it.
+// "Every state needs an exit" stops being something we audit for and becomes
+// something the query cannot violate.
+//
+// Sweep doctrine (docs/DESIGN_RECONCILIATION_SWEEPS.md): this is the v98
+// addendum's rule — the executor is the last gate and it fails closed. The
+// debt ledger's CREATION side already carries a feature-live floor
+// (ListArrearsCyclesWithoutDebt below); its CONSUMPTION side — this gate —
+// had no bound in either direction. Classification after this change:
+// safe_by_design. What this deliberately stops blocking is picked up by
+// ListOpenDebtsWithoutLiveExit, so an orphan becomes a ledger problem with a
+// human on the end of it rather than a stranded user.
+func (r *DriverDebtRepository) BlockingBalanceFor(ctx context.Context, driverID uuid.UUID) (*models.DriverBalance, error) {
+	b := &models.DriverBalance{DriverID: driverID, Currency: "USD"}
+	err := r.db.Pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(dd.outstanding_cents), 0), COUNT(*)
+		FROM driver_debts dd
+		LEFT JOIN billing_cycles bc ON bc.id = dd.billing_cycle_id
+		LEFT JOIN lease_requests lr ON lr.id = dd.lease_request_id
+		WHERE dd.driver_id = $1
+		  AND dd.status = 'open'
+		  AND (
+		    -- ARM 1: a cycle-backed debt, payable through pay-now today.
+		    --
+		    -- Mirrors RollingDriverHandler.PayNow exactly:
+		    --   lr.vehicle_returned_at IS NOT NULL  → the arrears branch
+		    --   bc.status = 'arrears_due'           → not NOTHING_DUE
+		    --   NOT EXISTS (higher money-bearing cycle)
+		    --                                       → bc IS the anchor that
+		    --      GetOpenOrLatestPaidCycle would return. Encoded as a
+		    --      predicate rather than assumed from the one-open-cycle mint
+		    --      guard, so this stays correct if that guard is relaxed.
+		    --      'waived' is absent from the list for the same reason it is
+		    --      absent there: no money ever moved.
+		    (
+		      dd.billing_cycle_id IS NOT NULL
+		      AND lr.vehicle_returned_at IS NOT NULL
+		      AND bc.status = 'arrears_due'
+		      AND NOT EXISTS (
+		        SELECT 1 FROM billing_cycles hb
+		        WHERE hb.lease_request_id = bc.lease_request_id
+		          AND hb.cycle_number > bc.cycle_number
+		          AND hb.status IN ('paid', 'scheduled', 'charging', 'retrying',
+		                            'needs_action', 'failed_final', 'arrears_due',
+		                            'refunded', 'partially_refunded')
+		      )
+		    )
+		    OR
+		    -- ARM 2: a debt with NO cycle behind it, inside a bounded window.
+		    --
+		    -- Explicit, not a silent join effect. Migration 000058 made
+		    -- billing_cycle_id nullable on purpose ("so a future debt source
+		    -- (a sale, an admin adjustment) can live in the same ledger"). No
+		    -- exit exists for that shape yet, so an inner join would let the
+		    -- first one block forever, and dropping it entirely would let it
+		    -- block nothing at all. It blocks for DebtBlocksNewRentalsFor and
+		    -- then stops, with a ticket opened at the boundary.
+		    --
+		    -- Nothing can create such a debt today: this arm ships inert, as
+		    -- the floor under a state the schema allows and the code does not
+		    -- yet produce. Do NOT extend it to cycle-backed debts — there the
+		    -- remedy is the coupling above, not a timer.
+		    (
+		      dd.billing_cycle_id IS NULL
+		      AND dd.opened_at > NOW() - $2::interval
+		    )
+		  )
+	`, driverID, models.DebtBlocksNewRentalsFor).Scan(&b.OutstandingCents, &b.OpenDebtCount)
+	if err != nil {
+		return nil, fmt.Errorf("blocking debt balance: %w", err)
+	}
+	return b, nil
+}
+
 // ListOpenFor returns the debts behind the balance, oldest first — the order
 // a driver expects to pay them off in.
 func (r *DriverDebtRepository) ListOpenFor(ctx context.Context, driverID uuid.UUID) ([]models.DriverDebt, error) {
@@ -329,6 +434,93 @@ type ArrearsCycleWithoutDebt struct {
 // connection, a cancelled request context — used to lose the debt forever:
 // the driver owed money, was not blocked, and their balance read zero. This
 // is the reconciliation that makes the ledger self-healing.
+// OrphanDebt is an open debt whose billing cycle has already settled — the
+// exact shape BlockingBalanceFor deliberately stops blocking on.
+type OrphanDebt struct {
+	DebtID      uuid.UUID
+	DriverID    uuid.UUID
+	LeaseID     uuid.UUID
+	CycleID     uuid.UUID
+	CycleStatus string
+	IntentID    *string
+	AmountCents int64
+	Currency    string
+}
+
+// ListOpenDebtsWithoutLiveExit is the MIRROR of ListArrearsCyclesWithoutDebt
+// above, and it exists because that one only ever looked in one direction.
+//
+// The forward sweep finds an arrears week with no debt row. This finds a debt
+// row whose week is no longer in arrears — settled, waived or refunded —
+// which means the driver has no way left to pay it and we have no way left to
+// collect it. Before BlockingBalanceFor those rows silently stranded a driver;
+// now they are permitted to go uncollected, so they MUST become visible.
+// Doctrine: floors need a voice.
+//
+// Both bounds the doctrine demands are present and neither is optional:
+//
+//   - DebtLedgerLiveFrom, the same feature-live floor the forward sweep
+//     carries. The doctrine's question is "if this looked back across all of
+//     production history right now, what would it find?" — and the honest
+//     answer for an unbounded version of this query is the same shape as the
+//     sale reconcile that woke up on five July rows and began settling
+//     $26,811. It finds nothing before the ledger existed because a debt row
+//     could not exist then either.
+//   - An age window, so a debt caught mid-webhook is never touched.
+//     handleArrearsPaid flips the cycle to 'paid' and credits the debt about
+//     fifty lines later; for that instant every row is legitimately an
+//     "orphan". Two hours is far longer than that window and far shorter than
+//     Stripe's redelivery window, so self-healing gets to happen first.
+func (r *DriverDebtRepository) ListOpenDebtsWithoutLiveExit(ctx context.Context, limit int) ([]OrphanDebt, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT dd.id, dd.driver_id, dd.lease_request_id, bc.id, bc.status,
+		       bc.stripe_payment_intent_id, dd.outstanding_cents,
+		       COALESCE(NULLIF(dd.currency, ''), 'USD')
+		FROM driver_debts dd
+		JOIN billing_cycles bc ON bc.id = dd.billing_cycle_id
+		WHERE dd.status = 'open'
+		  AND dd.escalated_at IS NULL
+		  AND bc.status IN ('paid', 'waived', 'refunded', 'partially_refunded')
+		  AND dd.opened_at >= $2::timestamptz
+		  AND dd.updated_at <= NOW() - interval '2 hours'
+		ORDER BY dd.opened_at ASC
+		LIMIT $1`, limit, models.DebtLedgerLiveFrom)
+	if err != nil {
+		return nil, fmt.Errorf("list orphan debts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]OrphanDebt, 0)
+	for rows.Next() {
+		var o OrphanDebt
+		if serr := rows.Scan(&o.DebtID, &o.DriverID, &o.LeaseID, &o.CycleID,
+			&o.CycleStatus, &o.IntentID, &o.AmountCents, &o.Currency); serr != nil {
+			return nil, serr
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// ClaimForEscalation stamps a debt so it is escalated exactly once. Returns
+// false if another pass already took it.
+func (r *DriverDebtRepository) ClaimForEscalation(ctx context.Context, debtID uuid.UUID) (bool, error) {
+	var id uuid.UUID
+	err := r.db.Pool.QueryRow(ctx, `
+		UPDATE driver_debts SET escalated_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND escalated_at IS NULL AND status = 'open'
+		RETURNING id`, debtID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim debt for escalation: %w", err)
+	}
+	return true, nil
+}
+
 func (r *DriverDebtRepository) ListArrearsCyclesWithoutDebt(ctx context.Context, limit int) ([]ArrearsCycleWithoutDebt, error) {
 	if limit <= 0 {
 		limit = 50
