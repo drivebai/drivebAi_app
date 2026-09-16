@@ -100,6 +100,17 @@ type Config struct {
 	// rolling lease creation and the billing engine. Default OFF; flips on
 	// only after the Stripe test-clock rehearsal passes (client rule).
 	RollingRentalsEnabled bool
+	// RollingAllowlistUserIDs confines weekly rentals to a named pilot the
+	// way SALES_ALLOWLIST_USER_IDS confines sales.
+	//
+	// Until now ROLLING_RENTALS_ENABLED was a bare global: GET /config
+	// answered "on" to every signed-in user, so any driver on a build new
+	// enough to show the weekly CTA could start a recurring mandate against
+	// ANY owner — including an owner whose app is too old to accept it, and
+	// who has never been shown the owner terms. A pilot with no list of
+	// participants is not a pilot. Empty list + flag on = open to everyone,
+	// which is the pre-pilot behaviour and must be a deliberate choice.
+	RollingAllowlistUserIDs []uuid.UUID
 
 	// DebtEnforcementEnabled turns the driver-debt block on new bookings on.
 	// Defaults TRUE because the app already tells drivers "new bookings are
@@ -167,14 +178,15 @@ func Load() (*Config, error) {
 		StripeConnectWebhookSecret: getEnv("STRIPE_CONNECT_WEBHOOK_SECRET", ""),
 		PlatformFeeBPS:             getIntEnv("PLATFORM_FEE_BPS", 500), // default 5%
 
-		MinWeeklyRentPrice:     getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
-		AutoApproveCars:        getEnv("AUTO_APPROVE_CARS", "false") == "true",
-		DisableCarSales:        getEnv("DISABLE_CAR_SALES", "false") == "true",
-		SalesAllowlistUserIDs:  uuidListEnv("SALES_ALLOWLIST_USER_IDS"),
-		SalesAllowlistRejected: uuidListRejects("SALES_ALLOWLIST_USER_IDS"),
-		RollingRentalsEnabled:  getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
-		DebtEnforcementEnabled: getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
-		OwnerGuaranteeEnabled:  getEnv("OWNER_GUARANTEE_ENABLED", "false") == "true",
+		MinWeeklyRentPrice:      getFloat64Env("MIN_WEEKLY_RENT_PRICE", 50),
+		AutoApproveCars:         getEnv("AUTO_APPROVE_CARS", "false") == "true",
+		DisableCarSales:         getEnv("DISABLE_CAR_SALES", "false") == "true",
+		SalesAllowlistUserIDs:   uuidListEnv("SALES_ALLOWLIST_USER_IDS"),
+		SalesAllowlistRejected:  uuidListRejects("SALES_ALLOWLIST_USER_IDS"),
+		RollingRentalsEnabled:   getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
+		RollingAllowlistUserIDs: uuidListEnv("ROLLING_ALLOWLIST_USER_IDS"),
+		DebtEnforcementEnabled:  getEnv("DEBT_ENFORCEMENT_ENABLED", "true") == "true",
+		OwnerGuaranteeEnabled:   getEnv("OWNER_GUARANTEE_ENABLED", "false") == "true",
 
 		PickupDeadlineMinutes:           getIntEnv("PICKUP_DEADLINE_MINUTES", 120),
 		PickupExpiryScanIntervalSeconds: getIntEnv("PICKUP_EXPIRY_SCAN_INTERVAL_SECONDS", 60),

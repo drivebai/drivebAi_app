@@ -199,6 +199,31 @@ struct AppConfigAPIResponse: Codable {
     var rollingRentals: Bool { rollingRentalsEnabled ?? false }
 }
 
+/// GET /me/stale-car-holds — cars of mine whose reservation is held by a
+/// rental that never started. The pickup scanner cannot see these, so without
+/// this surface an owner just finds their car missing from Discover.
+struct StaleCarHoldAPIModel: Codable, Identifiable, Equatable {
+    let leaseRequestId: UUID
+    let carId: UUID
+    let carTitle: String
+    let leaseCreatedAt: Date
+    let hasSucceededPayment: Bool
+
+    var id: UUID { leaseRequestId }
+
+    enum CodingKeys: String, CodingKey {
+        case leaseRequestId = "lease_request_id"
+        case carId = "car_id"
+        case carTitle = "car_title"
+        case leaseCreatedAt = "lease_created_at"
+        case hasSucceededPayment = "has_succeeded_payment"
+    }
+}
+
+struct StaleCarHoldsAPIResponse: Codable {
+    let holds: [StaleCarHoldAPIModel]
+}
+
 /// GET /me/owner-terms and POST /me/owner-terms/accept — the owner-side
 /// package for weekly rentals, served verbatim by the server, and whether
 /// the caller has accepted it.

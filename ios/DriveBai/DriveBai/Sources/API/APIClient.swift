@@ -209,6 +209,10 @@ protocol APIClientProtocol {
     /// Owner terms for weekly rentals: the current package and whether the
     /// caller accepted it; recording acceptance of the current version.
     func fetchOwnerTerms() async throws -> OwnerTermsAPIResponse
+    /// Cars of mine held by a rental that never started, and the lever that
+    /// frees one. See OwnerReleaseStalePickup on the server.
+    func fetchStaleCarHolds() async throws -> StaleCarHoldsAPIResponse
+    func releaseStaleCarHold(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse
     func acceptOwnerTerms(termsVersion: String) async throws -> OwnerTermsAPIResponse
     func cancelLeaseRequest(id: UUID) async throws -> LeaseRequestAPIResponse
     /// Owner: undo an Accept while the lease is still in `accepted`. Refused
@@ -872,6 +876,14 @@ final class APIClient: APIClientProtocol {
 
     func fetchOwnerTerms() async throws -> OwnerTermsAPIResponse {
         try await get(path: "me/owner-terms", authenticated: true)
+    }
+
+    func fetchStaleCarHolds() async throws -> StaleCarHoldsAPIResponse {
+        try await get(path: "me/stale-car-holds", authenticated: true)
+    }
+
+    func releaseStaleCarHold(leaseRequestId: UUID) async throws -> LeaseRequestAPIResponse {
+        try await postEmpty(path: "lease-requests/\(leaseRequestId.uuidString)/owner-release", authenticated: true)
     }
 
     func acceptOwnerTerms(termsVersion: String) async throws -> OwnerTermsAPIResponse {

@@ -332,9 +332,12 @@ func (dc *doc) odometerDisclosure(d Data) {
 	pdf.MultiCell(contentWidth, 5.5, dc.tr(fmt.Sprintf(
 		"I, %s, state that the odometer of the vehicle described above now reads %s.",
 		nameOrBlank(d.SellerName), reading)), "", "L", false)
-	dc.detailRow("Odometer reading:", valueOrDash(d.OdometerReading))
-	dc.detailRow("Seller certifies the reading is:", valueOrDash(d.OdometerAccuracy))
-	dc.detailRow("Declared on:", valueOrDash(d.OdometerDeclaredAt))
+	// An undeclared odometer prints as an explicit absence, never as a dash
+	// that reads like a formatting gap. A deficient disclosure that says so
+	// is honest; one that looks like an empty field is not.
+	dc.detailRow("Odometer reading:", valueOrNotDeclared(d.OdometerReading))
+	dc.detailRow("Seller certifies the reading is:", valueOrNotDeclared(d.OdometerAccuracy))
+	dc.detailRow("Declared on:", valueOrNotDeclared(d.OdometerDeclaredAt))
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.MultiCell(contentWidth, 4.6, dc.tr(fmt.Sprintf(
 		"Buyer's acknowledgement: I, %s, am aware of the above odometer certification made by the seller. "+
@@ -497,4 +500,14 @@ func formatMoney(cents int64, currency string) string {
 		sign = "-"
 	}
 	return fmt.Sprintf("%s$%s.%02d %s", sign, grouped.String(), rem, cur)
+}
+
+// valueOrNotDeclared renders an absent odometer field as a statement rather
+// than a blank, so a reader of the document can tell "the seller did not
+// declare this" from "this line failed to render".
+func valueOrNotDeclared(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "NOT DECLARED BY SELLER"
+	}
+	return s
 }

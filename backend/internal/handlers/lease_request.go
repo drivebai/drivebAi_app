@@ -61,6 +61,9 @@ type LeaseRequestHandler struct {
 	billingRepo    *repository.BillingRepository
 	billingFeeBPS  int
 	rollingEnabled bool
+	// rollingAllowlist confines weekly rentals to a named pilot while the
+	// flag is on. Empty = open to everyone (see config.RollingAllowlistUserIDs).
+	rollingAllowlist map[uuid.UUID]struct{}
 	// Driver debt ledger — wired via SetDebtDependencies. Optional: when
 	// absent the engine behaves exactly as before, which keeps every
 	// existing test constructor working untouched.
@@ -321,7 +324,10 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	// the fixed-term path is untouched by construction.
 	billingMode := models.BillingModeFixedTerm
 	if body.BillingMode != nil && *body.BillingMode == string(models.BillingModeRolling) {
-		if !h.rollingEnabled {
+		// Per-caller, not the bare flag: the same predicate answers GET
+		// /config, so the app can never be shown a weekly option that this
+		// driver would then be refused.
+		if !h.RollingOpenFor(userID) {
 			httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("ROLLING_DISABLED",
 				"Weekly rentals aren't available right now"))
 			return
@@ -1781,6 +1787,170 @@ func (h *LeaseRequestHandler) processExpiredLease(ctx context.Context, leaseID u
 	h.issueAndFinalizeRefund(ctx, lr, "expiry")
 }
 
+// OwnerReleaseStalePickup — POST /api/v1/lease-requests/{id}/owner-release
+//
+// The owner's exit from a car held hostage by a rental that never started.
+//
+// The pickup-expiry scanner can only see leases whose pickup_deadline_at was
+// armed at payment time; a paid lease with a NULL deadline is invisible to it
+// forever, and its car stays reserved — out of discovery, un-rentable,
+// un-sellable, with no button anywhere that frees it. One such car sat that
+// way for nearly six months.
+//
+// This does exactly what the scanner would have done: the same claim, the
+// same terminal state, the same full refund to the driver who paid for a
+// rental they never received. The only difference is who noticed.
+func (h *LeaseRequestHandler) OwnerReleaseStalePickup(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+
+	lr, err := h.leaseRepo.ClaimForOwnerRelease(r.Context(), leaseID, userID, models.LeaseOwnerReleaseMinAge)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not releasable. Say which of the three reasons it is, rather than
+		// a bare 409 the owner cannot act on.
+		existing, gerr := h.leaseRepo.GetByID(r.Context(), leaseID)
+		apiErr := models.NewAPIError("RELEASE_NOT_ALLOWED",
+			"This rental can't be released. It may have already started, already ended, or be too recent to release yet.")
+		if gerr == nil && existing != nil {
+			switch {
+			case existing.OwnerID != userID:
+				httputil.WriteError(w, http.StatusForbidden,
+					models.NewAPIError("RELEASE_NOT_ALLOWED", "Only the car's owner can release it."))
+				return
+			case existing.PickupConfirmedAt != nil:
+				apiErr.Message = "The driver already picked this car up, so the rental is live. Use the return flow to end it."
+			case existing.Status != models.LeaseStatusPaid:
+				apiErr.Message = "This rental isn't in a state that holds your car — nothing to release."
+			default:
+				apiErr.Message = "This rental is too recent to release. If the driver doesn't collect the car, it frees up automatically."
+			}
+			apiErr.Details = map[string]interface{}{"status": string(existing.Status)}
+		}
+		httputil.WriteError(w, http.StatusConflict, apiErr)
+		return
+	}
+	if err != nil {
+		h.logger.Error("owner release: claim", "error", err, "lease_request_id", leaseID, "owner_id", userID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+
+	h.logger.Info("owner release: claimed a stale pickup hold",
+		"lease_request_id", lr.ID, "owner_id", userID, "car_id", lr.ListingID,
+		"lease_age_hours", time.Since(lr.CreatedAt).Hours(),
+		"deadline_was_armed", lr.PickupDeadlineAt != nil)
+
+	// Identical tail to the scanner's: revoke any rolling consent, tell both
+	// parties, refund the driver in full.
+	if h.billingRepo != nil {
+		if _, rerr := h.billingRepo.RevokeConsent(r.Context(), lr.ID, "pickup_no_show"); rerr != nil {
+			h.logger.Warn("owner release: revoke rolling consent", "error", rerr, "lease_request_id", lr.ID)
+		}
+	}
+	h.broadcastLeaseUpdate(r.Context(), lr)
+	h.notifyExpiry(r.Context(), lr)
+	h.issueAndFinalizeRefund(r.Context(), lr, "owner-release")
+
+	fresh, _ := h.leaseRepo.GetByID(r.Context(), lr.ID)
+	if fresh == nil {
+		fresh = lr
+	}
+	httputil.WriteJSON(w, http.StatusOK, h.buildLeaseRequestResponse(r, fresh, nil))
+}
+
+// ListMyStalePickupHolds — GET /api/v1/me/stale-car-holds
+//
+// Every car of MINE whose reservation is held by a rental that never started.
+// Exists so this state is visible in the product instead of being discovered
+// when an Accept mysteriously fails.
+func (h *LeaseRequestHandler) ListMyStalePickupHolds(w http.ResponseWriter, r *http.Request) {
+	userID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	all, err := h.leaseRepo.ListStalePickupHolds(r.Context(), models.LeaseOwnerReleaseMinAge, 100)
+	if err != nil {
+		h.logger.Error("stale car holds: list", "error", err, "owner_id", userID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	mine := []models.StalePickupHold{}
+	for _, h2 := range all {
+		if h2.OwnerID == userID {
+			mine = append(mine, h2)
+		}
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"holds": mine})
+}
+
+// AdminListStalePickupHolds — GET /api/v1/admin/stale-car-holds
+func (h *LeaseRequestHandler) AdminListStalePickupHolds(w http.ResponseWriter, r *http.Request) {
+	holds, err := h.leaseRepo.ListStalePickupHolds(r.Context(), models.LeaseOwnerReleaseMinAge, 200)
+	if err != nil {
+		h.logger.Error("admin stale car holds: list", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{"holds": holds})
+}
+
+// AdminReleaseStalePickup — POST /api/v1/admin/lease-requests/{id}/release
+//
+// The same release, performed by support on an owner's behalf. It exists
+// because the owner-facing button needs an app release to reach a phone,
+// and a car should not stay stranded waiting for one.
+func (h *LeaseRequestHandler) AdminReleaseStalePickup(w http.ResponseWriter, r *http.Request) {
+	adminID, ok := httputil.GetUserID(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, models.ErrUnauthorized)
+		return
+	}
+	leaseID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid lease request ID"))
+		return
+	}
+	existing, gerr := h.leaseRepo.GetByID(r.Context(), leaseID)
+	if gerr != nil || existing == nil {
+		httputil.WriteError(w, http.StatusNotFound, models.ErrLeaseRequestNotFound)
+		return
+	}
+	lr, err := h.leaseRepo.ClaimForOwnerRelease(r.Context(), leaseID, existing.OwnerID, models.LeaseOwnerReleaseMinAge)
+	if errors.Is(err, pgx.ErrNoRows) {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RELEASE_NOT_ALLOWED",
+			"This lease is not a releasable stale pickup hold (already started, already ended, or too recent)."))
+		return
+	}
+	if err != nil {
+		h.logger.Error("admin release: claim", "error", err, "lease_request_id", leaseID)
+		httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+		return
+	}
+	h.logger.Info("admin release: claimed a stale pickup hold",
+		"lease_request_id", lr.ID, "admin_id", adminID, "owner_id", lr.OwnerID, "car_id", lr.ListingID)
+	if h.billingRepo != nil {
+		_, _ = h.billingRepo.RevokeConsent(r.Context(), lr.ID, "pickup_no_show")
+	}
+	h.broadcastLeaseUpdate(r.Context(), lr)
+	h.notifyExpiry(r.Context(), lr)
+	h.issueAndFinalizeRefund(r.Context(), lr, "admin-release")
+
+	fresh, _ := h.leaseRepo.GetByID(r.Context(), lr.ID)
+	if fresh == nil {
+		fresh = lr
+	}
+	httputil.WriteJSON(w, http.StatusOK, h.buildLeaseRequestResponse(r, fresh, nil))
+}
+
 // retryStuckRefund is the recovery path for leases ClaimForExpiry already
 // moved to status=expired_refunded but whose Stripe refund never persisted
 // (worker crashed mid-call, Stripe returned 5xx, etc.). We do NOT re-broadcast
@@ -2755,4 +2925,33 @@ func (h *LeaseRequestHandler) cardForPaymentMethod(pmID string, leaseID uuid.UUI
 		return "", "", ""
 	}
 	return card.Brand, card.Last4, card.Fingerprint
+}
+
+// SetRollingAllowlist names the drivers for whom weekly rentals are offered
+// while ROLLING_RENTALS_ENABLED is on. An empty list leaves the feature open
+// to everyone, which is what the flag meant before a pilot existed.
+func (h *LeaseRequestHandler) SetRollingAllowlist(ids []uuid.UUID) {
+	if len(ids) == 0 {
+		h.rollingAllowlist = nil
+		return
+	}
+	h.rollingAllowlist = make(map[uuid.UUID]struct{}, len(ids))
+	for _, id := range ids {
+		h.rollingAllowlist[id] = struct{}{}
+	}
+}
+
+// RollingOpenFor reports whether weekly rentals are offered to this user.
+// The same answer must drive BOTH the /config response the driver's app asks
+// before rendering the CTA and the refusal on lease creation — an option that
+// is shown but then refused is the failure mode the CTA gate exists to avoid.
+func (h *LeaseRequestHandler) RollingOpenFor(userID uuid.UUID) bool {
+	if !h.rollingEnabled {
+		return false
+	}
+	if h.rollingAllowlist == nil {
+		return true
+	}
+	_, ok := h.rollingAllowlist[userID]
+	return ok
 }

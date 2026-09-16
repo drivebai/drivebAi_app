@@ -17,6 +17,7 @@ import (
 	"github.com/drivebai/backend/internal/database"
 	"github.com/drivebai/backend/internal/email"
 	"github.com/drivebai/backend/internal/handlers"
+	"github.com/drivebai/backend/internal/httputil"
 	"github.com/drivebai/backend/internal/middleware"
 	"github.com/drivebai/backend/internal/models"
 	"github.com/drivebai/backend/internal/push"
@@ -270,6 +271,12 @@ func main() {
 	// until a rolling lease exists, so starting them is always safe.
 	leaseHandler.SetBillingDependencies(repository.NewBillingRepository(db), cfg.PlatformFeeBPS, cfg.RollingRentalsEnabled)
 	leaseHandler.SetOwnerTermsRepository(repository.NewOwnerTermsRepository(db))
+	leaseHandler.SetRollingAllowlist(cfg.RollingAllowlistUserIDs)
+	if cfg.RollingRentalsEnabled {
+		logger.Info("weekly rentals: ON",
+			"allowlisted_drivers", len(cfg.RollingAllowlistUserIDs),
+			"open_to_everyone", len(cfg.RollingAllowlistUserIDs) == 0)
+	}
 	driverDebtRepo := repository.NewDriverDebtRepository(db)
 	leaseHandler.SetDebtDependencies(driverDebtRepo, cfg.DebtEnforcementEnabled)
 
@@ -395,11 +402,20 @@ func main() {
 			// Client-visible feature switches. The app asks before it
 			// offers a weekly rental, so a flag that is off means the
 			// option is never shown rather than shown and then refused.
+			//
+			// Answered PER CALLER, not globally: with a pilot allowlist in
+			// force the CTA must appear only for drivers who can actually
+			// complete a weekly booking. The same predicate refuses the
+			// creation call, so the two can never disagree.
 			r.Get("/config", func(w http.ResponseWriter, r *http.Request) {
+				rolling := false
+				if uid, ok := httputil.GetUserID(r.Context()); ok {
+					rolling = leaseHandler.RollingOpenFor(uid)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"rolling_rentals_enabled": cfg.RollingRentalsEnabled,
+					"rolling_rentals_enabled": rolling,
 				})
 			})
 			r.Get("/me", userHandler.GetCurrentUser)
@@ -409,6 +425,10 @@ func main() {
 			// Owner terms for weekly rentals: read the current package, record
 			// acceptance. Accepting a rolling lease request requires it.
 			r.Get("/me/owner-terms", leaseHandler.GetOwnerTerms)
+			// Cars of mine held by a rental that never started, and the
+			// owner's lever to free one. See OwnerReleaseStalePickup.
+			r.Get("/me/stale-car-holds", leaseHandler.ListMyStalePickupHolds)
+			r.Post("/lease-requests/{id}/owner-release", leaseHandler.OwnerReleaseStalePickup)
 			r.Post("/me/owner-terms/accept", leaseHandler.AcceptOwnerTerms)
 			r.Patch("/profile", userHandler.UpdateProfile)
 			// OTP-confirmed email/phone change (batch items 7+8): nothing
@@ -663,6 +683,10 @@ func main() {
 				// Record an owner's acceptance of the weekly-rental owner terms
 				// on their behalf (note required: how the agreement was obtained).
 				r.Post("/users/{id}/owner-terms", leaseHandler.AdminRecordOwnerTerms)
+				// Stale pickup holds: see them, and free one on an owner's
+				// behalf while the owner-facing button waits for a build.
+				r.Get("/stale-car-holds", leaseHandler.AdminListStalePickupHolds)
+				r.Post("/lease-requests/{id}/release", leaseHandler.AdminReleaseStalePickup)
 				// Driver-license (and other personal-doc) review: list with
 				// signed URLs + approve/decline with required decline reason.
 				r.Get("/users/{id}/documents", adminHandler.ListUserDocuments)

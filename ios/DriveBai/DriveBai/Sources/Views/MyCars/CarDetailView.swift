@@ -72,6 +72,11 @@ struct CarDetailViewMode: View {
                             }
                         }
 
+                        // A rental that never started, still holding this
+                        // car. Without this the owner just finds the car gone
+                        // from Discover with no explanation and no lever.
+                        StaleCarHoldSection(carId: car.id)
+
                         // Price cards
                         CarPriceCards(car: car)
 
@@ -533,5 +538,95 @@ private struct ToggleButton: View {
 #Preview {
     NavigationStack {
         CarDetailView(carId: OwnerCarsStore.shared.cars.first?.id ?? UUID())
+    }
+}
+
+// MARK: - Stale hold (a rental that never started)
+
+/// Shown only when THIS car's reservation is held by a paid rental the driver
+/// never collected. Those rows are invisible to the pickup-expiry scanner
+/// (their deadline was never armed), so before this existed the car simply
+/// disappeared from Discover and its owner had no way to get it back — one
+/// sat that way for nearly six months.
+private struct StaleCarHoldSection: View {
+    let carId: UUID
+
+    @State private var hold: StaleCarHoldAPIModel?
+    @State private var isReleasing = false
+    @State private var errorMessage: String?
+    @State private var released = false
+
+    var body: some View {
+        Group {
+            if released {
+                Label("Your car has been released and is available to rent again.",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.subheadline)
+                    .foregroundColor(.green)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.green.opacity(0.10))
+                    .cornerRadius(12)
+            } else if let hold {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("This car is held by a rental that never started",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.orange)
+                    Text("A rental was paid for on \(hold.leaseCreatedAt.formatted(date: .abbreviated, time: .omitted)) but the driver never collected the car, so it is still reserved and hidden from renters. Releasing it frees the car\(hold.hasSucceededPayment ? " and refunds the driver in full." : ".")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button(action: release) {
+                        HStack(spacing: 8) {
+                            if isReleasing { ProgressView().scaleEffect(0.85) }
+                            Text(isReleasing ? "Releasing…" : "Release my car")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.orange)
+                        .cornerRadius(10)
+                    }
+                    .disabled(isReleasing)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.08))
+                .cornerRadius(12)
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard let response = try? await APIClient.shared.fetchStaleCarHolds() else { return }
+        hold = response.holds.first { $0.carId == carId }
+    }
+
+    private func release() {
+        guard let hold, !isReleasing else { return }
+        isReleasing = true
+        errorMessage = nil
+        Task {
+            defer { isReleasing = false }
+            do {
+                _ = try await APIClient.shared.releaseStaleCarHold(leaseRequestId: hold.leaseRequestId)
+                released = true
+                self.hold = nil
+                await OwnerCarsStore.shared.fetchCars()
+            } catch let apiError as APIError {
+                errorMessage = apiError.errorDescription ?? "Couldn't release the car."
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }

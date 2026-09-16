@@ -187,6 +187,20 @@ const LeasePaymentPendingTTL = 24 * time.Hour
 // isn't held for a week by a driver who went quiet.
 const LeaseAcceptTTL = 72 * time.Hour
 
+// LeaseOwnerReleaseMinAge bounds the owner-initiated release of a car held
+// by a paid rental that never started.
+//
+// The pickup-expiry scanner can only see leases whose pickup_deadline_at was
+// armed at payment time. Rows that predate that arming carry a NULL deadline
+// and are invisible to it forever — the car stays reserved, drops out of
+// discovery, and its owner has no way to get it back. This is the owner's
+// exit for exactly that gap.
+//
+// The floor exists so the action can never touch a rental that is genuinely
+// mid-handover: a lease younger than this is still inside any plausible
+// pickup window, and the scanner owns it.
+const LeaseOwnerReleaseMinAge = 24 * time.Hour
+
 // LeaseAcceptWarnBefore: both parties are warned this long before the
 // accepted lease expires (i.e. at accepted_at + 48h).
 const LeaseAcceptWarnBefore = 24 * time.Hour
@@ -420,4 +434,18 @@ type PaymentIntentResponse struct {
 	// evidence — never a copy the app carries on its own.
 	DisclosureText string `json:"disclosure_text,omitempty"`
 	TermsVersion   string `json:"terms_version,omitempty"`
+}
+
+// StalePickupHold is a car whose reservation is held by a paid rental that
+// never started and that no scanner can reach. Surfaced to the owner and to
+// admin so the state is seen rather than stumbled on.
+type StalePickupHold struct {
+	LeaseRequestID      uuid.UUID  `json:"lease_request_id"`
+	CarID               uuid.UUID  `json:"car_id"`
+	CarTitle            string     `json:"car_title"`
+	OwnerID             uuid.UUID  `json:"owner_id"`
+	DriverID            uuid.UUID  `json:"driver_id"`
+	LeaseCreatedAt      time.Time  `json:"lease_created_at"`
+	PickupDeadlineAt    *time.Time `json:"pickup_deadline_at,omitempty"`
+	HasSucceededPayment bool       `json:"has_succeeded_payment"`
 }

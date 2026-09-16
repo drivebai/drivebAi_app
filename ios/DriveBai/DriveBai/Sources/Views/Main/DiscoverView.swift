@@ -770,7 +770,14 @@ struct ListingDetailView: View {
     /// Whether the server currently allows weekly recurring rentals. The
     /// app asks rather than assumes, so the option is simply absent when
     /// the feature is off instead of failing after the driver picks it.
-    @State private var weeklyRentalsAvailable = false
+    /// Tri-state on purpose. `false` is a real answer from the server;
+    /// "we could not ask" is a different thing and must not masquerade as
+    /// "not available" — that is exactly how a weekend of pilot testing was
+    /// lost to a feature that hid itself.
+    enum WeeklyAvailability: Equatable { case unknown, available, unavailable }
+    @State private var weeklyAvailability: WeeklyAvailability = .unknown
+    @State private var isRecheckingWeekly = false
+    private var weeklyRentalsAvailable: Bool { weeklyAvailability == .available }
     /// Present the "Buy this car" offer sheet.  Non-nil while it's on
     /// screen so we can hand the Car through by identity binding.
     @State private var buyRequestCar: Car?
@@ -1044,13 +1051,34 @@ struct ListingDetailView: View {
         }
     }
 
-    /// Ask once per listing view whether weekly rentals are on. Failure is
-    /// silent and conservative: no answer means the option stays hidden.
+    /// Ask whether weekly rentals are on, and keep asking briefly before
+    /// giving up.
+    ///
+    /// This used to be a single `try?` whose failure left the option hidden
+    /// with no retry and no signal — a network blip, an expired token, one
+    /// bad response, and the driver simply never saw the feature we were
+    /// trying to pilot, while we had no way to know it had happened. Now a
+    /// failure is retried and then SAID OUT LOUD, so the person holding the
+    /// phone can act on it.
     private func loadWeeklyAvailability() async {
         guard authStore.state.user != nil else { return }
-        if let config = try? await APIClient.shared.fetchAppConfig() {
-            weeklyRentalsAvailable = config.rollingRentals
+        isRecheckingWeekly = true
+        defer { isRecheckingWeekly = false }
+        for attempt in 0..<3 {
+            do {
+                let config = try await APIClient.shared.fetchAppConfig()
+                weeklyAvailability = config.rollingRentals ? .available : .unavailable
+                return
+            } catch {
+                #if DEBUG
+                print("[ListingDetailView] weekly availability attempt \(attempt + 1) failed: \(error)")
+                #endif
+                if attempt < 2 {
+                    try? await Task.sleep(nanoseconds: UInt64(400_000_000 << attempt))
+                }
+            }
         }
+        weeklyAvailability = .unknown
     }
 
     private func requestLease() {
@@ -1340,6 +1368,30 @@ struct ListingDetailView: View {
                         // Weekly recurring rental. Shown only when the
                         // server says the feature is live, so it can never
                         // be an option that only fails.
+                        if weeklyAvailability == .unknown {
+                            // We could not reach the server to ask. Say so and
+                            // offer the retry, rather than quietly behaving as
+                            // though the feature does not exist.
+                            Button {
+                                Task { await loadWeeklyAvailability() }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if isRecheckingWeekly {
+                                        ProgressView().scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    Text(isRecheckingWeekly
+                                         ? "Checking weekly rentals…"
+                                         : "Couldn't check weekly rentals — tap to retry")
+                                        .font(.caption)
+                                }
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                            }
+                            .disabled(isRecheckingWeekly)
+                        }
                         if weeklyRentalsAvailable {
                             Button(action: requestWeeklyLease) {
                                 VStack(spacing: 2) {

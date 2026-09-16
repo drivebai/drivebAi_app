@@ -612,6 +612,14 @@ func TestBillOfSaleOdometerDeclaration(t *testing.T) {
 		e.db.Pool.Exec(ctx, `UPDATE cars SET reserved_by_purchase_request_id = NULL WHERE id = $1`, car)
 		e.db.Pool.Exec(ctx, `DELETE FROM purchase_requests WHERE id = $1`, pid)
 	})
+	// A seller cannot accept without the title on file (the gate moved here
+	// from the buyer's acceptance, so the seller is told before the keys move).
+	if _, err := e.db.Pool.Exec(ctx, `
+		INSERT INTO car_documents (car_id, document_type, file_url, file_path, file_name, mime_type, file_size)
+		VALUES ($1, 'title', '/uploads/cars/title.pdf', '/uploads/cars/title.pdf', 'title.pdf', 'application/pdf', 1024)`, car); err != nil {
+		t.Fatalf("seed title doc: %v", err)
+	}
+	t.Cleanup(func() { e.db.Pool.Exec(ctx, `DELETE FROM car_documents WHERE car_id = $1`, car) })
 	rr = httptest.NewRecorder()
 	e.purchaseH.Accept(rr, purchaseReq(t, seller, pid, "accept", `{}`))
 	if rr.Code != http.StatusOK {

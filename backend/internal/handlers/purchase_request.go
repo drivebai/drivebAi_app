@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -739,6 +740,20 @@ func (h *PurchaseRequestHandler) Accept(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Title on file, checked HERE and not only at the buyer's acceptance.
+	//
+	// The buyer's accept refuses without a title — the right rule at the
+	// wrong moment: by then the keys have changed hands and the buyer's money
+	// is on a live hold, and the person who has to fix it is the SELLER, who
+	// is not the one being refused. Asking the seller now, before anyone has
+	// committed anything, costs nobody the car. The acceptance check stays as
+	// the backstop.
+	if titleURL, terr := h.repo.GetCarTitleDocumentURL(r.Context(), existing.CarID); terr == nil && titleURL == nil {
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("TITLE_REQUIRED",
+			"Upload the vehicle title before accepting this offer — the buyer can't complete the purchase without it on file. Open the car in My Cars and add it under Documents."))
+		return
+	}
+
 	// Seller-side reservation guard (mirror of Create's): accepting offer B
 	// while offer A is already past acceptance would run two concurrent
 	// sales of one car. The row being accepted is excluded from the check.
@@ -981,12 +996,42 @@ func (h *PurchaseRequestHandler) SignBOS(w http.ResponseWriter, r *http.Request)
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrSellerAddressRequired)
 		return
 	}
-	// The seller's signature is the odometer certification: it cannot be
-	// given before the reading and its accuracy are declared. The buyer's
-	// signature beneath the statement is their acknowledgement.
-	if !curBOS.OdometerDeclared() {
-		httputil.WriteError(w, http.StatusBadRequest, models.ErrOdometerRequired)
-		return
+	// Odometer disclosure (49 CFR 580).
+	//
+	// This used to REFUSE the signature until the reading was declared. That
+	// was wrong in a way worth recording: the only client that can send the
+	// declaration is a build that had not been released, and the admin
+	// console cannot write a bill of sale at all — so the gate made signing
+	// impossible from every app that existed, for both parties, and the
+	// sale froze with no route forward. A server requirement whose only
+	// client is an unshipped build is not a safeguard, it is an outage.
+	//
+	// The requirement itself is real, so it is enforced where it can
+	// actually be met: the seller may declare it HERE, in the same request
+	// as the signature (which is also the moment the certification is
+	// legally made), and the document prints an explicit "not declared"
+	// when it was never given, rather than quietly omitting the line.
+	if role == "seller" {
+		if patch, ok := odometerPatchFromForm(w, r); !ok {
+			return // odometerPatchFromForm has written the error
+		} else if patch != nil {
+			if _, uerr := h.repo.UpdateBillOfSaleFields(r.Context(), id, *patch); uerr != nil {
+				if apiErr := models.GetAPIError(uerr); apiErr != nil {
+					httputil.WriteError(w, http.StatusBadRequest, apiErr)
+					return
+				}
+				h.logger.Error("purchase: odometer at signing", "error", uerr, "id", id)
+				httputil.WriteError(w, http.StatusInternalServerError, models.ErrInternalError)
+				return
+			}
+			if refreshed, rerr := h.repo.GetBillOfSale(r.Context(), id); rerr == nil && refreshed != nil {
+				curBOS = refreshed
+			}
+		}
+		if !curBOS.OdometerDeclared() {
+			h.logger.Warn("purchase: bill of sale signed without an odometer declaration",
+				"id", id, "seller_id", existing.SellerID)
+		}
 	}
 	if role == "buyer" && strings.TrimSpace(curBOS.BuyerAddress) == "" {
 		httputil.WriteError(w, http.StatusBadRequest, models.ErrBuyerAddressRequired)
@@ -3046,4 +3091,35 @@ func odometerDeclaredLabel(b *models.PurchaseBillOfSale) string {
 		return ""
 	}
 	return b.OdometerDeclaredAt.UTC().Format("2006-01-02")
+}
+
+// odometerPatchFromForm reads the optional odometer fields from a
+// multipart sign request. Returns (nil, true) when the client sent neither —
+// an older app simply does not carry them, and that must not fail the
+// signature. Returns (nil, false) after writing an error response when what
+// was sent is unusable: a client that tries to declare must not have a
+// malformed declaration silently dropped.
+func odometerPatchFromForm(w http.ResponseWriter, r *http.Request) (*models.UpdateBOSBody, bool) {
+	reading := strings.TrimSpace(r.FormValue("odometer_reading"))
+	accuracy := strings.TrimSpace(r.FormValue("odometer_accuracy"))
+	if reading == "" && accuracy == "" {
+		return nil, true
+	}
+	patch := &models.UpdateBOSBody{}
+	if reading != "" {
+		n, err := strconv.Atoi(reading)
+		if err != nil || n < 0 {
+			httputil.WriteError(w, http.StatusBadRequest, models.ErrInvalidOdometerReading)
+			return nil, false
+		}
+		patch.OdometerReading = &n
+	}
+	if accuracy != "" {
+		if !models.OdometerAccuracy(accuracy).IsValid() {
+			httputil.WriteError(w, http.StatusBadRequest, models.ErrInvalidOdometerAccuracy)
+			return nil, false
+		}
+		patch.OdometerAccuracy = &accuracy
+	}
+	return patch, true
 }

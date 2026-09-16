@@ -1552,6 +1552,92 @@ func (r *LeaseRequestRepository) ClaimForExpiry(ctx context.Context, id uuid.UUI
 	return &lr, nil
 }
 
+// ClaimForOwnerRelease is the owner-initiated twin of ClaimForExpiry, for the
+// one state the scanner cannot reach: a paid lease whose pickup was never
+// confirmed AND whose pickup_deadline_at was never armed. ListExpiredAwaitingPickup
+// and ClaimForExpiry both require `pickup_deadline_at IS NOT NULL`, so such a
+// row holds its car's reservation forever — the car vanishes from discovery
+// and the owner has no lever at all.
+//
+// Deliberately the SAME transition as the scanner's (paid -> expired_refunded,
+// refund pending, car released in the same step), so the money policy is
+// identical no matter who triggered it: the driver paid for a rental that
+// never started and is refunded in full by issueAndFinalizeRefund.
+//
+// Three guards make this safe to expose to an owner:
+//   - owner_id must match: nobody can release someone else's car.
+//   - the pickup window must be over (deadline passed, or never armed at all).
+//   - the lease must be older than minAge, so a rental mid-handover is
+//     untouchable and stays the scanner's business.
+func (r *LeaseRequestRepository) ClaimForOwnerRelease(ctx context.Context, id, ownerID uuid.UUID, minAge time.Duration) (*models.LeaseRequest, error) {
+	var lr models.LeaseRequest
+	err := r.db.Pool.QueryRow(ctx, `
+		UPDATE lease_requests
+		SET status = $3, refund_status = 'pending', updated_at = NOW()
+		WHERE id = $1
+		  AND owner_id = $2
+		  AND status = 'paid'
+		  AND pickup_confirmed_at IS NULL
+		  AND (pickup_deadline_at IS NULL OR pickup_deadline_at <= NOW())
+		  AND created_at <= NOW() - $4::interval
+		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
+		          pickup_deadline_at, pickup_confirmed_at, refund_id, refunded_at, refund_status,
+		          pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
+	`, id, ownerID, models.LeaseStatusExpiredRefunded,
+		fmt.Sprintf("%d seconds", int(minAge.Seconds()))).Scan(
+		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
+		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
+		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
+		&lr.PickupDeadlineAt, &lr.PickupConfirmedAt, &lr.RefundID, &lr.RefundedAt, &lr.RefundStatus,
+		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	r.unreserveCarIfHeldBy(ctx, lr.ID)
+	return &lr, nil
+}
+
+// ListStalePickupHolds reports every lease that is holding a car's
+// reservation while being unreachable by the pickup-expiry scanner — the
+// class the Nissan Sentra fell into. Read-only: it exists so the state is
+// VISIBLE (owner card, admin page) rather than discovered by accident.
+func (r *LeaseRequestRepository) ListStalePickupHolds(ctx context.Context, minAge time.Duration, limit int) ([]models.StalePickupHold, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.db.Pool.Query(ctx, `
+		SELECT lr.id, lr.listing_id, lr.owner_id, lr.driver_id, lr.created_at,
+		       lr.pickup_deadline_at,
+		       c.title,
+		       (SELECT COUNT(*) FROM payments p WHERE p.lease_request_id = lr.id AND p.status = 'succeeded') > 0
+		FROM lease_requests lr
+		JOIN cars c ON c.id = lr.listing_id
+		WHERE lr.status = 'paid'
+		  AND lr.pickup_confirmed_at IS NULL
+		  AND (lr.pickup_deadline_at IS NULL OR lr.pickup_deadline_at <= NOW())
+		  AND lr.created_at <= NOW() - $1::interval
+		  AND c.reserved_by_lease_request_id = lr.id
+		ORDER BY lr.created_at ASC
+		LIMIT $2`, fmt.Sprintf("%d seconds", int(minAge.Seconds())), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stale pickup holds: %w", err)
+	}
+	defer rows.Close()
+	var out []models.StalePickupHold
+	for rows.Next() {
+		var h models.StalePickupHold
+		if err := rows.Scan(&h.LeaseRequestID, &h.CarID, &h.OwnerID, &h.DriverID,
+			&h.LeaseCreatedAt, &h.PickupDeadlineAt, &h.CarTitle, &h.HasSucceededPayment); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 // ListPaymentPendingExpired returns payment_pending leases whose window
 // (item 4) opened more than the TTL ago. The clock is the EXPLICIT
 // payment_pending_at stamp (COALESCE-guarded in SetPaymentPending — the
