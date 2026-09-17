@@ -59,6 +59,7 @@ func (h *LeaseRequestHandler) AdminListBillingCycles(w http.ResponseWriter, r *h
 	httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"open_amendment":        openAmendment,
 		"billing_mode":          lr.BillingMode,
+		"billing_interval":      lr.BillingInterval,
 		"rental_ends_at":        lr.RentalEndsAt,
 		"renewal_halted_reason": lr.RenewalHaltedReason,
 		"delinquent_since":      lr.DelinquentSince,

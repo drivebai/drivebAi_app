@@ -89,7 +89,7 @@ func (h *LeaseRequestHandler) billingStaleEscalationPhase(ctx context.Context, n
 	if h.ticketRepo == nil {
 		return
 	}
-	stale, err := h.leaseRepo.ListRollingStalePaidThrough(ctx, now.Add(-models.BillingMaxCatchUp), 50)
+	stale, err := h.leaseRepo.ListRollingStalePaidThrough(ctx, 50)
 	if err != nil {
 		h.logger.Error("billing stale escalation: list", "error", err)
 		return
@@ -100,7 +100,7 @@ func (h *LeaseRequestHandler) billingStaleEscalationPhase(ctx context.Context, n
 		created, terr := h.ticketRepo.CreateSystemTicket(ctx, s.DriverID, models.TicketCategoryPayments,
 			"Rolling rental stalled past the catch-up floor",
 			fmt.Sprintf("Lease %s is paid through %s (%.1f days ago) with renewals neither halted nor stopped, so the engine will not bill it again on its own (the catch-up floor is %d days). Close the rental out from the Rents page, or have paid-through moved forward before billing can resume.\n\nDriver: %s\nOwner: %s",
-				s.ID, s.RentalEndsAt.Format(time.RFC3339), days, int(models.BillingMaxCatchUp.Hours()/24), s.DriverID, s.OwnerID),
+				s.ID, s.RentalEndsAt.Format(time.RFC3339), days, int((2*models.BillingIntervalLength(s.BillingInterval)).Hours()/24), s.DriverID, s.OwnerID),
 			&s.ID, nil)
 		if terr != nil {
 			h.logger.Error("billing stale escalation: ticket", "error", terr, "lease_request_id", s.ID)
@@ -946,7 +946,10 @@ func (h *LeaseRequestHandler) billingBootstrapPhase(ctx context.Context, now tim
 		}
 		periodStart := *lr.PickupConfirmedAt
 		cycle, created, merr := h.billingRepo.MintCycleOnePaid(ctx, leaseID,
-			periodStart, periodStart.Add(models.BillingCycleLength), payment.Amount, intent)
+			// One INTERVAL from pickup, not one week: the lease's own column
+			// (migration 000065) says which. Caught by the monthly rehearsal —
+			// month 1 was being cycled at 168h and month 2 never came due.
+			periodStart, periodStart.Add(models.BillingIntervalLength(lr.BillingInterval)), payment.Amount, intent)
 		if merr != nil || cycle == nil {
 			h.logger.Error("billing bootstrap: mint cycle 1", "error", merr, "lease_request_id", leaseID)
 			continue

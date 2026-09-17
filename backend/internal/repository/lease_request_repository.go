@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,12 +75,12 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 		lr.BillingMode = models.BillingModeFixedTerm
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO lease_requests (id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, billing_mode, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13, $12, $12)
+		INSERT INTO lease_requests (id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, currency, weeks, message, expires_at, billing_mode, billing_interval, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13, COALESCE(NULLIF($14, ''), 'weekly'), $12, $12)
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
 		          price_change_pending, previous_offered_weekly_price, price_change_acted_at
 	`, lr.ID, lr.ChatID, lr.ListingID, lr.OwnerID, lr.DriverID, lr.Status,
-		lr.WeeklyPrice, lr.Currency, lr.Weeks, lr.Message, lr.ExpiresAt, now, lr.BillingMode,
+		lr.WeeklyPrice, lr.Currency, lr.Weeks, lr.Message, lr.ExpiresAt, now, lr.BillingMode, lr.BillingInterval,
 	).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
@@ -99,7 +100,7 @@ func (r *LeaseRequestRepository) CreateLeaseRequest(ctx context.Context, lr *mod
 		INSERT INTO messages (id, chat_id, sender_id, type, body, created_at)
 		VALUES ($1, $2, $3, 'system', $4, $5)
 	`, uuid.New(), lr.ChatID, lr.DriverID,
-		fmt.Sprintf("New lease request: %d week(s) at %s %.2f/week", lr.Weeks, lr.Currency, lr.WeeklyPrice),
+		leaseRequestChatLine(lr),
 		now,
 	)
 	if err != nil {
@@ -133,7 +134,7 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		       pickup_extension_total_minutes, pickup_extension_count, pickup_last_extended_at,
 		       price_change_pending, previous_offered_weekly_price, price_change_acted_at,
 		       rental_ends_at, vehicle_returned_at,
-		       billing_mode, renewal_stopped_at, renewal_stopped_by, delinquent_since, renewal_halted_reason
+		       billing_mode, renewal_stopped_at, renewal_stopped_by, delinquent_since, renewal_halted_reason, billing_interval
 		FROM lease_requests WHERE id = $1
 	`, id).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
@@ -143,7 +144,7 @@ func (r *LeaseRequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		&lr.PickupExtensionTotalMinutes, &lr.PickupExtensionCount, &lr.PickupLastExtendedAt,
 		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt,
 		&lr.RentalEndsAt, &lr.VehicleReturnedAt,
-		&lr.BillingMode, &lr.RenewalStoppedAt, &lr.RenewalStoppedBy, &lr.DelinquentSince, &lr.RenewalHaltedReason,
+		&lr.BillingMode, &lr.RenewalStoppedAt, &lr.RenewalStoppedBy, &lr.DelinquentSince, &lr.RenewalHaltedReason, &lr.BillingInterval,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrLeaseRequestNotFound
@@ -164,7 +165,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			lr.pickup_deadline_at, lr.pickup_confirmed_at,
 			lr.refund_id, lr.refunded_at, lr.refund_status,
 			lr.pickup_extension_total_minutes, lr.pickup_extension_count, lr.pickup_last_extended_at,
-			lr.billing_mode, lr.rental_ends_at, lr.renewal_stopped_at, lr.renewal_halted_reason,
+			lr.billing_mode, lr.billing_interval, lr.rental_ends_at, lr.renewal_stopped_at, lr.renewal_halted_reason,
 			lr.delinquent_since, lr.vehicle_returned_at,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.driver_id) AS driver_name,
 			(SELECT first_name || ' ' || last_name FROM users WHERE id = lr.owner_id) AS owner_name,
@@ -219,7 +220,7 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			&pickupDeadlineAt, &pickupConfirmedAt,
 			&refundID, &refundedAt, &refundStatus,
 			&pickupExtTotal, &pickupExtCount, &pickupLastExtendedAt,
-			&resp.BillingMode, &rentalEndsAt, &renewalStoppedAt, &renewalHaltedReason,
+			&resp.BillingMode, &resp.BillingInterval, &rentalEndsAt, &renewalStoppedAt, &renewalHaltedReason,
 			&delinquentSince, &vehicleReturnedAt,
 			&resp.DriverName, &resp.OwnerName, &resp.CarTitle,
 			&paymentID, &paymentIntentID, &paymentAmount,
@@ -286,6 +287,18 @@ func (r *LeaseRequestRepository) ListForChat(ctx context.Context, chatID uuid.UU
 			effectivePrice = *resp.OfferedWeeklyPrice
 		}
 		resp.TotalAmount = effectivePrice * float64(resp.Weeks)
+		if resp.BillingMode == models.BillingModeRolling {
+			// One cycle of the interval — what the consent sheet and the intent
+			// carry. Weekly keeps the historical float exactly (weeks is 1) and
+			// the cents are truncated the way IntervalAmountCents truncates, so
+			// list, detail, consent and intent never disagree by a cent.
+			if resp.BillingInterval == "monthly" {
+				resp.TotalAmount = models.IntervalPriceFromWeekly(effectivePrice, resp.BillingInterval)
+				resp.IntervalAmountCents = int64(math.Round(resp.TotalAmount * 100))
+			} else {
+				resp.IntervalAmountCents = int64(effectivePrice * 100)
+			}
+		}
 		resp.ExpiresAt = models.RFC3339Time(expiresAt)
 		resp.CreatedAt = models.RFC3339Time(createdAt)
 		resp.UpdatedAt = models.RFC3339Time(updatedAt)
@@ -546,12 +559,12 @@ func (r *LeaseRequestRepository) SetPaid(ctx context.Context, id uuid.UUID) (*mo
 		       price_change_acted_at = COALESCE(price_change_acted_at, NOW())
 		WHERE id = $1 AND status IN ('accepted', 'payment_pending')
 		RETURNING id, chat_id, listing_id, owner_id, driver_id, status, weekly_price, offered_weekly_price, offered_price_updated_at, currency, weeks, message, expires_at, created_at, updated_at,
-		          price_change_pending, previous_offered_weekly_price, price_change_acted_at, billing_mode
+		          price_change_pending, previous_offered_weekly_price, price_change_acted_at, billing_mode, billing_interval
 	`, id, models.LeaseStatusPaid).Scan(
 		&lr.ID, &lr.ChatID, &lr.ListingID, &lr.OwnerID, &lr.DriverID,
 		&lr.Status, &lr.WeeklyPrice, &lr.OfferedWeeklyPrice, &lr.OfferedPriceUpdatedAt, &lr.Currency, &lr.Weeks, &lr.Message,
 		&lr.ExpiresAt, &lr.CreatedAt, &lr.UpdatedAt,
-		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt, &lr.BillingMode,
+		&lr.PriceChangePending, &lr.PreviousOfferedWeeklyPrice, &lr.PriceChangeActedAt, &lr.BillingMode, &lr.BillingInterval,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, models.ErrInvalidLeaseAction
@@ -974,7 +987,7 @@ func (r *LeaseRequestRepository) ListTodayActionsForOwner(ctx context.Context, o
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT
 			lr.id,
-			lr.weekly_price, lr.currency, lr.weeks,
+			lr.weekly_price, lr.currency, lr.weeks, lr.billing_mode, lr.billing_interval,
 			c.car_id,
 			(SELECT title FROM cars WHERE id = c.car_id) AS car_title,
 			lr.chat_id,
@@ -1001,11 +1014,12 @@ func (r *LeaseRequestRepository) ListTodayActionsForOwner(ctx context.Context, o
 		var weeklyPrice float64
 		var currency string
 		var weeks int
+		var billingMode, billingInterval string
 		var createdAt, expiresAt time.Time
 
 		err := rows.Scan(
 			&a.ID,
-			&weeklyPrice, &currency, &weeks,
+			&weeklyPrice, &currency, &weeks, &billingMode, &billingInterval,
 			&a.CarID, &a.CarTitle,
 			&a.ChatID,
 			&a.CounterpartyID, &a.CounterpartyName,
@@ -1018,8 +1032,7 @@ func (r *LeaseRequestRepository) ListTodayActionsForOwner(ctx context.Context, o
 
 		a.Type = models.TodayActionLeaseRequest
 		a.Title = "Approve lease request"
-		a.Body = fmt.Sprintf("%s wants to rent your %s for %d week(s) at %s %.0f/week",
-			a.CounterpartyName, a.CarTitle, weeks, currency, weeklyPrice)
+		a.Body = todayRequestBody(a.CounterpartyName, a.CarTitle, weeks, currency, weeklyPrice, billingMode, billingInterval)
 		a.PrimaryAction = "approve"
 		a.SecondaryAction = "decline"
 		a.CreatedAt = models.RFC3339Time(createdAt)
@@ -1132,7 +1145,7 @@ func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, 
 	rows, err := r.db.Pool.Query(ctx, `
 		SELECT
 			lr.id,
-			lr.weekly_price, lr.currency, lr.weeks,
+			lr.weekly_price, lr.currency, lr.weeks, lr.billing_mode, lr.billing_interval,
 			c.car_id,
 			(SELECT title FROM cars WHERE id = c.car_id) AS car_title,
 			lr.chat_id,
@@ -1162,11 +1175,12 @@ func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, 
 		var weeklyPrice float64
 		var currency string
 		var weeks int
+		var billingMode, billingInterval string
 		var createdAt, expiresAt time.Time
 
 		err := rows.Scan(
 			&a.ID,
-			&weeklyPrice, &currency, &weeks,
+			&weeklyPrice, &currency, &weeks, &billingMode, &billingInterval,
 			&a.CarID, &a.CarTitle,
 			&a.ChatID,
 			&a.CounterpartyID, &a.CounterpartyName,
@@ -1179,8 +1193,7 @@ func (r *LeaseRequestRepository) ListTodayActionsForDriver(ctx context.Context, 
 
 		a.Type = models.TodayActionLeasePayment
 		a.Title = "Request accepted"
-		a.Body = fmt.Sprintf("%s accepted your request for %s — %d week(s) at %s %.0f/week. Go to requests to complete payment.",
-			a.CounterpartyName, a.CarTitle, weeks, currency, weeklyPrice)
+		a.Body = todayAcceptedBody(a.CounterpartyName, a.CarTitle, weeks, currency, weeklyPrice, billingMode, billingInterval)
 		// One-CTA card; iOS collapses the layout to a single button labelled
 		// "Go to requests" when the type is lease_payment.
 		a.PrimaryAction = "go_to_requests"
@@ -1389,7 +1402,12 @@ func (r *LeaseRequestRepository) ConfirmPickup(ctx context.Context, id, driverID
 	if _, err := tx.Exec(ctx, `
 		UPDATE lease_requests
 		SET pickup_confirmed_at = $2::timestamptz,
-		    rental_ends_at = $2::timestamptz + (GREATEST(weeks, 1) * INTERVAL '7 days'),
+		    -- The first paid period runs one INTERVAL from pickup: 7 days for
+		    -- weekly (and every fixed-term row, whose interval column is the
+		    -- default), 28 for monthly (migration 000065). Byte-identical for
+		    -- every pre-existing row.
+		    rental_ends_at = $2::timestamptz + (GREATEST(weeks, 1) *
+		        CASE billing_interval WHEN 'monthly' THEN INTERVAL '28 days' ELSE INTERVAL '7 days' END),
 		    updated_at = $2::timestamptz
 		WHERE id = $1
 	`, id, now); err != nil {
@@ -2147,11 +2165,12 @@ func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, d
 		  AND delinquent_since IS NULL
 		  AND renewal_halted_reason IS NULL
 		  AND rental_ends_at <= $1
-		  -- FLOOR. A paid-through older than BillingMaxCatchUp (two cycles)
-		  -- means something parked this lease (a halt, an outage) and
-		  -- resuming would back-bill at one week per tick. Those are
-		  -- surfaced by billingStaleEscalationPhase, not billed.
-		  AND rental_ends_at >= $3
+		  -- FLOOR. A paid-through older than two of the lease's OWN cycles
+		  -- (14 days weekly, 56 monthly — migration 000065) means something
+		  -- parked this lease (a halt, an outage) and resuming would back-bill
+		  -- one cycle per tick. Those are surfaced by
+		  -- billingStaleEscalationPhase, not billed.
+		  AND rental_ends_at >= NOW() - (2 * CASE billing_interval WHEN 'monthly' THEN INTERVAL '28 days' ELSE INTERVAL '7 days' END)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM vehicle_returns vr
 		      WHERE vr.lease_request_id = lease_requests.id
@@ -2161,7 +2180,7 @@ func (r *LeaseRequestRepository) ListRollingDueForBilling(ctx context.Context, d
 		      WHERE bc.lease_request_id = lease_requests.id
 		        AND bc.status IN ('scheduled', 'charging', 'retrying', 'needs_action', 'failed_final', 'arrears_due'))
 		ORDER BY rental_ends_at ASC
-		LIMIT $2`, dueBefore, limit, time.Now().UTC().Add(-models.BillingMaxCatchUp))
+		LIMIT $2`, dueBefore, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list rolling due: %w", err)
 	}
@@ -2296,7 +2315,11 @@ func (r *LeaseRequestRepository) ClearRenewalHaltReporting(ctx context.Context, 
 			FOR UPDATE)
 		UPDATE lease_requests lr
 		SET renewal_halted_reason = NULL,
-		    rental_ends_at = CASE WHEN lr.rental_ends_at < NOW() THEN NOW() + $3::interval ELSE lr.rental_ends_at END,
+		    -- Re-anchor one NOTICE LEAD out for the lease's own interval (48h weekly,
+		    -- 144h monthly): the driver gets the promised notice before the charge.
+		    rental_ends_at = CASE WHEN lr.rental_ends_at < NOW()
+		        THEN NOW() + CASE lr.billing_interval WHEN 'monthly' THEN INTERVAL '144 hours' ELSE $3::interval END
+		        ELSE lr.rental_ends_at END,
 		    updated_at = NOW()
 		FROM before
 		WHERE lr.id = before.id
@@ -2381,11 +2404,12 @@ func (r *LeaseRequestRepository) ResetRenewalNotice(ctx context.Context, leaseID
 
 // StaleRollingLease is the slice of a lease the stale-escalation phase needs.
 type StaleRollingLease struct {
-	ID           uuid.UUID
-	ChatID       uuid.UUID
-	DriverID     uuid.UUID
-	OwnerID      uuid.UUID
-	RentalEndsAt time.Time
+	ID              uuid.UUID
+	ChatID          uuid.UUID
+	DriverID        uuid.UUID
+	OwnerID         uuid.UUID
+	RentalEndsAt    time.Time
+	BillingInterval string
 }
 
 // ListRollingStalePaidThrough finds rolling leases the engine will no longer
@@ -2393,12 +2417,12 @@ type StaleRollingLease struct {
 // nothing halted or stopped them — the engine was switched off for longer
 // than the floor, or paid-through was moved back by hand. The same
 // predicates as ListRollingDueForBilling, minus the floor and inverted.
-func (r *LeaseRequestRepository) ListRollingStalePaidThrough(ctx context.Context, staleBefore time.Time, limit int) ([]StaleRollingLease, error) {
+func (r *LeaseRequestRepository) ListRollingStalePaidThrough(ctx context.Context, limit int) ([]StaleRollingLease, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := r.db.Pool.Query(ctx, `
-		SELECT id, chat_id, driver_id, owner_id, rental_ends_at
+		SELECT id, chat_id, driver_id, owner_id, rental_ends_at, billing_interval
 		FROM lease_requests
 		WHERE billing_mode = 'rolling'
 		  AND status = 'paid'
@@ -2407,9 +2431,10 @@ func (r *LeaseRequestRepository) ListRollingStalePaidThrough(ctx context.Context
 		  AND renewal_stopped_at IS NULL
 		  AND delinquent_since IS NULL
 		  AND renewal_halted_reason IS NULL
-		  AND rental_ends_at < $1
+		  -- Below two of the lease's OWN cycles (interval-aware, see the due-lister).
+		  AND rental_ends_at < NOW() - (2 * CASE billing_interval WHEN 'monthly' THEN INTERVAL '28 days' ELSE INTERVAL '7 days' END)
 		ORDER BY rental_ends_at ASC
-		LIMIT $2`, staleBefore, limit)
+		LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list rolling stale paid-through: %w", err)
 	}
@@ -2417,10 +2442,41 @@ func (r *LeaseRequestRepository) ListRollingStalePaidThrough(ctx context.Context
 	var out []StaleRollingLease
 	for rows.Next() {
 		var s StaleRollingLease
-		if err := rows.Scan(&s.ID, &s.ChatID, &s.DriverID, &s.OwnerID, &s.RentalEndsAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.ChatID, &s.DriverID, &s.OwnerID, &s.RentalEndsAt, &s.BillingInterval); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// leaseRequestChatLine is the system line the owner reads first. A recurring
+// request says so and names its cadence; a fixed-term request keeps the
+// historical wording. The 2026-09-14 rows read "1 week(s)" for a rental the
+// driver believed was weekly-renewing, and nobody could tell from the chat.
+func leaseRequestChatLine(lr *models.LeaseRequest) string {
+	if lr.BillingMode == models.BillingModeRolling {
+		return fmt.Sprintf("New rental request: %s %.2f per %s — renews %s until the car is returned",
+			lr.Currency, lr.IntervalPrice(), models.IntervalUnit(lr.BillingInterval), models.IntervalLabel(lr.BillingInterval))
+	}
+	return fmt.Sprintf("New lease request: %d week(s) at %s %.2f/week", lr.Weeks, lr.Currency, lr.WeeklyPrice)
+}
+
+// todayRequestBody / todayAcceptedBody keep the fixed-term wording byte for
+// byte and give a recurring request its cadence, so an owner's Today card
+// never reads "1 week(s)" for a rental that renews.
+func todayRequestBody(who, car string, weeks int, currency string, weeklyPrice float64, billingMode, interval string) string {
+	if billingMode == string(models.BillingModeRolling) {
+		return fmt.Sprintf("%s wants to rent your %s at %s %.0f per %s — renews %s until returned",
+			who, car, currency, models.IntervalPriceFromWeekly(weeklyPrice, interval), models.IntervalUnit(interval), models.IntervalLabel(interval))
+	}
+	return fmt.Sprintf("%s wants to rent your %s for %d week(s) at %s %.0f/week", who, car, weeks, currency, weeklyPrice)
+}
+
+func todayAcceptedBody(who, car string, weeks int, currency string, weeklyPrice float64, billingMode, interval string) string {
+	if billingMode == string(models.BillingModeRolling) {
+		return fmt.Sprintf("%s accepted your request for %s — %s %.0f per %s, renewing %s until you return it. Go to requests to review the terms and pay.",
+			who, car, currency, models.IntervalPriceFromWeekly(weeklyPrice, interval), models.IntervalUnit(interval), models.IntervalLabel(interval))
+	}
+	return fmt.Sprintf("%s accepted your request for %s — %d week(s) at %s %.0f/week. Go to requests to complete payment.", who, car, weeks, currency, weeklyPrice)
 }

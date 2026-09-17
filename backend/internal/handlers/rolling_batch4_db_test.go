@@ -21,6 +21,7 @@ func TestBatch4_BillingSurfaceRefusesFixedTerm(t *testing.T) {
 	e := newPayoutEnv(t)
 	billingRepo := repository.NewBillingRepository(e.db)
 	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+	e.leaseH.SetRollingAllowlist([]uuid.UUID{uuid.New()}) // recurring-only: fixed-term needs a NON-eligible driver
 
 	owner := e.seedUser(t, "car_owner", "b4_owner_ft_"+uuid.New().String()[:8]+"@example.com")
 	driver := e.seedUser(t, "driver", "b4_driver_ft_"+uuid.New().String()[:8]+"@example.com")
@@ -198,9 +199,9 @@ func TestBatch4_BillingStatusShapes(t *testing.T) {
 		t.Fatalf("status: %d (%s)", rr.Code, rr.Body.String())
 	}
 	var got struct {
-		AmountCents   int64  `json:"amount_cents"`
-		CardLast4     string `json:"card_last4"`
-		ConsentActive bool   `json:"consent_active"`
+		AmountCents   int64   `json:"amount_cents"`
+		CardLast4     string  `json:"card_last4"`
+		ConsentActive bool    `json:"consent_active"`
 		NextChargeAt  *string `json:"next_charge_at"`
 		Arrears       *struct {
 			AmountCents int64 `json:"amount_cents"`

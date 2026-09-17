@@ -147,7 +147,11 @@ type BillingAmendmentOffer struct {
 // a day and a half to move money or cancel before it is taken off their card.
 func BillingIntervalNoticeLead(interval string) time.Duration {
 	if interval == "monthly" {
-		return 72 * time.Hour
+		// The monthly consent text says "remind you three days before every
+		// charge" and the charge fires three days before the period ends, so
+		// the reminder must land six days out. 72h here would put the notice
+		// and the off-session charge in the same sweep (review 2026-09-17).
+		return 144 * time.Hour
 	}
 	return BillingNoticeLead
 }

@@ -61,6 +61,10 @@ type LeaseRequestHandler struct {
 	billingRepo    *repository.BillingRepository
 	billingFeeBPS  int
 	rollingEnabled bool
+	// recurringOnly refuses fixed-term CREATION for everyone (RECURRING_ONLY).
+	recurringOnly bool
+	// monthlyEnabled admits the monthly interval for NEW leases (MONTHLY_RENTALS_ENABLED).
+	monthlyEnabled bool
 	// rollingAllowlist confines weekly rentals to a named pilot while the
 	// flag is on. Empty = open to everyone (see config.RollingAllowlistUserIDs).
 	rollingAllowlist map[uuid.UUID]struct{}
@@ -226,9 +230,12 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	}
 
 	var body models.CreateLeaseRequestBody
-	if err := httputil.DecodeJSON(r, &body); err != nil {
-		// Body is optional, allow empty
-		body = models.CreateLeaseRequestBody{}
+	if err := httputil.DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		// A body we cannot read is refused, not treated as empty. The old
+		// behaviour reset the body and silently dropped billing_mode, so a
+		// typo'd client produced a fixed-term lease with a 201 (review 2026-09-17).
+		httputil.WriteError(w, http.StatusBadRequest, models.NewValidationError("Invalid request body"))
+		return
 	}
 
 	// Fetch the car listing
@@ -343,32 +350,99 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		weeks = *body.Weeks
 	}
 
-	// Rolling mode (batch 2): explicit opt-in, flag-gated, weeks forced to
-	// 1 (the DB CHECK enforces it too). Anything else stays fixed_term —
-	// the fixed-term path is untouched by construction.
+	// Recurring-only (decision 2026-09-17, docs/DESIGN_RECURRING_BILLING.md
+	// §11). The SERVER decides the mode; the client's billing_mode field is
+	// advisory at most. Three outcomes:
+	//   eligible driver           → recurring on the listing's interval, always
+	//   RECURRING_ONLY on         → fixed-term refused for everyone
+	//   otherwise                 → fixed-term, exactly as before (SERVICING)
+	// An eligible driver whose build predates the consent sheet, or whose
+	// client asks for fixed-term explicitly, is REFUSED with an instruction in
+	// the top-level message — old builds render that field and discard
+	// details (ios APIClient.swift:1439-1444). A refusal is an exit; the old
+	// silent downgrade to fixed-term was not.
 	billingMode := models.BillingModeFixedTerm
-	if body.BillingMode != nil && *body.BillingMode == string(models.BillingModeRolling) {
-		// Per-caller, not the bare flag: the same predicate answers GET
-		// /config, so the app can never be shown a weekly option that this
-		// driver would then be refused.
-		if !h.RollingOpenFor(userID) {
+	billingInterval := "weekly"
+	explicitFixed := body.BillingMode != nil && *body.BillingMode == string(models.BillingModeFixedTerm)
+	explicitRolling := body.BillingMode != nil && *body.BillingMode == string(models.BillingModeRolling)
+	clientBuild := httputil.ClientBuild(r)
+	// Messages. Old builds render ONLY error.message. Both must be TRUE today:
+	// there is no App Store build with the consent sheet yet, so "update"
+	// alone is an instruction that cannot be followed (review 2026-09-17).
+	const updateMsg = "Your version of DriveBai can't show the rental terms this car needs, so this request wasn't sent and nothing was charged. Ask us for the TestFlight build, or watch for the next App Store update."
+	const pausedMsg = "Rentals are paused for your account right now. Nothing was charged. We'll let you know when they reopen."
+	// A NAMED pilot (non-empty allowlist) or RECURRING_ONLY is where refusals
+	// are allowed to bite. With rolling open to everyone and RECURRING_ONLY
+	// off, an eligible driver on an old build still gets the historical
+	// fixed-term lease (now WARN-logged) — that is what keeps this deploy
+	// dark for the public.
+	pilot := h.rollingAllowlist != nil
+	switch {
+	case h.RollingOpenFor(userID):
+		// A pilot names BOTH parties (review 2026-09-17, lens 3): an owner
+		// outside it may be on a build with no owner-terms sheet, and a
+		// recurring request would strand them at Accept. Fall to fixed-term
+		// with a voice rather than refuse.
+		if pilot && !h.RollingOpenFor(car.OwnerID) {
+			h.logger.Warn("lease create: owner not in the weekly pilot — fixed-term created",
+				"driver_id", userID, "owner_id", car.OwnerID, "listing_id", listingID, "client_build", clientBuild, "user_agent", r.UserAgent())
+			break
+		}
+		interval, ok := models.BillingIntervalForRentPeriod(car.RentPricePeriod)
+		if ok && interval == "monthly" && !h.monthlyEnabled {
+			ok = false
+		}
+		if !ok {
+			h.logger.Warn("lease create: listing period not supported for a recurring lease",
+				"driver_id", userID, "listing_id", listingID, "owner_id", car.OwnerID, "period", car.RentPricePeriod)
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("INTERVAL_NOT_SUPPORTED",
+				fmt.Sprintf("This car is priced per %s. %s rentals aren't available yet — choose a car priced per week.",
+					models.RentPeriodLabel(car.RentPricePeriod), strings.Title(models.RentPeriodLabel(car.RentPricePeriod)))))
+			return
+		}
+		oldBuild := clientBuild > 0 && clientBuild < models.FirstConsentSheetBuild
+		if (explicitFixed || oldBuild) && (pilot || h.recurringOnly) {
+			h.logger.Warn("lease create: eligible driver refused — update required",
+				"driver_id", userID, "client_build", clientBuild, "explicit_fixed", explicitFixed, "user_agent", r.UserAgent())
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("APP_UPDATE_REQUIRED", updateMsg))
+			return
+		}
+		if explicitFixed || oldBuild {
+			// Public + RECURRING_ONLY off: the historical lease, said out loud.
+			h.logger.Warn("lease create: fixed-term created for an eligible driver (public rollout, old client)",
+				"driver_id", userID, "client_build", clientBuild, "explicit_fixed", explicitFixed, "user_agent", r.UserAgent(), "listing_id", listingID)
+			break
+		}
+		billingMode = models.BillingModeRolling
+		billingInterval = interval
+		weeks = 1
+	case h.recurringOnly:
+		h.logger.Warn("lease create: refused — RECURRING_ONLY is on and the driver is not eligible",
+			"driver_id", userID, "client_build", clientBuild, "user_agent", r.UserAgent())
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RENTALS_PAUSED", pausedMsg))
+		return
+	default:
+		if explicitRolling {
 			httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("ROLLING_DISABLED",
 				"Weekly rentals aren't available right now"))
 			return
 		}
-		billingMode = models.BillingModeRolling
-		weeks = 1
+		if h.rollingEnabled {
+			h.logger.Warn("lease create: fixed-term created while rolling is enabled",
+				"driver_id", userID, "client_build", clientBuild, "user_agent", r.UserAgent(), "listing_id", listingID)
+		}
 	}
 
 	lr := &models.LeaseRequest{
-		ListingID:   listingID,
-		OwnerID:     car.OwnerID,
-		DriverID:    userID,
-		WeeklyPrice: car.WeeklyRentPrice.Float64,
-		Currency:    car.Currency,
-		Weeks:       weeks,
-		Message:     body.Message,
-		BillingMode: billingMode,
+		ListingID:       listingID,
+		OwnerID:         car.OwnerID,
+		DriverID:        userID,
+		WeeklyPrice:     car.WeeklyRentPrice.Float64,
+		Currency:        car.Currency,
+		Weeks:           weeks,
+		Message:         body.Message,
+		BillingMode:     billingMode,
+		BillingInterval: billingInterval,
 	}
 
 	created, err := h.leaseRepo.CreateLeaseRequest(r.Context(), lr)
@@ -416,6 +490,9 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		carTitle = "your listing"
 	}
 	notifBody := fmt.Sprintf("%s requested %d week(s) for %s", driverName, created.Weeks, carTitle)
+	if created.BillingMode == models.BillingModeRolling {
+		notifBody = fmt.Sprintf("%s wants to rent %s — renews %s until returned", driverName, carTitle, models.IntervalLabel(created.BillingInterval))
+	}
 	go h.notifHandler.Notify(created.OwnerID, models.NotificationTypeLeaseRequest,
 		"New lease request", notifBody, &chatID, &leaseID)
 }
@@ -708,6 +785,21 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Rolling: the consent ceremony lives in the client (build >= 35). This
+	// is the step that takes money and binds the mandate, so an unproven
+	// client is refused HERE, before any Stripe call, regardless of what
+	// request-time decided — an unknown or stripped User-Agent is "not
+	// proven capable", never "not proven old" (review 2026-09-17).
+	if lr.BillingMode == models.BillingModeRolling {
+		if b := httputil.ClientBuild(r); b < models.FirstConsentSheetBuild {
+			h.logger.Warn("rolling intent: client cannot show the consent sheet — refused",
+				"lease_request_id", leaseID, "client_build", b, "user_agent", r.UserAgent())
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("APP_UPDATE_REQUIRED",
+				"Your version of DriveBai can't show the rental terms, so nothing was charged. Ask us for the TestFlight build, or watch for the next App Store update."))
+			return
+		}
+	}
+
 	// Block payment while the driver still has to act on a price change.
 	// We refuse with 409 PRICE_REVIEW_PENDING so iOS can map this to the
 	// "Owner updated the price — accept or decline before paying" surface.
@@ -854,6 +946,19 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 
 	// Compute amount
 	totalCents := lr.TotalAmountCents()
+	if lr.BillingMode == models.BillingModeRolling {
+		// One cycle of the lease's interval — for monthly that is the weekly
+		// figure ×RentMonthWeeks, i.e. the owner's typed monthly amount.
+		totalCents = lr.IntervalAmountCents()
+	}
+	// A nil Stripe service is a configuration state, not a request to panic
+	// on. Placed AFTER the adopt branch so a retry that only needs to adopt
+	// an already-succeeded payment never touches Stripe (2026-09-17).
+	if h.stripe == nil {
+		revertWindow()
+		httputil.WriteError(w, http.StatusServiceUnavailable, models.NewAPIError("PAYMENTS_DISABLED", "payments not configured"))
+		return
+	}
 	platformFeeCents := h.stripe.PlatformFee(totalCents)
 
 	// Get driver user for Stripe customer
@@ -910,13 +1015,14 @@ func (h *LeaseRequestHandler) CreatePaymentIntent(w http.ResponseWriter, r *http
 		// ledger enforces. v2 predates that ledger — a driver who consented
 		// on v2 was never told a debt blocks new rentals or survives
 		// account closure, and enforcement is on by default.
-		disclosureText, termsVersion := models.RollingDisclosureFor("weekly", totalCents)
+		disclosureText, termsVersion := models.RollingDisclosureFor(lr.BillingInterval, totalCents)
 		consentRow, cerr := h.billingRepo.CreateConsent(r.Context(), &models.BillingConsent{
-			LeaseRequestID: leaseID,
-			DriverID:       lr.DriverID,
-			AmountCents:    totalCents,
-			TermsVersion:   termsVersion,
-			DisclosureText: disclosureText,
+			LeaseRequestID:  leaseID,
+			DriverID:        lr.DriverID,
+			AmountCents:     totalCents,
+			BillingInterval: lr.BillingInterval,
+			TermsVersion:    termsVersion,
+			DisclosureText:  disclosureText,
 		})
 		if cerr != nil || consentRow == nil {
 			h.logger.Error("rolling consent: create", "error", cerr, "lease_request_id", leaseID)
@@ -2583,7 +2689,8 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 		Status:                      lr.Status,
 		WeeklyPrice:                 lr.WeeklyPrice,
 		OfferedWeeklyPrice:          lr.OfferedWeeklyPrice,
-		TotalAmount:                 float64(lr.TotalAmountCents()) / 100.0,
+		TotalAmount:                 leaseQuoteAmount(lr),
+		IntervalAmountCents:         leaseIntervalCents(lr),
 		Currency:                    lr.Currency,
 		Weeks:                       lr.Weeks,
 		Message:                     lr.Message,
@@ -2598,6 +2705,7 @@ func (h *LeaseRequestHandler) buildLeaseRequestResponseCtx(ctx context.Context, 
 		PriceChangePending:          lr.PriceChangePending,
 		PreviousOfferedWeeklyPrice:  lr.PreviousOfferedWeeklyPrice,
 		BillingMode:                 lr.BillingMode,
+		BillingInterval:             lr.BillingInterval,
 		RenewalHaltedReason:         lr.RenewalHaltedReason,
 	}
 	if lr.RentalEndsAt != nil {
@@ -2980,6 +3088,29 @@ func (h *LeaseRequestHandler) cardForPaymentMethod(pmID string, leaseID uuid.UUI
 // fixed — the safe direction for a feature that opens recurring mandates.
 func (h *LeaseRequestHandler) SetRollingAllowlistClosed(closed bool) { h.rollingClosed = closed }
 
+// SetRecurringOnly wires RECURRING_ONLY. See docs/DESIGN_RECURRING_BILLING.md §11.
+func (h *LeaseRequestHandler) SetRecurringOnly(on bool) { h.recurringOnly = on }
+
+// SetMonthlyEnabled wires MONTHLY_RENTALS_ENABLED.
+func (h *LeaseRequestHandler) SetMonthlyEnabled(on bool) { h.monthlyEnabled = on }
+
+// RecurringAvailableFor is the one predicate the listing screen, the request
+// handler and GET /config agree on: would a request from viewer for this
+// owner's listing (priced per period) be created as a recurring lease?
+func (h *LeaseRequestHandler) RecurringAvailableFor(viewer, owner uuid.UUID, period string) bool {
+	if !h.RollingOpenFor(viewer) {
+		return false
+	}
+	if h.rollingAllowlist != nil && !h.RollingOpenFor(owner) {
+		return false
+	}
+	interval, ok := models.BillingIntervalForRentPeriod(period)
+	if !ok || (interval == "monthly" && !h.monthlyEnabled) {
+		return false
+	}
+	return true
+}
+
 func (h *LeaseRequestHandler) SetRollingAllowlist(ids []uuid.UUID) {
 	if len(ids) == 0 {
 		h.rollingAllowlist = nil
@@ -3066,4 +3197,21 @@ func (h *LeaseRequestHandler) notifyOwnerRelease(ctx context.Context, lr *models
 	}
 	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypeLeaseRequest,
 		"Your car has been released", ownerBody, &chatID, &lrID)
+}
+
+// leaseQuoteAmount is the figure the card quotes and the driver taps Pay
+// from. For a recurring lease that is ONE cycle of its interval — the same
+// number the consent sheet and the PaymentIntent carry — never weekly × weeks.
+func leaseQuoteAmount(lr *models.LeaseRequest) float64 {
+	if lr.BillingMode == models.BillingModeRolling {
+		return lr.IntervalPrice()
+	}
+	return float64(lr.TotalAmountCents()) / 100.0
+}
+
+func leaseIntervalCents(lr *models.LeaseRequest) int64 {
+	if lr.BillingMode == models.BillingModeRolling {
+		return lr.IntervalAmountCents()
+	}
+	return 0
 }

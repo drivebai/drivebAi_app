@@ -329,21 +329,7 @@ struct ChatView: View {
             paymentLeaseRequestId = authorized.leaseRequestId
             showPaymentSheet = true
         }) { context in
-            RollingConsentSheet(
-                disclosureText: context.disclosureText,
-                termsVersion: context.termsVersion,
-                amountCents: context.intent.amount,
-                currencyCode: context.intent.currency,
-                carTitle: context.carTitle,
-                onAuthorize: {
-                    authorizedConsent = context
-                    rollingConsent = nil
-                },
-                onCancel: {
-                    authorizedConsent = nil
-                    rollingConsent = nil
-                }
-            )
+            rollingConsentSheet(for: context)
         }
         .background {
             // Zero-size overlay that presents Stripe PaymentSheet natively (no double-modal)
@@ -752,7 +738,8 @@ struct ChatView: View {
                 carTitle: leaseRequest.carTitle,
                 disclosureText: disclosure,
                 termsVersion: response.termsVersion,
-                intent: response
+                intent: response,
+                billingInterval: leaseRequest.billingInterval
             )
             return
         }
@@ -804,6 +791,30 @@ struct ChatView: View {
 /// Everything the weekly-rental authorization screen needs, captured at the
 /// moment the intent was created. Kept in this file deliberately: a new
 /// Swift file needs manual pbxproj registration in four places.
+// Extracted from the body: one more argument to the sheet pushed the
+// compiler past its type-check budget for ChatView.body (build 41).
+extension ChatView {
+    @ViewBuilder
+    func rollingConsentSheet(for context: RollingConsentContext) -> some View {
+        RollingConsentSheet(
+            disclosureText: context.disclosureText,
+            termsVersion: context.termsVersion,
+            billingInterval: context.billingInterval,
+            amountCents: context.intent.amount,
+            currencyCode: context.intent.currency,
+            carTitle: context.carTitle,
+            onAuthorize: {
+                authorizedConsent = context
+                rollingConsent = nil
+            },
+            onCancel: {
+                authorizedConsent = nil
+                rollingConsent = nil
+            }
+        )
+    }
+}
+
 struct RollingConsentContext: Identifiable, Equatable {
     let leaseRequestId: UUID
     let carTitle: String
@@ -811,6 +822,7 @@ struct RollingConsentContext: Identifiable, Equatable {
     let disclosureText: String
     let termsVersion: String?
     let intent: PaymentIntentAPIResponse
+    let billingInterval: String
 
     var id: UUID { leaseRequestId }
 

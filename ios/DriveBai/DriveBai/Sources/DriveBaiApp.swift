@@ -110,8 +110,11 @@ struct DriveBaiApp: App {
                             await ChatsListViewModel.shared.fetchChats()
                             await requestPushPermissionIfNeeded()
                             await supportInboxStore.refresh()
+                            // Recurring-only (build 41): config is per-account.
+                            await AppConfigStore.shared.refresh()
                         }
                     } else {
+                        AppConfigStore.shared.clear()
                         WebSocketManager.shared.disconnect()
                         ChatsListViewModel.shared.clearAll()
                         // Never let a previous guest's prompt or intent
@@ -123,6 +126,7 @@ struct DriveBaiApp: App {
                     guard phase == .active, authStore.state.isAuthenticated else { return }
                     WebSocketManager.shared.reconnectIfNeeded()
                     Task { await supportInboxStore.refresh() }
+                    Task { await AppConfigStore.shared.refresh() }
                     // Close the drift window on the Chats tab badge: if the
                     // WS dropped while backgrounded and reconnected silently
                     // we could miss new_message events, so re-sync the list

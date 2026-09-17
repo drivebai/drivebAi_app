@@ -57,6 +57,10 @@ func Logger(logger *slog.Logger) func(http.Handler) http.Handler {
 				"status", wrapped.status,
 				"duration_ms", duration.Milliseconds(),
 				"ip", r.RemoteAddr,
+				// The iOS app identifies its build here ("DriveBai/<build> …"). It
+				// is the only artefact that names the client build; without it the
+				// 2026-09-14 fixed-term-instead-of-weekly case was undiagnosable.
+				"user_agent", r.UserAgent(),
 			)
 		})
 	}

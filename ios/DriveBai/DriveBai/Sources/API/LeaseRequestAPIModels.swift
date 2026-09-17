@@ -41,6 +41,7 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
     // that predates rolling simply omits them and every lease decodes as
     // fixed_term, exactly as before.
     let billingMode: String?
+    let billingInterval: String?
     let rentalEndsAt: Date?
     let renewalStoppedAt: Date?
     let renewalHaltedReason: String?
@@ -77,6 +78,7 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
         case previousOfferedWeeklyPrice = "previous_offered_weekly_price"
         case priceChangeActedAt = "price_change_acted_at"
         case billingMode = "billing_mode"
+        case billingInterval = "billing_interval"
         case rentalEndsAt = "rental_ends_at"
         case renewalStoppedAt = "renewal_stopped_at"
         case renewalHaltedReason = "renewal_halted_reason"
@@ -120,6 +122,7 @@ struct LeaseRequestAPIResponse: Codable, Identifiable {
             //             lease can never slip past the authorization
             //             screen because of a failed read.
             billingMode: LeaseRequest.normalizedBillingMode(billingMode),
+            billingInterval: billingInterval ?? "weekly",
             rentalEndsAt: rentalEndsAt,
             renewalStoppedAt: renewalStoppedAt,
             renewalHaltedReason: renewalHaltedReason,
@@ -205,20 +208,18 @@ struct PaymentIntentAPIResponse: Codable {
 struct CreateLeaseRequestAPIRequest: Codable {
     let weeks: Int?
     let message: String?
-    /// "rolling" opts this request into weekly recurring billing. Omitted
-    /// (nil) means fixed_term — the server defaults the same way, so an
-    /// older client can never create a rolling lease by accident.
-    let billingMode: String?
+    // Recurring-only (build 41): the SERVER decides the billing mode from
+    // the driver's eligibility and the listing's period. The client sends
+    // no billing_mode; a stale build that still does is refused with
+    // APP_UPDATE_REQUIRED rather than silently downgraded.
 
-    init(weeks: Int?, message: String?, billingMode: String? = nil) {
+    init(weeks: Int?, message: String?) {
         self.weeks = weeks
         self.message = message
-        self.billingMode = billingMode
     }
 
     enum CodingKeys: String, CodingKey {
         case weeks, message
-        case billingMode = "billing_mode"
     }
 }
 

@@ -199,6 +199,33 @@ struct AppConfigAPIResponse: Codable {
     var rollingRentals: Bool { rollingRentalsEnabled ?? false }
 }
 
+/// App-level holder for GET /config. Recurring-only (build 41): the listing
+/// screen no longer decides anything from this — the server sets the mode —
+/// so it is fetched once per session and kept fresh on foreground and on
+/// account switch rather than on every listing appearance. Consumers that
+/// want to hint at weekly availability read `current`; nothing gates on it.
+@MainActor
+final class AppConfigStore: ObservableObject {
+    static let shared = AppConfigStore()
+    @Published private(set) var current: AppConfigAPIResponse?
+    @Published private(set) var lastError: String?
+
+    func refresh() async {
+        do {
+            current = try await APIClient.shared.fetchAppConfig()
+            lastError = nil
+        } catch {
+            // Keep the last good value; say what happened instead of hiding it.
+            lastError = error.localizedDescription
+        }
+    }
+
+    func clear() {
+        current = nil
+        lastError = nil
+    }
+}
+
 /// GET /me/stale-car-holds — cars of mine whose reservation is held by a
 /// rental that never started. The pickup scanner cannot see these, so without
 /// this surface an owner just finds their car missing from Discover.

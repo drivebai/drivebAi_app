@@ -16,6 +16,11 @@ struct RollingConsentSheet: View {
     let disclosureText: String
     /// The version string that text was recorded under (`terms_version`).
     let termsVersion: String?
+    /// "weekly" / "monthly" — the cadence the server's text describes. The
+    /// chrome around that text must not contradict it (review 2026-09-17).
+    var billingInterval: String = "weekly"
+    private var intervalLabel: String { billingInterval == "monthly" ? "monthly" : "weekly" }
+    private var intervalDays: Int { billingInterval == "monthly" ? 28 : 7 }
     /// First charge, in cents — the amount the button is about to take.
     let amountCents: Int64
     let currencyCode: String
@@ -50,7 +55,7 @@ struct RollingConsentSheet: View {
             }
             .background(Color(.systemGroupedBackground))
             .safeAreaInset(edge: .bottom) { actionBar }
-            .navigationTitle("Weekly rental")
+            .navigationTitle("\(intervalLabel.capitalized) rental")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -67,7 +72,7 @@ struct RollingConsentSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(carTitle)
                 .font(.headline)
-            Text("No fixed end date. It renews every 7 days until you return the car or turn off auto-renew.")
+            Text("No fixed end date. It renews every \(intervalDays) days until you return the car or turn off auto-renew.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -91,7 +96,7 @@ struct RollingConsentSheet: View {
             }
             Divider()
             HStack(alignment: .firstTextBaseline) {
-                Text("Then every 7 days")
+                Text("Then every \(intervalDays) days")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -136,7 +141,7 @@ struct RollingConsentSheet: View {
                 Image(systemName: didAuthorize ? "checkmark.square.fill" : "square")
                     .font(.system(size: 22))
                     .foregroundColor(didAuthorize ? Color.driveBaiPrimary : .secondary)
-                Text("I authorize these weekly charges.")
+                Text("I authorize these \(intervalLabel) charges.")
                     .font(.subheadline)
                     .foregroundColor(.primary)
                     .fixedSize(horizontal: false, vertical: true)

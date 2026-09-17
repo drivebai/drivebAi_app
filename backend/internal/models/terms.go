@@ -1,6 +1,9 @@
 package models
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Versioned terms for recurring billing. The consent record stores
 // TermsVersionRolling verbatim; changing ANY user-facing sentence below
@@ -177,11 +180,27 @@ func RollingDriverDisclosureMonthlyV1(amountCents int64) string {
 		amt, amt, TermsVersionRollingMonthlyV1)
 }
 
+// TermsVersionRollingMonthlyV2 supersedes monthly-v1 before any driver ever
+// consented on it (production holds zero monthly consents on 2026-09-17).
+// v1 promised retries "over the next two days"; the monthly charge lead is
+// 72 hours and the ladder's attempts land at T0, +24h, +48h and +72h, so the
+// honest word is "three". Old versions are never edited: v1 stays above.
+const TermsVersionRollingMonthlyV2 = "rolling-billing-monthly-v2 (2026-09-17)"
+
+// RollingDriverDisclosureMonthlyV2 is v1 with one fact corrected.
+func RollingDriverDisclosureMonthlyV2(amountCents int64) string {
+	v1 := RollingDriverDisclosureMonthlyV1(amountCents)
+	out := strings.Replace(v1,
+		"we'll retry your card over the next two days and notify you each time",
+		"we'll retry your card over the next three days and notify you each time", 1)
+	return strings.Replace(out, "Terms: "+TermsVersionRollingMonthlyV1+".", "Terms: "+TermsVersionRollingMonthlyV2+".", 1)
+}
+
 // RollingDisclosureFor picks the package for an interval, so no caller has to
 // remember which text goes with which cadence.
 func RollingDisclosureFor(interval string, amountCents int64) (text, version string) {
 	if interval == "monthly" {
-		return RollingDriverDisclosureMonthlyV1(amountCents), TermsVersionRollingMonthlyV1
+		return RollingDriverDisclosureMonthlyV2(amountCents), TermsVersionRollingMonthlyV2
 	}
 	return RollingDriverDisclosureV3(amountCents), TermsVersionRollingV3
 }

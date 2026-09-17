@@ -70,6 +70,13 @@ async function loadBilling(r: AdminRent) {
 
 const isRollingRent = computed(() =>
   billing.value?.billing_mode === 'rolling')
+// Recurring-only (2026-09-17): the cadence a recurring rent bills on.
+// Weekly for every row created before migration 000065; monthly listings
+// produce monthly rents. Copy below reads it instead of saying "week".
+const rentInterval = computed(() =>
+  (billing.value?.billing_interval || detail.value?.billing_interval || 'weekly') as 'weekly' | 'monthly')
+const intervalUnit = computed(() => rentInterval.value === 'monthly' ? 'month' : 'week')
+const intervalLabel = computed(() => rentInterval.value === 'monthly' ? 'Monthly' : 'Weekly')
 
 function cycleTone(status: string): 'success' | 'danger' | 'warning' | 'neutral' {
   switch (status) {
@@ -486,9 +493,14 @@ async function confirmResolve() {
       <dt>Status</dt><dd><StatusBadge :label="detail.status" :tone="statusTone(detail.status)" /></dd>
       <dt>Driver</dt><dd>{{ detail.driver_name }} ({{ detail.driver_email }})</dd>
       <dt>Owner</dt><dd>{{ detail.owner_name }} ({{ detail.owner_email }})</dd>
-      <dt>Weekly price</dt><dd>{{ fmtMoney(detail.weekly_price, detail.currency) }}</dd>
-      <dt>Weeks</dt><dd>{{ detail.weeks }}</dd>
-      <dt>Total</dt><dd>{{ fmtMoney(detail.weekly_price * detail.weeks, detail.currency) }}</dd>
+      <template v-if="detail.billing_mode === 'rolling'">
+        <dt>Price</dt><dd>{{ fmtMoney(detail.weekly_price * (rentInterval === 'monthly' ? 4 : 1), detail.currency) }} / {{ intervalUnit }} · renews until returned</dd>
+      </template>
+      <template v-else>
+        <dt>Weekly price</dt><dd>{{ fmtMoney(detail.weekly_price, detail.currency) }}</dd>
+        <dt>Weeks</dt><dd>{{ detail.weeks }}</dd>
+        <dt>Total</dt><dd>{{ fmtMoney(detail.weekly_price * detail.weeks, detail.currency) }}</dd>
+      </template>
       <dt>Created</dt><dd>{{ fmtDate(detail.created_at) }}</dd>
       <dt>Start</dt><dd>{{ fmtDate(detail.start_date) }}</dd>
       <dt>End</dt>
@@ -559,15 +571,15 @@ async function confirmResolve() {
     <div v-if="canSettle(detail) && !isRollingRent" class="resolve-actions">
       <button class="secondary" @click="startSettle(detail)">Settle rent…</button>
     </div>
-    <p v-if="isRollingRent" class="muted">This rental bills weekly — money settles per cycle below, not through the whole-rent settlement.</p>
+    <p v-if="isRollingRent" class="muted">This rental bills {{ intervalLabel.toLowerCase() }} — money settles per cycle below, not through the whole-rent settlement.</p>
 
     <template v-if="isRollingRent && billing">
-      <h4 class="section">Weekly billing</h4>
+      <h4 class="section">{{ intervalLabel }} billing</h4>
       <dl class="kv">
         <template v-if="billing.consent">
           <dt>Mandate</dt>
           <dd>
-            {{ fmtCents(billing.consent.amount_cents, detail.currency) }}/week
+            {{ fmtCents(billing.consent.amount_cents, detail.currency) }}/{{ intervalUnit }}
             <template v-if="billing.consent.card_last4"> · {{ billing.consent.card_brand }} ••••{{ billing.consent.card_last4 }}</template>
             <template v-if="billing.consent.revoked_at"> · <span class="danger-text">revoked ({{ billing.consent.revoked_reason || 'no reason' }})</span></template>
           </dd>
@@ -583,7 +595,7 @@ async function confirmResolve() {
       </dl>
       <table v-if="billing.cycles?.length" class="cycles-table">
         <thead>
-          <tr><th>Week</th><th>Period</th><th>Amount</th><th>Status</th><th>Owner share</th><th></th></tr>
+          <tr><th>Cycle</th><th>Period</th><th>Amount</th><th>Status</th><th>Owner share</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="c in billing.cycles" :key="c.id">
@@ -607,7 +619,7 @@ async function confirmResolve() {
           </tr>
         </tbody>
       </table>
-      <p v-else class="muted">No billing cycles yet — week 1 is cycled shortly after pickup.</p>
+      <p v-else class="muted">No billing cycles yet — cycle 1 is minted shortly after pickup.</p>
       <div v-if="waivingCycle" class="waive-form">
         <p>
           Waive week #{{ waivingCycle.cycle_number }}

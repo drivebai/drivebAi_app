@@ -39,6 +39,11 @@ func TestOwnerTermsGateRollingAcceptOnly(t *testing.T) {
 	e.leaseH.SetOwnerTermsRepository(termsRepo)
 	billingRepo := repository.NewBillingRepository(e.db)
 	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true)
+	// Recurring-only (2026-09-17): with rolling open to everyone a driver who
+	// omits billing_mode now gets a RECURRING lease. The fixed-term arm of
+	// this proof therefore runs as a NON-eligible driver (foreign allowlist);
+	// the rolling arm re-opens the allowlist first.
+	foreign := []uuid.UUID{uuid.New()}
 	run := uuid.NewString()[:8]
 	owner := e.seedUser(t, "car_owner", "ot_owner_"+run+"@example.com")
 	driver := e.seedUser(t, "driver", "ot_driver_"+run+"@example.com")
@@ -50,7 +55,10 @@ func TestOwnerTermsGateRollingAcceptOnly(t *testing.T) {
 		car := e.seedCar(t, owner, "available", true, false)
 		body := `{"weeks":1}`
 		if rolling {
+			e.leaseH.SetRollingAllowlist(nil)
 			body = `{"weeks":1,"billing_mode":"rolling"}`
+		} else {
+			e.leaseH.SetRollingAllowlist(foreign)
 		}
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("listingId", car.String())

@@ -381,3 +381,186 @@ never within sixty seconds of the halt lifting, never quoting a date already
 gone. The lapsed days are not back-billed; they are put in front of a human
 as an "unbilled rental days" ticket, because the consent says used days are
 owed and forgiving them is a decision.
+
+## 11. Recurring-only (decision 2026-09-17)
+
+### Decision (Aziza, recorded in spirit)
+
+Every new rental is recurring. It renews automatically at the listing's period until the
+car is returned. The driver is not offered a "fixed-term or weekly" choice. Supported
+charge intervals in this batch are **week** (existing) and **month** (engine generalised);
+**daily is deliberately not built**. Owner payouts stay **in arrears, one row per billing cycle** (weekly cycles pay weekly, as today). Fixed-term **creation** ends now for rolling-eligible drivers and for
+everyone when `RECURRING_ONLY` is turned on; code that **services** existing fixed-term
+leases (return, refund, payout, disputes) stays until its deletion trigger (§11.6).
+
+### Reasoning
+
+- Two modes, one of them silent, is how 2026-09-14 happened: a request intended as weekly
+  arrived as fixed-term with a 201 and no signal (see
+  `docs/REPRO_ROLLING_LEASE_DRIVER_FLOW.md` §1c, reproduced by running). Removing the
+  choice removes the class of bug, not one instance of it.
+- Daily is refused for three reasons: a Stripe fee per charge on a small amount; a decline
+  and dispute surface seven times larger per rental; and the consent text promises a notice
+  before **every** charge — a per-day notice is not something we can keep while the mail
+  provider is dead (the notice is push and in-app today, and drivers who deny push would
+  get nothing).
+- Owner payouts stay in arrears, one row per cycle: the payout ledger and the promotion sweep
+  are cycle-denominated and verified. For weekly cycles that is weekly in arrears, as today.
+  A monthly cycle would pay the owner once per 28 days — one of the reasons monthly ships off
+  until the owner package says so (§11.6 checklist).
+
+### What changed from the signed-off design (§9 "fixed-term stays available")
+
+§9 said "rolling offered on new bookings only; fixed-term stays available (client may
+later decide)". The client has now decided. Concretely:
+
+| Was | Now |
+|---|---|
+| Driver chooses via a second CTA ("Rent weekly instead") | One primary CTA; the **server** sets the mode |
+| `billing_mode` absent ⇒ `fixed_term`, silently | Rolling-eligible driver ⇒ `rolling` regardless of the field; explicit `fixed_term` from an eligible driver ⇒ `409 APP_UPDATE_REQUIRED` |
+| Client build irrelevant to the server | `User-Agent: DriveBai/<build>` is logged and, below the first consent-sheet build (35), refused for an eligible driver |
+| Interval hard-coded `weekly` at intent creation | Interval comes from the **listing's period**; week and month only; anything else refused at request creation |
+| One fixed-term path for everyone not on the pilot | Same, until `RECURRING_ONLY=true`; then fixed-term creation is refused for everyone |
+
+### The rule-12 constraint (no unreleased build required for a core flow)
+
+Build 33 is the App Store build and has no consent sheet, no `billing_mode` field and no
+`/config` call (`REPRO…` §1b). A recurring lease legally requires the consent ceremony at
+checkout (§2 of this document), so **a build-33 driver cannot be given a recurring lease**.
+Therefore:
+
+- While `RECURRING_ONLY` is **off**: a non-eligible driver (not on the allowlist) still
+  gets fixed-term; an eligible driver on a build below 35 is **refused with a message in
+  the top-level `error.message`** (old builds render exactly that field —
+  `ios/.../API/APIClient.swift:1439-1444` — and discard `details`). Being refused with an
+  instruction is an exit; being silently downgraded is not.
+- `RECURRING_ONLY` may be turned **on** only once the App Store build is ≥ 41. Until then
+  it would strand every App Store driver at request time. This is the gate in §11.6.
+
+### Interval model
+
+| | week | month |
+|---|---|---|
+| Source | listing `rent_price_period='weekly'` | `rent_price_period='monthly'` |
+| Cycle length | 7 days (`BillingCycleLength`) | 28 days (`BillingIntervalLength`, = 7 × `RentMonthWeeks`) |
+| Charge amount | the consent's `amount_cents` = listing weekly (or the agreed offer) | the consent's `amount_cents` = listing monthly amount; an agreed weekly offer converts via `ConvertRentCents(weekly→monthly)` |
+| Notice / charge lead | 48 h / 48 h | 72 h / 72 h |
+| Retry ladder | 4 attempts, 24 h apart (unchanged) | same ladder |
+| Consent text | `rolling-billing-v3` (signed, untouched) | `rolling-billing-monthly-v2` — new text because v1 promised retries "over the next two days" and the 72-hour lead makes that three |
+| Proration on return | per-day over `DaysInPeriod(period_start, period_end)` (already period-derived) | same |
+| Owner payout | weekly in arrears | **one payout row per cycle**, promoted when the cycle ends — for a 28-day cycle that is monthly in arrears. The owner package (v2) says "after each rental week"; this is one of the reasons monthly ships **off** (below). |
+
+`daily` listings are refused at request creation with `INTERVAL_NOT_SUPPORTED` and a
+plain message. There is one monthly listing in production today and it is not live.
+
+**Monthly ships built but OFF** (`MONTHLY_RENTALS_ENABLED`, default false; review
+2026-09-17). The engine, migration 000065, the cycle-1 bootstrap, the pickup anchor, both
+catch-up floors, the notice lead and four Stripe test-clock rehearsal lines are done and
+green. What is *not* done, and why the flag stays off until it is:
+
+| Gap | Where | Needed before ON |
+|---|---|---|
+| Owner package describes weekly collection and a one-week cap | `models/terms.go` RollingOwnerTermsV2; `OwnerTermsSheet` | George signs a monthly owner package; `requireOwnerTermsForRollingAccept` refuses monthly until then (`OWNER_TERMS_MONTHLY_PENDING`) |
+| Price-amendment disclosure is weekly-worded | `rolling_amendments.go` | monthly amendment package; refused `AMENDMENT_INTERVAL_UNSUPPORTED` until then |
+| Engine notification copy says "week" | `billing_engine.go` Notify bodies; iOS `RollingBillingCard`; admin waive copy | one interval-aware pass |
+| Listing shows the typed monthly amount, the charge is weekly×4 (≤2¢ drift on amounts not divisible by 4¢) | `IntervalAmountCents` | carry the typed cents onto the lease at INSERT |
+| Return preview before cycle 1 is minted prorates over 7 days | `vehicle_return.go` preview | interval-aware preview |
+| A parked monthly lease resumed after 14–56 days would be back-billed with a notice quoting a past date | `lease_request_repository.go` due-lister floor (56 d monthly) | re-anchor forward on resume instead of back-billing |
+| Owner of a daily listing is never told eligible drivers cannot rent it | `lease_request.go` `INTERVAL_NOT_SUPPORTED` (WARN only) | one notification per listing + a period column in admin Vehicles (0 daily listings today) |
+| A rolling lease refused at the pay step (client cannot prove build ≥ 35) tells the driver but not the owner why payment stalls | `lease_request.go` pay-step gate (WARN only; the accept TTL notifies both at 48 h / 72 h) | owner notice on the refusal |
+
+With the flag off an eligible driver on a monthly listing is refused with a plain message
+and the owner is WARN-logged; nothing is charged.
+
+Note for George's sign-off: the **weekly** v3 text also says "over the next two days"
+while the ladder's fourth attempt lands 24 h after period end. That wording is signed and
+is not being edited (old versions are never edited); if it is to change it becomes v4 and
+needs his sign-off alongside the recurring-only owner terms.
+
+### Flags and their boot lines
+
+| Flag | Default | Boot line |
+|---|---|---|
+| `ROLLING_RENTALS_ENABLED` | off | `"weekly rentals: ON" allowlisted_drivers=… open_to_everyone=…` |
+| `ROLLING_ALLOWLIST_USER_IDS` | empty = everyone | same line |
+| `RECURRING_ONLY` | **off** | `"recurring only: ON — fixed-term creation refused for everyone"` / `"recurring only: OFF — fixed-term still created for non-eligible drivers"` |
+| `MONTHLY_RENTALS_ENABLED` | **off** | `"monthly rentals: ON …"` / `"monthly rentals: OFF — monthly listings are refused for recurring-eligible drivers (weekly only)"` |
+
+`RECURRING_ONLY` is **forced off at boot** unless `ROLLING_RENTALS_ENABLED=true` with an
+empty, well-formed allowlist — with a named pilot it would refuse every non-pilot driver on
+the latest build (logged at Error: `"recurring only: REQUESTED BUT FORCED OFF …"`). The
+boot also probes `SELECT billing_interval FROM lease_requests` and exits if the schema is
+behind the binary. `GET /api/v1/admin/config` returns the switches and pilot sizes.
+
+Refusal codes a driver can meet at request time: `APP_UPDATE_REQUIRED` (eligible, build
+< 35 or explicit fixed-term, **only under a named pilot or RECURRING_ONLY** — with rolling
+open to everyone and RECURRING_ONLY off, such a driver still gets the historical fixed-term
+lease, WARN-logged), `RENTALS_PAUSED` (RECURRING_ONLY on, driver not eligible),
+`INTERVAL_NOT_SUPPORTED` (daily, or monthly while the flag is off). At **pay** time a rolling
+lease is refused `APP_UPDATE_REQUIRED` before any Stripe call unless the User-Agent proves a
+build ≥ 35 — unknown is not proven capable. Under a named pilot the **owner** must be in it
+too; otherwise the request falls to fixed-term with a WARN rather than stranding an owner at
+the terms gate.
+
+A fixed-term request created while any rolling is enabled is logged at WARN with the
+driver id and User-Agent, so the 2026-09-14 shape is never silent again.
+
+### 11.6 Deletion ledger
+
+Classification of every fixed-term-related symbol. **DEAD NOW** is deleted in this batch.
+**SERVICING** is kept until its trigger. **CREATION** is the server fallback kept behind
+the flag.
+
+| Symbol / surface | Class | Trigger to delete |
+|---|---|---|
+| iOS `requestWeeklyLease()`, "Rent weekly instead" CTA, `weeklyAvailability` tri-state, `loadWeeklyAvailability()`, retry row, `fetchAppConfig()` gating of the CTA (`DiscoverView.swift:777-780, 1063-1082, 1371-1400`) | DEAD NOW (build 41) | — |
+| iOS `CreateLeaseRequestAPIRequest.billingMode` (request side) | DEAD NOW (build 41 sends none; server decides) | — |
+| Backend `models.CreateLeaseRequestBody.BillingMode` | CREATION | RECURRING_ONLY on **and** App Store build ≥ 41 |
+| Backend fixed-term default at `lease_request.go:349` and `lease_request_repository.go:74` | CREATION | same |
+| `GET /api/v1/config` `rolling_rentals_enabled` | SERVICING (builds 35–40 read it) | App Store build ≥ 41 |
+| `SettleRentalPayout` fixed-term payout, `computeRefundOverDays` fixed-term caller in `vehicle_return.go`, `payment_reconciliation.go` fixed-term branch, `lease_rental_term_repository.go` fixed-term scanner predicates (`:65, :149`) | SERVICING | RECURRING_ONLY on for 1 week **and** zero non-terminal `fixed_term` rows **and** last fixed-term charge > 120 days ago |
+| iOS `LeaseRequestCardView` fixed-term rendering ("Pay Now", "per week — no further charges") | SERVICING | same |
+| Admin `Rents.vue` fixed-term sections | SERVICING | same |
+| `models.BillingModeFixedTerm` constant, DB `CHECK (billing_mode IN ('fixed_term','rolling'))` | SERVICING (rows exist) | same, plus a migration that leaves history readable |
+
+The trigger query, run read-only against production:
+
+```sql
+select
+  (select count(*) from lease_requests l
+    where l.billing_mode='fixed_term'
+      and l.status in ('requested','accepted','payment_pending','paid')
+      and not exists (select 1 from vehicle_returns vr
+                      where vr.lease_request_id=l.id and vr.status='completed')) as non_terminal_fixed_term,
+  (select max(p.created_at)::date from payments p
+    join lease_requests l on l.id=p.lease_request_id
+    where l.billing_mode='fixed_term' and p.status='succeeded')      as last_fixed_term_charge,
+  current_date - (select max(p.created_at)::date from payments p
+    join lease_requests l on l.id=p.lease_request_id
+    where l.billing_mode='fixed_term' and p.status='succeeded')      as days_since;
+-- delete SERVICING when: non_terminal_fixed_term = 0 AND days_since > 120
+-- AND RECURRING_ONLY has been on for >= 7 days (fly releases + secrets history).
+```
+
+On 2026-09-17 this returns 7 non-terminal rows and a last charge of 2026-09-14, so the
+earliest SERVICING deletion date is 2027-01-12, and only if those 7 rows close.
+
+### 11.7 What this batch actually deleted (2026-09-17)
+
+Tooling: `go vet` clean; `staticcheck -checks U1000 ./...` on the backend; Swift by
+reference-grep (no `periphery` installed); `vue-tsc --noEmit` clean.
+
+| Deleted now | Proof it was dead |
+|---|---|
+| iOS `WeeklyAvailability` tri-state, `loadWeeklyAvailability()`, `requestWeeklyLease()`, the retry row and the "Rent weekly instead" button (`DiscoverView.swift`) | every reference was inside that one file; build 41 compiles and archives without them |
+| iOS `CreateLeaseRequestAPIRequest.billingMode` (request side) | the only writer was `requestWeeklyLease()`; the server now ignores the field for eligible drivers |
+| Go `PurchaseRequestRepository.updateStatus`, `joinComma` (`purchase_request_repository.go`) | `staticcheck` U1000: zero callers; not on a money path |
+
+Money-related symbols found unused and **not** deleted: none reported by U1000. Note that
+`models.BillingMaxCatchUp` now only feeds the stale-escalation log copy — the two listers
+compute their floor per row from `billing_interval` — and stays for that copy.
+
+Kept on purpose (SERVICING, see 11.6): `GET /api/v1/config` and `AppConfigAPIResponse`
+(builds 35–40 read it; build 41 keeps it in `AppConfigStore`, refreshed on foreground and
+account switch, gating nothing), every fixed-term rendering and settlement path, and the
+`billing_mode` CHECK.

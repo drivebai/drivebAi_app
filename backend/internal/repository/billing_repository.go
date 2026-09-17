@@ -54,14 +54,15 @@ func (r *BillingRepository) CreateConsent(ctx context.Context, c *models.Billing
 		INSERT INTO lease_billing_consents
 			(id, lease_request_id, driver_id, amount_cents, billing_interval,
 			 terms_version, disclosure_text, created_at)
-		VALUES (gen_random_uuid(), $1, $2, $3, 'weekly', $4, $5, NOW())
+		VALUES (gen_random_uuid(), $1, $2, $3, COALESCE(NULLIF($6, ''), 'weekly'), $4, $5, NOW())
 		ON CONFLICT (lease_request_id) WHERE revoked_at IS NULL
 		DO UPDATE SET amount_cents = EXCLUDED.amount_cents,
 		    terms_version = EXCLUDED.terms_version,
-		    disclosure_text = EXCLUDED.disclosure_text
+		    disclosure_text = EXCLUDED.disclosure_text,
+		    billing_interval = EXCLUDED.billing_interval
 		WHERE lease_billing_consents.activated_at IS NULL
 		RETURNING `+billingConsentColumns,
-		c.LeaseRequestID, c.DriverID, c.AmountCents, c.TermsVersion, c.DisclosureText)
+		c.LeaseRequestID, c.DriverID, c.AmountCents, c.TermsVersion, c.DisclosureText, c.BillingInterval)
 	created, err := scanBillingConsent(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r.GetActiveConsent(ctx, c.LeaseRequestID)
@@ -188,7 +189,7 @@ func (r *BillingRepository) GetCycleByNumber(ctx context.Context, leaseID uuid.U
 
 // ClaimAttempt is the attempt gate: scheduled/retrying → charging,
 // attempt_count+1. It does NOT touch the intent id (review C2: the old
-// combined form stamped '' and poisoned the confirm ladder forever).
+// combined form stamped ” and poisoned the confirm ladder forever).
 func (r *BillingRepository) ClaimAttempt(ctx context.Context, id uuid.UUID) (bool, error) {
 	tag, err := r.db.Pool.Exec(ctx, `
 		UPDATE billing_cycles
@@ -359,7 +360,7 @@ func (r *BillingRepository) AdvanceOnCyclePaid(ctx context.Context, cycleID uuid
 		UPDATE lease_requests
 		SET rental_ends_at = CASE
 		        WHEN (delinquent_since IS NOT NULL OR renewal_halted_reason = 'delinquent') AND $2::timestamptz < NOW()
-		          THEN GREATEST(rental_ends_at, NOW() + $3::interval)
+		          THEN GREATEST(rental_ends_at, NOW() + CASE billing_interval WHEN 'monthly' THEN INTERVAL '144 hours' ELSE $3::interval END)
 		        ELSE GREATEST(rental_ends_at, $2)
 		      END,
 		    term_ending_notified_at = NULL,

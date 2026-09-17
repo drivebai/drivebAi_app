@@ -132,7 +132,8 @@ func TestMonthlyDisclosureStatesMonthlyFacts(t *testing.T) {
 
 func TestRollingDisclosureForPicksTheRightPackage(t *testing.T) {
 	mText, mVer := RollingDisclosureFor("monthly", 59976)
-	if mVer != TermsVersionRollingMonthlyV1 || !contains(mText, "every 28 days") {
+	if mVer != TermsVersionRollingMonthlyV2 || !contains(mText, "every 28 days") || !contains(mText, "over the next three days") ||
+		contains(mText, "over the next two days") || !contains(mText, "Terms: "+TermsVersionRollingMonthlyV2+".") || contains(mText, TermsVersionRollingMonthlyV1) {
 		t.Errorf("monthly interval got the wrong package: %s", mVer)
 	}
 	wText, wVer := RollingDisclosureFor("weekly", 14994)

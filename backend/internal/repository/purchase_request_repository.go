@@ -330,56 +330,6 @@ func (r *PurchaseRequestRepository) ListActiveForUser(ctx context.Context, userI
 
 // ─── State transitions ──────────────────────────────────────────────────────
 
-// updateStatus is the guarded, TX-scoped one-shot used by every simple
-// transition. Returns ErrInvalidPurchaseAction when no row matched the
-// pre-condition (either wrong actor or unexpected state).
-func (r *PurchaseRequestRepository) updateStatus(ctx context.Context, id uuid.UUID, fromStatuses []models.PurchaseRequestStatus, toStatus models.PurchaseRequestStatus, extraSet string, extraArgs []interface{}) (*models.PurchaseRequest, error) {
-	if len(fromStatuses) == 0 {
-		return nil, fmt.Errorf("purchase updateStatus: from-status required")
-	}
-	fromArgs := make([]string, 0, len(fromStatuses))
-	args := []interface{}{id, string(toStatus)}
-	for i, s := range fromStatuses {
-		fromArgs = append(fromArgs, fmt.Sprintf("$%d", 3+i))
-		args = append(args, string(s))
-	}
-	setExtra := ""
-	if extraSet != "" {
-		setExtra = ", " + extraSet
-	}
-	// Renumber extra args to continue after the fromStatus placeholders.
-	baseArg := len(args) + 1
-	_ = baseArg // extraArgs are already numbered by the caller via %s templating below
-	q := fmt.Sprintf(`
-		UPDATE purchase_requests
-		SET status = $2%s, updated_at = NOW()
-		WHERE id = $1 AND status IN (%s)
-		RETURNING `+purchaseRequestColumns,
-		setExtra, joinComma(fromArgs))
-
-	allArgs := append(args, extraArgs...)
-	row := r.db.Pool.QueryRow(ctx, q, allArgs...)
-	p, err := scanPurchaseRequest(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, models.ErrInvalidPurchaseAction
-	}
-	if err != nil {
-		return nil, fmt.Errorf("update purchase status: %w", err)
-	}
-	return p, nil
-}
-
-func joinComma(items []string) string {
-	out := ""
-	for i, it := range items {
-		if i > 0 {
-			out += ", "
-		}
-		out += it
-	}
-	return out
-}
-
 // AcceptOffer: seller accepts. Also inserts the initial Bill of Sale row
 // pre-filled from the car and offer amount so both parties can start
 // editing/signing immediately. Guarded to `requested` only.

@@ -217,6 +217,7 @@ func TestBatch2_RollingPathsUnreachableForFixedTerm(t *testing.T) {
 	ctx := context.Background()
 	billingRepo := repository.NewBillingRepository(e.db)
 	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, true) // flag ON
+	e.leaseH.SetRollingAllowlist([]uuid.UUID{uuid.New()})                // recurring-only: fixed-term needs a NON-eligible driver
 
 	owner := e.seedUser(t, "car_owner", "b2_owner_g@example.com")
 	driver := e.seedUser(t, "driver", "b2_driver_g@example.com")

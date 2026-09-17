@@ -68,22 +68,24 @@ struct LeaseRequestCardView: View {
 
     private var rollingDurationLine: String? {
         guard leaseRequest.isRolling else { return nil }
-        if leaseRequest.vehicleReturnedAt != nil { return "Weekly rental — car returned" }
-        if rollingStillRenewing { return "Renews weekly until returned" }
-        return "Weekly rental — not renewing"
+        let label = leaseRequest.intervalLabel.capitalized
+        if leaseRequest.vehicleReturnedAt != nil { return "\(label) rental — car returned" }
+        if rollingStillRenewing { return "Renews \(leaseRequest.intervalLabel) until returned" }
+        return "\(label) rental — not renewing"
     }
 
     private func rollingAmountLine(_ formatted: String) -> String? {
         guard leaseRequest.isRolling else { return nil }
-        // Before the first payment the amount IS the first week's charge.
+        // Before the first payment the amount IS the first cycle's charge.
         // After it, quoting a "first week" would misdescribe history.
+        let unit = leaseRequest.intervalUnit
         switch leaseRequest.status {
         case .requested, .accepted, .paymentPending:
-            return "First week: \(formatted), then the same every 7 days"
+            return "First \(unit): \(formatted), then the same every \(leaseRequest.intervalDays) days"
         default:
             return rollingStillRenewing
-                ? "\(formatted) per week"
-                : "\(formatted) per week — no further charges"
+                ? "\(formatted) per \(unit)"
+                : "\(formatted) per \(unit) — no further charges"
         }
     }
 

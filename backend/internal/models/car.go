@@ -291,6 +291,11 @@ type CarResponse struct {
 	// Pricing
 	IsForRent       bool     `json:"is_for_rent"`
 	WeeklyRentPrice *float64 `json:"weekly_rent_price,omitempty"`
+	// RecurringAvailable is the SERVER's answer, per viewer and per listing, to
+	// "will a request from you for this car renew?" — driver eligibility, the
+	// owner's pilot membership, and the listing's period all folded in. The
+	// client states nothing about renewal it did not read from here.
+	RecurringAvailable bool `json:"recurring_available"`
 	// RentPricePeriod/RentPriceAmount: the owner-typed price in the unit
 	// they chose (migration 000050). weekly_rent_price stays the derived
 	// canonical booking price; these drive DISPLAY ("$60/day") and the

@@ -52,6 +52,14 @@ func (h *LeaseRequestHandler) requireOwnerTermsForRollingAccept(w http.ResponseW
 	if err != nil || lr == nil || lr.BillingMode != models.BillingModeRolling || lr.OwnerID != userID {
 		return false // not rolling, or not the owner: the repo's own checks apply
 	}
+	if lr.BillingInterval == "monthly" {
+		// The owner package (RollingOwnerTermsV2) describes WEEKLY collection
+		// and a one-week cap. Until a monthly package is signed off, an owner
+		// cannot accept a monthly mandate under it (review 2026-09-17).
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("OWNER_TERMS_MONTHLY_PENDING",
+			"Monthly rentals aren't open to owners yet. This request can't be accepted until the monthly owner terms are available."))
+		return true
+	}
 	version, text := currentOwnerTerms()
 	ok, _, terr := h.ownerTermsRepo.Accepted(r.Context(), userID, version)
 	if terr != nil {

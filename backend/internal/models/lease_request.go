@@ -126,18 +126,23 @@ type LeaseRequest struct {
 	RentalEndsAt      *time.Time `json:"rental_ends_at,omitempty"`
 	VehicleReturnedAt *time.Time `json:"vehicle_returned_at,omitempty"`
 	// Rolling-billing fields (batch 2; NULL/default on every fixed-term row).
-	BillingMode          LeaseBillingMode `json:"billing_mode"`
-	RenewalStoppedAt     *time.Time       `json:"renewal_stopped_at,omitempty"`
-	RenewalStoppedBy     *string          `json:"renewal_stopped_by,omitempty"`
-	DelinquentSince      *time.Time       `json:"delinquent_since,omitempty"`
-	RenewalNotifiedFor   *time.Time       `json:"-"`
-	RenewalHaltedReason  *string          `json:"renewal_halted_reason,omitempty"`
-	ContinuesLeaseID     *uuid.UUID       `json:"continues_lease_id,omitempty"`
-	TermEndingNotifiedAt *time.Time       `json:"-"`
-	OverdueNotifiedAt    *time.Time       `json:"-"`
-	OverdueEscalatedAt   *time.Time       `json:"-"`
-	CreatedAt            time.Time        `json:"created_at"`
-	UpdatedAt            time.Time        `json:"updated_at"`
+	BillingMode LeaseBillingMode `json:"billing_mode"`
+	// BillingInterval is the cadence a recurring lease renews on ("weekly" or
+	// "monthly"), set at INSERT from the listing's price period and immutable
+	// (migration 000065). Fixed-term rows carry the default "weekly" and never
+	// read it.
+	BillingInterval      string     `json:"billing_interval"`
+	RenewalStoppedAt     *time.Time `json:"renewal_stopped_at,omitempty"`
+	RenewalStoppedBy     *string    `json:"renewal_stopped_by,omitempty"`
+	DelinquentSince      *time.Time `json:"delinquent_since,omitempty"`
+	RenewalNotifiedFor   *time.Time `json:"-"`
+	RenewalHaltedReason  *string    `json:"renewal_halted_reason,omitempty"`
+	ContinuesLeaseID     *uuid.UUID `json:"continues_lease_id,omitempty"`
+	TermEndingNotifiedAt *time.Time `json:"-"`
+	OverdueNotifiedAt    *time.Time `json:"-"`
+	OverdueEscalatedAt   *time.Time `json:"-"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 // ─── Rental term ────────────────────────────────────────────────────────────
@@ -271,6 +276,28 @@ func (lr *LeaseRequest) RemainingExtensionMinutes() int {
 
 // TotalAmountCents returns the total amount in smallest currency unit (cents),
 // using offered_weekly_price when set by the owner.
+// IntervalAmountCents is what one recurring cycle charges: the effective
+// weekly price (the agreed offer if any) converted to the lease's interval.
+// For weekly it equals TotalAmountCents() with weeks=1; for monthly it is
+// ConvertRentCents(weekly → monthly), i.e. ×RentMonthWeeks, which round-trips
+// exactly for any owner-typed monthly amount divisible by that many weeks.
+func (lr *LeaseRequest) IntervalAmountCents() int64 {
+	price := lr.WeeklyPrice
+	if lr.OfferedWeeklyPrice != nil {
+		price = *lr.OfferedWeeklyPrice
+	}
+	if lr.BillingInterval != "monthly" {
+		// Weekly is byte-identical to the historical first charge:
+		// TotalAmountCents with weeks pinned to 1, truncation and all.
+		return int64(price * 100)
+	}
+	weeklyCents := int64(math.Round(price * 100))
+	return ConvertRentCents(weeklyCents, RentPeriodWeekly, RentPeriodMonthly)
+}
+
+// IntervalPrice is IntervalAmountCents in currency units, for copy.
+func (lr *LeaseRequest) IntervalPrice() float64 { return float64(lr.IntervalAmountCents()) / 100 }
+
 func (lr *LeaseRequest) TotalAmountCents() int64 {
 	price := lr.WeeklyPrice
 	if lr.OfferedWeeklyPrice != nil {
@@ -404,6 +431,8 @@ type LeaseRequestResponse struct {
 	// can branch by predicate, exactly as the backend does; the rest are
 	// omitted for fixed-term leases, which never set them.
 	BillingMode         LeaseBillingMode `json:"billing_mode"`
+	BillingInterval     string           `json:"billing_interval,omitempty"`
+	IntervalAmountCents int64            `json:"interval_amount_cents,omitempty"`
 	RentalEndsAt        *RFC3339Time     `json:"rental_ends_at,omitempty"`
 	RenewalStoppedAt    *RFC3339Time     `json:"renewal_stopped_at,omitempty"`
 	RenewalHaltedReason *string          `json:"renewal_halted_reason,omitempty"`

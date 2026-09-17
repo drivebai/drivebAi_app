@@ -1605,6 +1605,10 @@ func (h *VehicleReturnHandler) issueRollingRefund(ctx context.Context, v *models
 					weekly := int64(0)
 					if consent, cerr := h.billingRepo.GetActiveConsent(ctx, lr.ID); cerr == nil && consent != nil {
 						weekly = consent.AmountCents
+						if consent.BillingInterval == "monthly" {
+							// The owner package caps the guarantee at ONE WEEK of rent.
+							weekly = models.WeeklyEquivalentCents(weekly, models.RentPeriodMonthly)
+						}
 					}
 					h.payoutH.SettleOwnerGuarantee(ctx, lr, cc.ID, owed, weekly)
 				}

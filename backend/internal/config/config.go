@@ -100,6 +100,17 @@ type Config struct {
 	// rolling lease creation and the billing engine. Default OFF; flips on
 	// only after the Stripe test-clock rehearsal passes (client rule).
 	RollingRentalsEnabled bool
+	// RecurringOnly ends fixed-term CREATION for everyone (decision 2026-09-17,
+	// docs/DESIGN_RECURRING_BILLING.md §11). Default OFF. Turning it on before
+	// the App Store build is >= 41 would strand every App Store driver at
+	// request time (rule 12), so the gate is human, not code.
+	RecurringOnly bool
+	// MonthlyRentalsEnabled admits the monthly interval for NEW recurring
+	// leases. Default OFF (review 2026-09-17): the engine, migration and
+	// rehearsal lines are built and proven, but the owner package, the
+	// amendment package and the iOS consent-sheet chrome are still weekly-
+	// worded. Turning this on is a product decision after those land.
+	MonthlyRentalsEnabled bool
 	// RollingAllowlistUserIDs confines weekly rentals to a named pilot the
 	// way SALES_ALLOWLIST_USER_IDS confines sales.
 	//
@@ -191,6 +202,8 @@ func Load() (*Config, error) {
 		SalesAllowlistUserIDs:     uuidListEnv("SALES_ALLOWLIST_USER_IDS"),
 		SalesAllowlistRejected:    uuidListRejects("SALES_ALLOWLIST_USER_IDS"),
 		RollingRentalsEnabled:     getEnv("ROLLING_RENTALS_ENABLED", "false") == "true",
+		RecurringOnly:             getEnv("RECURRING_ONLY", "false") == "true",
+		MonthlyRentalsEnabled:     getEnv("MONTHLY_RENTALS_ENABLED", "false") == "true",
 		RollingAllowlistUserIDs:   uuidListEnv("ROLLING_ALLOWLIST_USER_IDS"),
 		RollingAllowlistRejected:  uuidListRejects("ROLLING_ALLOWLIST_USER_IDS"),
 		RollingAllowlistMalformed: strings.TrimSpace(os.Getenv("ROLLING_ALLOWLIST_USER_IDS")) != "" && len(uuidListEnv("ROLLING_ALLOWLIST_USER_IDS")) == 0,

@@ -56,6 +56,14 @@ func runReturnPathLifecycle(t *testing.T, e *payoutEnv, billingRepo *repository.
 	t.Helper()
 	ctx := context.Background()
 	e.leaseH.SetBillingDependencies(billingRepo, payoutTestFeeBPS, rollingOn)
+	// Recurring-only (2026-09-17): this lifecycle proves FIXED-TERM is byte-
+	// identical with the flag on or off. With the flag on, an eligible driver
+	// would now get a recurring lease, so the driver is made non-eligible.
+	if rollingOn {
+		e.leaseH.SetRollingAllowlist([]uuid.UUID{uuid.New()})
+	} else {
+		e.leaseH.SetRollingAllowlist(nil)
+	}
 	e.leaseH.SetDisputeDependencies(repository.NewChargeDisputeRepository(e.db), e.payoutRepo)
 	e.returnH.SetBillingDependencies(billingRepo, e.payoutRepo, payoutTestFeeBPS)
 

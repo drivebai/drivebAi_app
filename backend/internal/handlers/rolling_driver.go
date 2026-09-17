@@ -97,7 +97,8 @@ func (h *LeaseRequestHandler) GetBillingStatus(w http.ResponseWriter, r *http.Re
 	// Next charge: T−24h before paid-through, only while renewals are live.
 	if lr.RentalEndsAt != nil && lr.RenewalStoppedAt == nil && lr.RenewalHaltedReason == nil &&
 		lr.VehicleReturnedAt == nil && consent != nil && consent.Active() {
-		resp["next_charge_at"] = lr.RentalEndsAt.Add(-models.BillingChargeLead)
+		resp["next_charge_at"] = lr.RentalEndsAt.Add(-models.BillingIntervalChargeLead(consent.BillingInterval))
+		resp["billing_interval"] = consent.BillingInterval
 	}
 	// The single open cycle (structural invariant: at most one).
 	if open, oerr := h.billingRepo.GetOpenCycleForLease(ctx, lr.ID); oerr == nil && open != nil {

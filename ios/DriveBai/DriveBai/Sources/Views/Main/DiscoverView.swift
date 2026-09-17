@@ -767,17 +767,8 @@ struct ListingDetailView: View {
     @State private var navigateToChat: ChatNavigationData?
     @State private var isRequestingLease = false
     @State private var leaseRequestError: String?
-    /// Whether the server currently allows weekly recurring rentals. The
-    /// app asks rather than assumes, so the option is simply absent when
-    /// the feature is off instead of failing after the driver picks it.
-    /// Tri-state on purpose. `false` is a real answer from the server;
-    /// "we could not ask" is a different thing and must not masquerade as
-    /// "not available" — that is exactly how a weekend of pilot testing was
-    /// lost to a feature that hid itself.
-    enum WeeklyAvailability: Equatable { case unknown, available, unavailable }
-    @State private var weeklyAvailability: WeeklyAvailability = .unknown
-    @State private var isRecheckingWeekly = false
-    private var weeklyRentalsAvailable: Bool { weeklyAvailability == .available }
+    /// Server-answered eligibility, kept fresh on foreground and account switch.
+    @ObservedObject private var appConfig = AppConfigStore.shared
     /// Present the "Buy this car" offer sheet.  Non-nil while it's on
     /// screen so we can hand the Car through by identity binding.
     @State private var buyRequestCar: Car?
@@ -960,7 +951,7 @@ struct ListingDetailView: View {
             // purchase for this car. Re-runs on every appearance, so returning
             // from the offer sheet / chat re-reconciles the button state.
             await loadActivePurchase()
-            await loadWeeklyAvailability()
+            if AppConfigStore.shared.current == nil { await AppConfigStore.shared.refresh() }
             await runPendingGuestActionIfNeeded()
             // Count a guest's car-detail opens so the engagement nudge can
             // fire only after real browsing. Guests only — never during the
@@ -1051,35 +1042,6 @@ struct ListingDetailView: View {
         }
     }
 
-    /// Ask whether weekly rentals are on, and keep asking briefly before
-    /// giving up.
-    ///
-    /// This used to be a single `try?` whose failure left the option hidden
-    /// with no retry and no signal — a network blip, an expired token, one
-    /// bad response, and the driver simply never saw the feature we were
-    /// trying to pilot, while we had no way to know it had happened. Now a
-    /// failure is retried and then SAID OUT LOUD, so the person holding the
-    /// phone can act on it.
-    private func loadWeeklyAvailability() async {
-        guard authStore.state.user != nil else { return }
-        isRecheckingWeekly = true
-        defer { isRecheckingWeekly = false }
-        for attempt in 0..<3 {
-            do {
-                let config = try await APIClient.shared.fetchAppConfig()
-                weeklyAvailability = config.rollingRentals ? .available : .unavailable
-                return
-            } catch {
-                #if DEBUG
-                print("[ListingDetailView] weekly availability attempt \(attempt + 1) failed: \(error)")
-                #endif
-                if attempt < 2 {
-                    try? await Task.sleep(nanoseconds: UInt64(400_000_000 << attempt))
-                }
-            }
-        }
-        weeklyAvailability = .unknown
-    }
 
     private func requestLease() {
         guard authStore.state.user != nil else {
@@ -1097,32 +1059,20 @@ struct ListingDetailView: View {
         }
     }
 
-    /// The weekly-rental entry point. Same ceremony as the fixed-term CTA —
-    /// the explainer still gates the POST — but it asks for a rental that
-    /// renews until the car goes back.
-    private func requestWeeklyLease() {
-        guard authStore.state.user != nil else {
-            deepLinkRouter.promptGuestSignIn(.rent(car.id))
-            return
-        }
-        guard !isRequestingLease else { return }
-        ProductTourCoordinator.shared.startOrRun(.driverPreRequest) {
-            sendLeaseRequest(billingMode: "rolling")
-        }
-    }
 
-    /// - Parameter billingMode: nil (fixed term, the historical behaviour)
-    ///   or "rolling" for weekly recurring. The server defaults to fixed
-    ///   term when the field is absent, so nothing can drift into rolling
-    ///   by accident.
-    private func sendLeaseRequest(billingMode: String? = nil) {
+    /// Recurring-only (build 41): the request carries no billing mode. The
+    /// SERVER decides — an eligible driver gets a recurring lease on the
+    /// listing's period; anyone else gets the historical fixed-term lease;
+    /// a stale build is refused with APP_UPDATE_REQUIRED, whose message the
+    /// alert below shows verbatim.
+    private func sendLeaseRequest() {
         guard let user = authStore.state.user, !isRequestingLease else { return }
         isRequestingLease = true
 
         Task {
             defer { isRequestingLease = false }
             do {
-                let request = CreateLeaseRequestAPIRequest(weeks: 1, message: nil, billingMode: billingMode)
+                let request = CreateLeaseRequestAPIRequest(weeks: 1, message: nil)
                 let response = try await APIClient.shared.createLeaseRequest(listingId: car.id, request: request)
 
                 // A real domain milestone: the request exists on the server.
@@ -1145,7 +1095,7 @@ struct ListingDetailView: View {
                 await ChatsListViewModel.shared.fetchChats()
             } catch let apiError as APIError {
                 if apiError.errorCode == RollingBillingErrorCode.rollingDisabled {
-                    leaseRequestError = "Weekly rentals aren't available right now. You can still rent this car for a fixed week."
+                    leaseRequestError = apiError.errorDescription ?? "Weekly rentals aren't available right now."
                 } else if apiError.errorCode == DebtErrorCode.outstandingBalance {
                     // Say the amount and where to clear it. A bare "you can't
                     // book" with no number and no exit is the worst version
@@ -1353,8 +1303,24 @@ struct ListingDetailView: View {
                                     ProgressView()
                                         .tint(.white)
                                 }
-                                Text("Request lease")
-                                    .font(.headline)
+                                // The label states only what the SERVER will do for
+                                // this driver: /config answers with the same predicate
+                                // that decides the mode, so the promise and the outcome
+                                // cannot disagree. Daily-priced cars never renew.
+                                // Prefer the per-listing answer (both parties, interval, monthly
+                                // flag — backend v105+); fall back to /config on older backends.
+                                if (car.recurringAvailable ?? (appConfig.current?.rollingRentals == true)) && car.rentPeriodUnit != "day" {
+                                    VStack(spacing: 2) {
+                                        Text("Rent — renews \(car.rentPeriodUnit == "month" ? "monthly" : "weekly")")
+                                            .font(.headline)
+                                        Text("Charged every \(car.rentPeriodUnit) until you return the car")
+                                            .font(.caption)
+                                            .foregroundColor(.white.opacity(0.85))
+                                    }
+                                } else {
+                                    Text("Request lease")
+                                        .font(.headline)
+                                }
                             }
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
@@ -1365,50 +1331,6 @@ struct ListingDetailView: View {
                         .disabled(isRequestingLease)
                         .onboardingTarget(.requestLeaseCTA)
 
-                        // Weekly recurring rental. Shown only when the
-                        // server says the feature is live, so it can never
-                        // be an option that only fails.
-                        if weeklyAvailability == .unknown {
-                            // We could not reach the server to ask. Say so and
-                            // offer the retry, rather than quietly behaving as
-                            // though the feature does not exist.
-                            Button {
-                                Task { await loadWeeklyAvailability() }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    if isRecheckingWeekly {
-                                        ProgressView().scaleEffect(0.8)
-                                    } else {
-                                        Image(systemName: "arrow.clockwise")
-                                    }
-                                    Text(isRecheckingWeekly
-                                         ? "Checking weekly rentals…"
-                                         : "Couldn't check weekly rentals — tap to retry")
-                                        .font(.caption)
-                                }
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                            }
-                            .disabled(isRecheckingWeekly)
-                        }
-                        if weeklyRentalsAvailable {
-                            Button(action: requestWeeklyLease) {
-                                VStack(spacing: 2) {
-                                    Text("Rent weekly instead")
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("Renews every 7 days until you return the car")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .foregroundColor(.driveBaiPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(Color.driveBaiPrimary.opacity(0.08))
-                                .cornerRadius(12)
-                            }
-                            .disabled(isRequestingLease)
-                        }
                     }
                 }
 

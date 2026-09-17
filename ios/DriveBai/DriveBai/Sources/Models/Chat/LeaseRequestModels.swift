@@ -124,6 +124,10 @@ struct LeaseRequest: Identifiable, Equatable {
     /// from older backends — and every existing construction site — keep
     /// the exact behaviour they had before rolling existed.
     var billingMode: String = "fixed_term"
+    /// The cadence a recurring lease renews on ("weekly" / "monthly"),
+    /// from the listing's price period (backend migration 000065). Fixed-term
+    /// rows carry "weekly" and never read it.
+    var billingInterval: String = "weekly"
     /// Paid-through instant on a rolling lease: the moment the currently
     /// paid week runs out. The next charge fires 24h before it.
     var rentalEndsAt: Date? = nil
@@ -153,8 +157,14 @@ struct LeaseRequest: Identifiable, Equatable {
         return raw.isEmpty ? "unknown" : raw
     }
 
-    /// True when this lease bills weekly with no fixed end date.
+    /// True when this lease renews with no fixed end date.
     var isRolling: Bool { billingMode == "rolling" }
+
+    /// Copy helpers for the interval: "week"/"month", "weekly"/"monthly",
+    /// and the cycle length in days the consent text quotes.
+    var intervalUnit: String { billingInterval == "monthly" ? "month" : "week" }
+    var intervalLabel: String { billingInterval == "monthly" ? "monthly" : "weekly" }
+    var intervalDays: Int { billingInterval == "monthly" ? 28 : 7 }
 
     /// The server didn't tell us how this lease bills. Nothing that takes
     /// money may proceed until a refresh says which it is.

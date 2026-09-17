@@ -514,6 +514,9 @@ struct Car: Identifiable, Equatable, Hashable {
     var isForRent: Bool
     var weeklyRentPrice: Money?
     var isForSale: Bool
+    /// The server's per-viewer, per-listing answer to "will a request from
+    /// me for this car renew?" — nil when the backend predates build 41.
+    var recurringAvailable: Bool? = nil
     var salePrice: Money?
 
     // Status

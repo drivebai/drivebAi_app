@@ -193,6 +193,14 @@ func (h *LeaseRequestHandler) AcceptAmendment(w http.ResponseWriter, r *http.Req
 		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("NO_MANDATE", "weekly billing is not active on this rental"))
 		return
 	}
+	if current.BillingInterval != "" && current.BillingInterval != "weekly" {
+		// The amendment disclosure is weekly-worded ("from your next rental
+		// week … every 7 days"); recording it over a monthly mandate would be
+		// consent to text that does not describe the charge (review 2026-09-17).
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("AMENDMENT_INTERVAL_UNSUPPORTED",
+			"Price changes aren't available on monthly rentals yet."))
+		return
+	}
 	disclosure := models.RollingAmendmentDisclosure(offer.NewAmountCents, current.AmountCents)
 	consent, err := h.billingRepo.AcceptAmendment(r.Context(), offer.ID, models.TermsVersionRollingAmendV1, disclosure)
 	if err != nil {

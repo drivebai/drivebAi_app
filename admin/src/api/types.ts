@@ -154,6 +154,8 @@ export interface AdminRent {
   chat_id: string
   status: string
   weekly_price: number
+  billing_mode?: string | null
+  billing_interval?: string | null
   weeks: number
   currency: string
   driver_id: string
@@ -795,6 +797,7 @@ export interface AdminCyclePayout {
 
 export interface AdminBillingCyclesResponse {
   billing_mode: string
+  billing_interval?: string | null
   rental_ends_at?: string | null
   renewal_halted_reason?: string | null
   delinquent_since?: string | null

@@ -39,9 +39,9 @@ type AdminUserRow struct {
 	ActiveRole *string `json:"active_role,omitempty"`
 	// ProfileRoles lists every mode profile the user has created, oldest
 	// first — tells the admin whether a switch target already exists.
-	ProfileRoles []string   `json:"profile_roles"`
-	FirstName    string     `json:"first_name"`
-	LastName     string     `json:"last_name"`
+	ProfileRoles     []string   `json:"profile_roles"`
+	FirstName        string     `json:"first_name"`
+	LastName         string     `json:"last_name"`
 	Phone            *string    `json:"phone,omitempty"`
 	IsEmailVerified  bool       `json:"is_email_verified"`
 	OnboardingStatus string     `json:"onboarding_status"`
@@ -49,8 +49,8 @@ type AdminUserRow struct {
 	BlockedAt        *time.Time `json:"blocked_at,omitempty"`
 	// DeletedAt marks an anonymized tombstone (admin account deletion,
 	// batch item 3). The row stays so counterparties' history survives.
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	ProfilePhotoURL *string `json:"profile_photo_url,omitempty"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	ProfilePhotoURL *string    `json:"profile_photo_url,omitempty"`
 	// HasLicense is the quick list-level signal; the drawer loads the full
 	// document rows (with status + signed URLs) via ListUserDocuments.
 	// Registration is deliberately absent: it is a car-owner document and
@@ -262,9 +262,9 @@ type AdminCarRow struct {
 	// car_vin_exposure_test.go govern driver-facing responses; admin
 	// endpoints sit behind RequireRole(admin)). Plate exists only here —
 	// no driver-facing response carries it.
-	VIN             *string    `json:"vin,omitempty"`
-	Plate           *string    `json:"plate,omitempty"`
-	CoverPhotoURL   *string    `json:"cover_photo_url,omitempty"`
+	VIN           *string `json:"vin,omitempty"`
+	Plate         *string `json:"plate,omitempty"`
+	CoverPhotoURL *string `json:"cover_photo_url,omitempty"`
 	// MissingRequiredDocuments is server-computed (QA pt-10): the required
 	// doc types (registration/inspection/insurance) this car does NOT yet
 	// have on file. Title is no longer required at approval (decision C —
@@ -752,6 +752,8 @@ type AdminRentRow struct {
 	Status          string     `json:"status"`
 	WeeklyPrice     float64    `json:"weekly_price"`
 	Weeks           int        `json:"weeks"`
+	BillingMode     string     `json:"billing_mode"`
+	BillingInterval string     `json:"billing_interval"`
 	Currency        string     `json:"currency"`
 	DriverID        uuid.UUID  `json:"driver_id"`
 	DriverName      string     `json:"driver_name"`
@@ -898,7 +900,7 @@ func (r *AdminRepository) ListRents(ctx context.Context, query, statusFilter str
 // vr.* columns come back NULL when no vehicle_return exists, which the
 // pointer fields on AdminRentRow handle cleanly.
 const adminRentSelectCols = `
-	lr.id, lr.chat_id, lr.status::text, lr.weekly_price, lr.weeks, lr.currency,
+	lr.id, lr.chat_id, lr.status::text, lr.weekly_price, lr.weeks, lr.billing_mode, lr.billing_interval, lr.currency,
 	d.id, COALESCE(d.first_name || ' ' || d.last_name, ''), d.email,
 	o.id, COALESCE(o.first_name || ' ' || o.last_name, ''), o.email,
 	c.id, c.title, c.year,
@@ -940,7 +942,7 @@ type rowScanner interface {
 }
 
 func scanAdminRent(s rowScanner, rent *AdminRentRow) error {
-	return s.Scan(&rent.ID, &rent.ChatID, &rent.Status, &rent.WeeklyPrice, &rent.Weeks, &rent.Currency,
+	return s.Scan(&rent.ID, &rent.ChatID, &rent.Status, &rent.WeeklyPrice, &rent.Weeks, &rent.BillingMode, &rent.BillingInterval, &rent.Currency,
 		&rent.DriverID, &rent.DriverName, &rent.DriverEmail,
 		&rent.OwnerID, &rent.OwnerName, &rent.OwnerEmail,
 		&rent.CarID, &rent.CarTitle, &rent.CarYear,

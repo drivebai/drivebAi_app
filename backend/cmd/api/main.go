@@ -67,6 +67,14 @@ func main() {
 		logger.Error("failed to connect to database", "error", err)
 		os.Exit(1)
 	}
+	// Schema/binary agreement is asserted at boot, not discovered at the first
+	// request. Migrations are applied by hand on this app (no release_command),
+	// and a binary that reads a column production does not have would 500 the
+	// entire rental core flow for every build (review 2026-09-17, lens 3).
+	if _, perr := db.Pool.Exec(ctx, "SELECT billing_interval FROM lease_requests LIMIT 0"); perr != nil {
+		logger.Error("SCHEMA BEHIND BINARY — apply migrations before running this build: fly proxy 5433:5432 -a drivebai-api-team-db, then `migrate -path backend/migrations -database $DATABASE_URL up` (needs 000065_consent_interval_monthly)", "error", perr)
+		os.Exit(1)
+	}
 	defer db.Close()
 	logger.Info("connected to database")
 
@@ -272,7 +280,29 @@ func main() {
 	leaseHandler.SetBillingDependencies(repository.NewBillingRepository(db), cfg.PlatformFeeBPS, cfg.RollingRentalsEnabled)
 	leaseHandler.SetOwnerTermsRepository(repository.NewOwnerTermsRepository(db))
 	leaseHandler.SetRollingAllowlist(cfg.RollingAllowlistUserIDs)
+	// RECURRING_ONLY may only bite when rolling is open to EVERYONE: with a
+	// named pilot it would refuse every non-pilot driver on the latest build
+	// (review 2026-09-17, lenses 3 and 4). Force it off and say so.
+	recurringOnly := cfg.RecurringOnly
+	if recurringOnly && (!cfg.RollingRentalsEnabled || len(cfg.RollingAllowlistUserIDs) > 0 || cfg.RollingAllowlistMalformed) {
+		logger.Error("recurring only: REQUESTED BUT FORCED OFF — it requires ROLLING_RENTALS_ENABLED=true with an EMPTY allowlist",
+			"rolling_enabled", cfg.RollingRentalsEnabled, "allowlisted_drivers", len(cfg.RollingAllowlistUserIDs), "allowlist_malformed", cfg.RollingAllowlistMalformed)
+		recurringOnly = false
+	}
+	leaseHandler.SetRecurringOnly(recurringOnly)
+	leaseHandler.SetMonthlyEnabled(cfg.MonthlyRentalsEnabled)
+	carHandler.SetRecurringAvailability(leaseHandler.RecurringAvailableFor)
 	leaseHandler.SetRollingAllowlistClosed(cfg.RollingAllowlistMalformed)
+	if recurringOnly {
+		logger.Info("recurring only: ON — fixed-term creation refused for everyone")
+	} else {
+		logger.Info("recurring only: OFF — fixed-term still created for non-eligible drivers")
+	}
+	if cfg.MonthlyRentalsEnabled {
+		logger.Info("monthly rentals: ON — monthly listings produce 28-day recurring leases")
+	} else {
+		logger.Info("monthly rentals: OFF — monthly listings are refused for recurring-eligible drivers (weekly only)")
+	}
 	if cfg.RollingRentalsEnabled {
 		logger.Info("weekly rentals: ON",
 			"allowlisted_drivers", len(cfg.RollingAllowlistUserIDs),
@@ -692,6 +722,19 @@ func main() {
 				// Stale pickup holds: see them, and free one on an owner's
 				// behalf while the owner-facing button waits for a build.
 				r.Get("/stale-car-holds", leaseHandler.AdminListStalePickupHolds)
+				// The three rollout switches and the pilot size — so support can
+				// see WHY a driver was refused without reading a boot log.
+				r.Get("/config", func(w http.ResponseWriter, r *http.Request) {
+					httputil.WriteJSON(w, http.StatusOK, map[string]interface{}{
+						"rolling_rentals_enabled":  cfg.RollingRentalsEnabled,
+						"rolling_allowlist_size":   len(cfg.RollingAllowlistUserIDs),
+						"rolling_allowlist_broken": cfg.RollingAllowlistMalformed,
+						"recurring_only":           recurringOnly,
+						"monthly_rentals_enabled":  cfg.MonthlyRentalsEnabled,
+						"sales_disabled":           cfg.DisableCarSales,
+						"sales_allowlist_size":     len(cfg.SalesAllowlistUserIDs),
+					})
+				})
 				r.Post("/lease-requests/{id}/release", leaseHandler.AdminReleaseStalePickup)
 				// Driver-license (and other personal-doc) review: list with
 				// signed URLs + approve/decline with required decline reason.

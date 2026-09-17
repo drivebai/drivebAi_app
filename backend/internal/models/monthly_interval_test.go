@@ -96,8 +96,11 @@ func TestIntervalLeadsAndLengths(t *testing.T) {
 	if BillingIntervalLength("weekly") != 7*24*time.Hour {
 		t.Error("weekly is not 7 days")
 	}
-	if BillingIntervalNoticeLead("monthly") != 72*time.Hour {
-		t.Error("monthly notice lead is not 72h")
+	// 144h since 2026-09-17: the monthly consent text promises a reminder
+	// "three days before every charge" and the charge itself fires three
+	// days before the period ends, so the reminder lands six days out.
+	if BillingIntervalNoticeLead("monthly") != 144*time.Hour {
+		t.Error("monthly notice lead is not 144h")
 	}
 	if BillingIntervalNoticeLead("weekly") != BillingNoticeLead {
 		t.Error("weekly notice lead changed")

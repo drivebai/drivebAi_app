@@ -38,7 +38,8 @@ type CarHandler struct {
 	salesDisabled bool
 	// salesAllowlist: the pilot group the sale flow stays open to while the
 	// switch is on. See SetSalesAllowlist / advertiseSale.
-	salesAllowlist map[uuid.UUID]struct{}
+	salesAllowlist     map[uuid.UUID]struct{}
+	recurringAvailable func(viewer, owner uuid.UUID, period string) bool
 	// reviewRepo feeds real owner rating aggregates into car responses.
 	// Wired via SetReviewRepository; nil in tests → "no ratings yet".
 	reviewRepo *repository.ReviewRepository
@@ -67,6 +68,20 @@ func (h *CarHandler) SetSalesAllowlist(ids []uuid.UUID) {
 // viewer. Off-switch: always. On-switch: only when both the viewer and the
 // car's owner are on the pilot allowlist, so the Buy CTA never leads to a
 // SALES_PAUSED refusal.
+// SetRecurringAvailability wires the lease handler's predicate (see
+// LeaseRequestHandler.RecurringAvailableFor) so listing responses can say,
+// per viewer, whether a request would renew.
+func (h *CarHandler) SetRecurringAvailability(f func(viewer, owner uuid.UUID, period string) bool) {
+	h.recurringAvailable = f
+}
+
+func (h *CarHandler) recurringFor(viewerID, ownerID uuid.UUID, period string) bool {
+	if h.recurringAvailable == nil {
+		return false
+	}
+	return h.recurringAvailable(viewerID, ownerID, period)
+}
+
 func (h *CarHandler) advertiseSale(viewerID, ownerID uuid.UUID) bool {
 	if !h.salesDisabled {
 		return true
@@ -364,6 +379,7 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 
 	// GetCar 403s above unless the caller is the owner — VIN is safe here.
 	resp := car.ToResponse(photos, documents, owner, true)
+	resp.RecurringAvailable = h.recurringFor(userID, car.OwnerID, car.RentPricePeriod)
 	h.applyOwnerRating(ctx, resp)
 	// active_rental carries driver name/earnings; the ownership 403 above
 	// already guarantees the requester is the owner, so it is safe to attach.
@@ -1567,7 +1583,9 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 			// value is untouched — owners still see their own listing's truth.
 			car.IsForSale = false
 		}
-		responses = append(responses, car.ToResponse(photos, nil, owner, false))
+		resp := car.ToResponse(photos, nil, owner, false)
+		resp.RecurringAvailable = isAuthenticated && h.recurringFor(viewerID, car.OwnerID, car.RentPricePeriod)
+		responses = append(responses, resp)
 		// First name straight from the users column — never split the joined
 		// display name (an empty first name would leak the surname).
 		firstName := ""

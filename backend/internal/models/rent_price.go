@@ -98,3 +98,55 @@ func RentPeriodLabel(period string) string {
 		return "week"
 	}
 }
+
+// BillingIntervalForRentPeriod maps a listing's price period to the interval a
+// recurring lease bills on. Week and month only: daily is refused at request
+// creation (docs/DESIGN_RECURRING_BILLING.md §11). ok=false means "not
+// supported", never "assume weekly".
+func BillingIntervalForRentPeriod(period string) (interval string, ok bool) {
+	switch period {
+	case RentPeriodMonthly:
+		return "monthly", true
+	case RentPeriodWeekly, "":
+		return "weekly", true
+	default:
+		return "", false
+	}
+}
+
+// IntervalLabel is the human word the copy uses: "weekly" / "monthly".
+func IntervalLabel(interval string) string {
+	if interval == "monthly" {
+		return "monthly"
+	}
+	return "weekly"
+}
+
+// FirstConsentSheetBuild is the first iOS build that shows the recurring
+// consent sheet at checkout (build 35, commit 915dbbd). A rolling-eligible
+// driver on an older build cannot lawfully be given a recurring lease and
+// is refused with an update message instead of a silent fixed-term.
+const FirstConsentSheetBuild = 35
+
+// IntervalUnit is the singular noun for copy: "week" / "month".
+func IntervalUnit(interval string) string {
+	if interval == "monthly" {
+		return "month"
+	}
+	return "week"
+}
+
+// rentPeriodForInterval maps a billing interval back to a rent period so the
+// one conversion function (ConvertRentCents) serves both vocabularies.
+func rentPeriodForInterval(interval string) string {
+	if interval == "monthly" {
+		return RentPeriodMonthly
+	}
+	return RentPeriodWeekly
+}
+
+// IntervalPriceFromWeekly converts a weekly price in currency units to the
+// interval's price, for copy that only has the weekly figure in hand.
+func IntervalPriceFromWeekly(weekly float64, interval string) float64 {
+	return float64(ConvertRentCents(int64(math.Round(weekly*100)), RentPeriodWeekly, rentPeriodForInterval(interval))) / 100
+}
