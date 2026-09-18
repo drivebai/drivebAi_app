@@ -1196,6 +1196,8 @@ func (h *LeaseRequestHandler) SyncPaymentStatus(w http.ResponseWriter, r *http.R
 		} else {
 			lr = updatedLR
 			h.logger.Info("sync: lease transitioned to paid", "lease_request_id", leaseID)
+			// Bind the mandate BEFORE telling the owner it renews.
+			h.activateRecoveredConsent(r.Context(), lr, pi.ID, pi.PaymentMethod)
 			syncResp := h.buildLeaseRequestResponse(r, lr, payment)
 			h.wsHub.Broadcast(&ws.Event{
 				Type:          "lease_request_updated",
@@ -3071,6 +3073,59 @@ func publicURLForDocument(userID uuid.UUID, filePath string) string {
 // without card details and the card-update path fills them in later. The
 // fingerprint is what recognises a returning debtor across accounts (a flag
 // for a human; never an automatic block).
+// activateRecoveredConsent binds the rolling mandate to the card that actually
+// paid, for the two recovery paths that reach 'paid' WITHOUT a webhook:
+// SyncPaymentStatus (the app calls it the moment PaymentSheet completes) and
+// adoptSucceededPayment (the reconciliation sweep).
+//
+// Before this, only the webhook activated the consent. A lease recovered by
+// either path was fully paid with a DEAD mandate: week 1 ran, the owner was
+// told "renewing until they return it", and at the next charge lead the engine
+// saw !consent.Active(), halted renewals and told the driver "we can't charge
+// your saved card anymore" — when no card had ever been attached and the
+// driver had done nothing wrong. Observed end to end in the T-C/C3 run
+// (2026-09-18): relay stopped mid-charge, sync recovered the lease, consent
+// stayed NULL. Webhook redelivery does heal it, so the exposure is a webhook
+// that is never successfully delivered inside Stripe's retry window.
+//
+// Safe to call on every paid transition: it is a no-op for fixed-term leases
+// and for a consent that is already active, and ActivateConsent itself is
+// claimed-once (activated_at IS NULL in its WHERE), so a racing webhook and a
+// racing sweep cannot double-bind or overwrite each other.
+func (h *LeaseRequestHandler) activateRecoveredConsent(ctx context.Context, lr *models.LeaseRequest, intentID, pmID string) {
+	if h.billingRepo == nil || lr == nil || lr.BillingMode != models.BillingModeRolling {
+		return
+	}
+	consent, cerr := h.billingRepo.GetActiveConsent(ctx, lr.ID)
+	if cerr != nil {
+		h.logger.Error("rolling consent: recovery lookup", "error", cerr, "lease_request_id", lr.ID)
+		return
+	}
+	if consent == nil || consent.ActivatedAt != nil {
+		return
+	}
+	if pmID == "" && intentID != "" && h.stripe != nil {
+		if pi, rerr := h.stripe.RetrievePaymentIntent(intentID); rerr == nil {
+			pmID = pi.PaymentMethod
+		} else {
+			h.logger.Warn("rolling consent: recovery could not retrieve intent", "error", rerr, "lease_request_id", lr.ID)
+		}
+	}
+	if pmID == "" {
+		// Leave it for webhook redelivery rather than binding a guess: an
+		// unactivated consent halts renewals loudly, a wrong card charges
+		// the wrong person.
+		h.logger.Error("rolling consent: recovery has no payment_method — leaving for webhook redelivery", "lease_request_id", lr.ID)
+		return
+	}
+	brand, last4, fp := h.cardForPaymentMethod(pmID, lr.ID)
+	if activated, aerr := h.billingRepo.ActivateConsent(ctx, lr.ID, pmID, brand, last4, fp); aerr != nil {
+		h.logger.Error("rolling consent: recovery activate", "error", aerr, "lease_request_id", lr.ID)
+	} else if activated {
+		h.logger.Info("rolling consent activated by recovery path", "lease_request_id", lr.ID)
+	}
+}
+
 func (h *LeaseRequestHandler) cardForPaymentMethod(pmID string, leaseID uuid.UUID) (brand, last4, fingerprint string) {
 	if h.stripe == nil || pmID == "" {
 		return "", "", ""

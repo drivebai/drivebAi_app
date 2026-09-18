@@ -129,6 +129,12 @@ func (h *LeaseRequestHandler) adoptSucceededPayment(ctx context.Context, payment
 	if err == nil {
 		h.logger.Info("adopted succeeded payment — lease paid",
 			"lease_request_id", lr.ID, "payment_id", payment.ID)
+		// Bind the rolling mandate before the side effects promise a renewal.
+		intentID := ""
+		if payment.PaymentIntentID != nil {
+			intentID = *payment.PaymentIntentID
+		}
+		h.activateRecoveredConsent(ctx, lr, intentID, "")
 		h.applyPaidSideEffectsCtx(ctx, lr)
 		return
 	}
