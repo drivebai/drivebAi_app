@@ -293,7 +293,26 @@ No fix was needed for §1b — build 33 already renders the server's message ver
 **Who/build:** D = driver phone, O = owner phone, A = admin (curl or console), S = scanner
 (automatic, 60 s tick). Verification SQL is against the **local** DB.
 
-### T-A. Weekly recurring, happy path, build 41 both sides
+### T-A. Weekly recurring, happy path, build 41 both sides — **RUN LIVE 2026-09-18, PASSED END TO END**
+
+Executed from an iOS build-41 phone (two instances, driver and owner) against a local
+backend on Stripe test mode. Observed values are in the table. This is the first time the
+recurring chain has run outside the test harness.
+
+**Money identity, checked at the end:** charged 30000¢ over two weeks → driver refunded
+15000¢ for the week that never started, owner kept 14250¢, platform fee 750¢. Sums to 30000¢.
+
+**Where the driver first meets "weekly":** on the CTA itself, before tapping anything —
+*"Rent — renews weekly / Charged every week until you return the car"*.
+**What the owner's push said:** *"Driver T wants to rent 2021 Honda CR-V — renews weekly
+until returned"*, and the chat line *"New rental request: USD 150.00 per week — renews
+weekly until the car is returned."*
+**The pre-charge notice:** *"Your rental renews soon — $150.00 will be charged to your saved
+card on Sat, Sep 19 10:53 +05. Return the car before then to stop."* It arrived **in-app
+only** locally, because APNs is not configured there; production has APNs, so it is push +
+in-app. Not email either way.
+**Notifications that did NOT arrive:** none were missing. Every step produced its expected
+notification, in-app.
 
 The driver first meets the word **"weekly"** at step 3 — the CTA itself. The owner's push at
 step 5 says **"<driver> wants to rent <car> — renews weekly until returned"**
@@ -306,7 +325,7 @@ step 5 says **"<driver> wants to rent <car> — renews weekly until returned"**
 | 1 | D 41 | Login → **"Use password instead"** (`OTPLoginView.swift:139`) | `POST /auth/login` | Discover | `select role from users where email=…` → `driver` | Visible only. OTP codes print to the server log locally. |
 | 2 | D 41 | Discover → tap the weekly car | `GET /cars/{id}` | Detail page, no loader | server log: no `GET /config` on this screen | **Changed from build 40:** there is no eligibility fetch here any more. |
 | 3 | D 41 | Detail → **"Rent — renews weekly"** with **"Charged every week until you return the car"** (`DiscoverView.swift:1313-1318`) | — | The explainer card | — | **Silent:** if the CTA reads plain "Request lease", the server said this pair is not eligible — check `allowlisted_drivers` and that BOTH ids are listed. |
-| 4 | D | Explainer → **"Send request"** | `POST /listings/{id}/lease-requests` (no `billing_mode`) | Chat opens; card badge **"Renews weekly until returned"** | `select status,billing_mode,billing_interval from lease_requests order by created_at desc limit 1` → `requested \| rolling \| weekly` **[ran]** | Visible: 409 `DRIVER_LICENSE_INVALID`, `OUTSTANDING_BALANCE`, `DUPLICATE_LEASE_REQUEST`, `APP_UPDATE_REQUIRED`. **Silent:** none — a downgrade to fixed-term now WARN-logs with the build. |
+| 4 ✅ | D | Explainer → **"Send request"** | `POST /listings/{id}/lease-requests` (no `billing_mode`) | Chat opens; card badge **"Renews weekly until returned"** | `select status,billing_mode,billing_interval from lease_requests order by created_at desc limit 1` → `requested \| rolling \| weekly` **[ran]** | Visible: 409 `DRIVER_LICENSE_INVALID`, `OUTSTANDING_BALANCE`, `DUPLICATE_LEASE_REQUEST`, `APP_UPDATE_REQUIRED`. **Silent:** none — a downgrade to fixed-term now WARN-logs with the build. |
 | 5 | O 41 | Chats/Today → **"Accept"** (`LeaseRequestCardView.swift:683`) | `POST /lease-requests/{id}/accept` | First time on a recurring request: the owner-terms sheet | on refusal: `409 OWNER_TERMS_REQUIRED` **[ran]** | **Dead end on builds 33–37** (sheet shipped in 38): generic error, no way through except the admin record endpoint. Pilot owners must be on 38+. |
 | 6 | O 41 | Terms sheet → read → accept | `GET /me/owner-terms`, `POST /me/owner-terms/accept` | Sheet dismisses | `select terms_version,channel from owner_terms_acceptances` → `owner-rolling-v2 (2026-09-10) \| app` **[ran]** | Visible: 409 on a stale version. |
 | 7 | O | **"Accept"** again | same | Card: accepted | lease → `accepted \| rolling` **[ran]**; `owner_payouts` → 0 rows yet | Connect onboarding does **not** gate here **[ran]**. |
@@ -315,7 +334,7 @@ step 5 says **"<driver> wants to rent <car> — renews weekly until returned"**
 | 10 | O 41 | Today → **"I handed over the keys"** (`KeyHandoverModels.swift:83`) | `POST /key-handovers/{id}/owner-confirm` | Waiting for driver | `key_handovers` → `owner_confirmed` | Visible only. |
 | 11 | D 41 | Today → **"I received the keys"** (`:85`) | `…/driver-confirm` | — | → `completed` | Visible only. |
 | 12 | D 41 | Chat card → **"I've picked up the car"** (`LeaseRequestCardView.swift:729`) | `POST /lease-requests/{id}/pickup-confirm` | "Pickup Confirmed" | `pickup_confirmed_at` set; car reserved; `rental_ends_at` = pickup + 7 d | Visible: deadline lapsed → auto-refund. |
-| 13 | S | ≤ 60 s | bootstrap phase | Billing card shows the next charge | `billing_cycles` → `1 \| paid \| period_end = pickup+7d`; `owner_payouts` → one `accruing` | **Silent:** kill switch off ⇒ no mint, no message. **[code]** / rehearsal Line 1. |
+| 13 ✅ | S | ≤ 60 s (observed 40 s) | bootstrap phase | Billing card shows the next charge | `billing_cycles` → `1 \| paid \| period_end = pickup+7d`; `owner_payouts` → one `accruing` | **Silent:** kill switch off ⇒ no mint, no message. **[code]** / rehearsal Line 1. |
 | 14 | A | Console → Rents → the rent → **"Weekly billing"** | `GET /admin/rents/{id}/billing-cycles` | Cycle table, "Mandate … /week" | — | Section hidden ⇒ the rent is fixed-term. |
 | 15 | you | Age 5 days, wait | notice phase | Push **"Your rental renews soon"** | `renewal_notified_for = rental_ends_at` | **By design:** a failed notice does not stop the charge. **[code]** |
 | 16 | you | Age 2 more days + advance the test clock | mint phase | Week 2 charged | cycle 2 `paid`; week-1 payout `accruing` → `pending` | **Silent:** if the webhook forwarder dropped, cycle 2 sits `charging`. **[rehearsal]** Line 1. |
@@ -325,7 +344,36 @@ step 5 says **"<driver> wants to rent <car> — renews weekly until returned"**
 | 20 | S | ≤ 60 s | post-return refund | Pro-rata refund | cycle 3 `partially_refunded`; Stripe refund `cycle-refund-…` | **Silent:** a failed refund parks `refund_status` — check tickets. **[rehearsal]** Line 4. |
 | 21 | S | after cycle 3's period_end | promote phase | Final payout | cycle-3 payout row `pending` | — |
 
-### T-B. Monthly recurring (local only, `MONTHLY_RENTALS_ENABLED=true`)
+### T-B. Monthly recurring — **BLOCKED BY DESIGN AT OWNER ACCEPT, 2026-09-18**
+
+**T-B as originally written was unrunnable, and that is a finding about the plan, not the
+product.** With `MONTHLY_RENTALS_ENABLED=true` the driver side works: the CTA reads *"Rent
+— renews monthly / Charged every month until you return the car"*, the price card shows the
+owner's typed **$600 per month**, the request is created `rolling | monthly`, and the owner's
+copy reads *"New rental request: USD 600.00 per month — renews monthly until the car is
+returned."*
+
+Then the owner taps Accept and the server refuses **409 `OWNER_TERMS_MONTHLY_PENDING`**:
+
+> Monthly rentals aren't open to owners yet. This request can't be accepted until the
+> monthly owner terms are available.
+
+That guard is correct. The owner package (`RollingOwnerTermsV2`) promises *"up to one week
+of that unpaid rent"*; a 28-day cycle would put four weeks of exposure behind a one-week
+promise. **So the flag is not the only gate.** `MONTHLY_RENTALS_ENABLED` governs whether a
+monthly *request* can be created; the owner package governs whether it can ever be
+*accepted*. Monthly cannot be completed through the app at all until George signs a monthly
+owner package — correcting the earlier characterisation of monthly as "built and rehearsed,
+just behind a flag".
+
+No workaround was used. Recording an owner-terms acceptance to make the test pass would be
+fabricating a consent artifact.
+
+The monthly **engine** remains proven by the four Stripe test-clock rehearsal lines, which
+build the lease directly and never touch owner accept: recurring charge, decline ladder,
+day-20 return (**refund $171.60, owner kept $428.40**), and dispute.
+
+### T-B (original, for when the monthly owner package exists)
 
 Same chain against the **monthly** listing ($600/month, derived weekly 150). Differences:
 
@@ -407,3 +455,59 @@ version add email as a second channel; it is not a blocker for the weekly pilot.
   amendment package and the sheet chrome are done (§11 checklist in the design doc).
 - The two stale July rentals on the reviewer account, which the owner-release endpoint can
   clear when someone decides to.
+
+---
+
+## 7. What the live run of 2026-09-18 found
+
+Four defects, three fixed on `v106-rent-refusal-notice` (commit `52baea3`), one recorded.
+
+| # | Defect | Severity | Status |
+|---|---|---|---|
+| 1 | The owner's "payment received" notification read *"Driver T paid for 1 week(s)"* on a lease that renews weekly forever — fixed-term wording on a recurring rental, the 2026-09-14 shape | high | **fixed** — `ownerPaidBody` names the cadence; fixed-term wording byte-identical |
+| 2 | The consent sheet showed the amount two ways at once: body *"$150.00"* (server), button *"Pay $150,00"* (device locale), on the screen where a recurring charge is authorized | medium | **fixed** — the button now formats the way the disclosure does |
+| 3 | Release builds appended the raw error code to user copy: *"…aren't open to owners yet. [OWNER_TERMS_MONTHLY_PENDING]"* | low | **fixed** — code kept under `#if DEBUG` |
+| 4 | `PUT /me/onboarding-progress` 400s in a retry loop — tour-progress sync has never worked | medium | **recorded, not fixed** |
+
+**On #4.** Both sides shipped in `06c7959` (2026-07-06) and have never matched. There are
+**three** contract mismatches, not one:
+
+- the client sends a flat object; the server wants `{"entries":[…]}`
+- the client sends `last_step_key` (string); the server entry takes `step` (int)
+- the endpoint returns the user's full row set; the client decodes a single object
+
+Proven by replaying the client's exact body against the local server: flat → `400
+"entries must contain at least one tour"`, entries-wrapped → `200`. Fixing it needs a
+decision about how `last_step_key` maps to `step`, which is a product question, and it is an
+unrelated subsystem — so it is not bundled into a rentals branch.
+
+### Things the run confirmed that had only been read before
+
+- The server, not the client, sets the billing mode: the phone sent no `billing_mode` and
+  the lease was created `rolling`. No WARN was logged, which is the proof it was not
+  silently downgraded.
+- **Consent, shown vs stored: byte-identical.** All fourteen sentences of the driver
+  disclosure appear verbatim in `lease_billing_consents.disclosure_text`; the owner package
+  matched at 1401 bytes, same SHA. The consent row is written at intent time with
+  `activated_at` NULL and bound to a card only after the charge succeeds.
+- The driver-confirm step on key handover **also** sets `pickup_confirmed_at`, so the
+  separate "I've picked up the car" tap is not needed on that path.
+- Cycle 1 minted 40 seconds after pickup, span exactly 7 days; week 2 charged itself
+  off-session with nobody tapping anything; paid-through advanced by exactly 7 days.
+- Owner payouts accrue and only become payable when the week ends; a fully refunded cycle's
+  payout is `voided`.
+- **T-C5 proved itself unprompted:** the owner never completed Stripe Connect, so their
+  payout parked as `awaiting_onboarding` with the money attributed, not lost.
+
+### Local environment notes for next time
+
+- The **Stripe CLI is not installed** and Homebrew wants a compiler toolchain; install the
+  prebuilt binary from the GitHub release instead.
+- `stripe listen` forwards events at the **account's** default API version (2020-08-27),
+  and the backend pins `2025-02-24.acacia`, so every webhook is rejected 400 and the lease
+  never reaches `paid`. Production is unaffected — its endpoint is registered at the pinned
+  version. For local runs, relay through a small signer that rewrites `api_version` and
+  re-signs, which is what the rehearsal harness does internally.
+- `STRIPE_PUBLISHABLE_KEY` must be the **real** test key. A placeholder makes Stripe's
+  PaymentSheet fail with *"Payment failed: There was an unexpected error"*, which looks like
+  a product defect and is not one.
