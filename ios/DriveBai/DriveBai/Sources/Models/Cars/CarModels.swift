@@ -517,6 +517,10 @@ struct Car: Identifiable, Equatable, Hashable {
     /// The server's per-viewer, per-listing answer to "will a request from
     /// me for this car renew?" — nil when the backend predates build 41.
     var recurringAvailable: Bool? = nil
+    /// Set when THIS viewer cannot rent this car at all — the request would
+    /// be refused whatever they tap. The app shows it as a notice instead of
+    /// a button that can only fail.
+    var rentUnavailableReason: String? = nil
     var salePrice: Money?
 
     // Status

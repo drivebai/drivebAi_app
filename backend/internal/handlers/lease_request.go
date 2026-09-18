@@ -370,7 +370,7 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	// there is no App Store build with the consent sheet yet, so "update"
 	// alone is an instruction that cannot be followed (review 2026-09-17).
 	const updateMsg = "Your version of DriveBai can't show the rental terms this car needs, so this request wasn't sent and nothing was charged. Ask us for the TestFlight build, or watch for the next App Store update."
-	const pausedMsg = "Rentals are paused for your account right now. Nothing was charged. We'll let you know when they reopen."
+
 	// A NAMED pilot (non-empty allowlist) or RECURRING_ONLY is where refusals
 	// are allowed to bite. With rolling open to everyone and RECURRING_ONLY
 	// off, an eligible driver on an old build still gets the historical
@@ -395,9 +395,13 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 		if !ok {
 			h.logger.Warn("lease create: listing period not supported for a recurring lease",
 				"driver_id", userID, "listing_id", listingID, "owner_id", car.OwnerID, "period", car.RentPricePeriod)
-			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("INTERVAL_NOT_SUPPORTED",
-				fmt.Sprintf("This car is priced per %s. %s rentals aren't available yet — choose a car priced per week.",
-					models.RentPeriodLabel(car.RentPricePeriod), strings.Title(models.RentPeriodLabel(car.RentPricePeriod)))))
+			// Same words the listing screen shows, so the refusal never
+			// contradicts the notice the driver just read.
+			msg := h.RentRefusalFor(userID, car.OwnerID, car.RentPricePeriod)
+			if msg == "" {
+				msg = "This car can't be rented right now."
+			}
+			httputil.WriteError(w, http.StatusConflict, models.NewAPIError("INTERVAL_NOT_SUPPORTED", msg))
 			return
 		}
 		oldBuild := clientBuild > 0 && clientBuild < models.FirstConsentSheetBuild
@@ -419,7 +423,7 @@ func (h *LeaseRequestHandler) CreateLeaseRequest(w http.ResponseWriter, r *http.
 	case h.recurringOnly:
 		h.logger.Warn("lease create: refused — RECURRING_ONLY is on and the driver is not eligible",
 			"driver_id", userID, "client_build", clientBuild, "user_agent", r.UserAgent())
-		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RENTALS_PAUSED", pausedMsg))
+		httputil.WriteError(w, http.StatusConflict, models.NewAPIError("RENTALS_PAUSED", rentalsPausedMsg))
 		return
 	default:
 		if explicitRolling {
@@ -3093,6 +3097,43 @@ func (h *LeaseRequestHandler) SetRecurringOnly(on bool) { h.recurringOnly = on }
 
 // SetMonthlyEnabled wires MONTHLY_RENTALS_ENABLED.
 func (h *LeaseRequestHandler) SetMonthlyEnabled(on bool) { h.monthlyEnabled = on }
+
+// rentalsPausedMsg is shared by the listing notice and the RENTALS_PAUSED
+// refusal, so a driver never reads one sentence and then a different one.
+const rentalsPausedMsg = "Rentals are paused for your account right now. Nothing was charged. We'll let you know when they reopen."
+
+// RentRefusalFor returns the reason THIS viewer would be refused a rental of
+// this listing outright, or "" when a request would succeed in some mode.
+//
+// It mirrors the refusals in CreateLeaseRequest exactly, so the listing screen
+// can show a notice instead of a button that can only 409. Only the
+// interval refusals are absolute: everything else either creates a recurring
+// lease or falls back to fixed-term.
+func (h *LeaseRequestHandler) RentRefusalFor(viewer, owner uuid.UUID, period string) string {
+	if !h.RollingOpenFor(viewer) {
+		if h.recurringOnly {
+			// RECURRING_ONLY refuses this viewer on EVERY listing. Unreachable
+			// while a named pilot is in force (main.go forces the flag off
+			// unless rolling is open to everyone), but the pilot ending is the
+			// intended future state and that invariant lives in main.go, not
+			// here — so the notice models it rather than trusting it.
+			return rentalsPausedMsg
+		}
+		return "" // fixed-term path: any period is rentable, as it always was
+	}
+	if h.rollingAllowlist != nil && !h.RollingOpenFor(owner) {
+		return "" // falls back to fixed-term rather than refusing
+	}
+	interval, ok := models.BillingIntervalForRentPeriod(period)
+	if !ok {
+		return fmt.Sprintf("This car is priced per %s. Rentals by the %s aren't available yet — try a car priced per week.",
+			models.RentPeriodLabel(period), models.RentPeriodLabel(period))
+	}
+	if interval == "monthly" && !h.monthlyEnabled {
+		return "This car is priced per month. Monthly rentals aren't available yet — try a car priced per week."
+	}
+	return ""
+}
 
 // RecurringAvailableFor is the one predicate the listing screen, the request
 // handler and GET /config agree on: would a request from viewer for this

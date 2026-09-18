@@ -1044,6 +1044,13 @@ struct ListingDetailView: View {
 
 
     private func requestLease() {
+        // A guest-fed Car carries no refusal reason (the field is
+        // authenticated-only), and the sign-in replay calls this directly,
+        // bypassing the CTA switch. Re-check before spending a 409 on them.
+        guard (car.rentUnavailableReason ?? "").isEmpty else {
+            leaseRequestError = car.rentUnavailableReason
+            return
+        }
         guard authStore.state.user != nil else {
             // Guest: the prime conversion moment — they found a car they
             // want. Never a silent no-op.
@@ -1296,6 +1303,14 @@ struct ListingDetailView: View {
                         // server-side (CAR_NOT_AVAILABLE) — mirror it here
                         // like the Buy CTA already does.
                         rentUnavailableNotice("Sale in progress — check back later")
+                    // The server says this viewer cannot rent this car at all
+                    // (a period we don't bill yet). Say so rather than offer a
+                    // button whose only outcome is a 409. Ordered AFTER the
+                    // purchase case because the server refuses in that order
+                    // too: occupancy/blocking purchase (CAR_NOT_AVAILABLE)
+                    // comes before the interval check.
+                    case .available where !(car.rentUnavailableReason ?? "").isEmpty:
+                        rentUnavailableNotice(car.rentUnavailableReason ?? "")
                     case .available:
                         Button(action: requestLease) {
                             HStack(spacing: 6) {

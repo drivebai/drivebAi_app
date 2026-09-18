@@ -296,6 +296,12 @@ type CarResponse struct {
 	// owner's pilot membership, and the listing's period all folded in. The
 	// client states nothing about renewal it did not read from here.
 	RecurringAvailable bool `json:"recurring_available"`
+	// RentUnavailableReason is set when THIS viewer cannot rent this car at
+	// all — the request would be refused whatever they tap. Empty means the
+	// rent button is live. It exists so the app never offers a button that can
+	// only fail, the same way it already suppresses the CTA for a sold or
+	// reserved car (review 2026-09-18).
+	RentUnavailableReason string `json:"rent_unavailable_reason,omitempty"`
 	// RentPricePeriod/RentPriceAmount: the owner-typed price in the unit
 	// they chose (migration 000050). weekly_rent_price stays the derived
 	// canonical booking price; these drive DISPLAY ("$60/day") and the
@@ -587,6 +593,10 @@ func (c *Car) ToResponse(photos []CarPhoto, documents []CarDocument, owner *User
 // surname when first_name is empty. secret keys the coordinate displacement
 // HMAC; it must be server-held so the offset cannot be reversed.
 func (r *CarResponse) RedactForPublic(ownerFirstName string, secret []byte) {
+	// Never leak a per-viewer refusal to an unauthenticated reader: the
+	// producer already guards on isAuthenticated, but the redactor is where
+	// this is enforced (review 2026-09-18).
+	r.RentUnavailableReason = ""
 	r.OwnerID = uuid.Nil
 
 	r.Location.Address = ""

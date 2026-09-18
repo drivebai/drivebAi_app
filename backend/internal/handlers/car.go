@@ -40,6 +40,7 @@ type CarHandler struct {
 	// switch is on. See SetSalesAllowlist / advertiseSale.
 	salesAllowlist     map[uuid.UUID]struct{}
 	recurringAvailable func(viewer, owner uuid.UUID, period string) bool
+	rentRefusal        func(viewer, owner uuid.UUID, period string) string
 	// reviewRepo feeds real owner rating aggregates into car responses.
 	// Wired via SetReviewRepository; nil in tests → "no ratings yet".
 	reviewRepo *repository.ReviewRepository
@@ -73,6 +74,19 @@ func (h *CarHandler) SetSalesAllowlist(ids []uuid.UUID) {
 // per viewer, whether a request would renew.
 func (h *CarHandler) SetRecurringAvailability(f func(viewer, owner uuid.UUID, period string) bool) {
 	h.recurringAvailable = f
+}
+
+// SetRentRefusal wires LeaseRequestHandler.RentRefusalFor so a listing can say
+// "you cannot rent this at all" instead of offering a button that only 409s.
+func (h *CarHandler) SetRentRefusal(f func(viewer, owner uuid.UUID, period string) string) {
+	h.rentRefusal = f
+}
+
+func (h *CarHandler) refusalFor(viewerID, ownerID uuid.UUID, period string) string {
+	if h.rentRefusal == nil {
+		return ""
+	}
+	return h.rentRefusal(viewerID, ownerID, period)
 }
 
 func (h *CarHandler) recurringFor(viewerID, ownerID uuid.UUID, period string) bool {
@@ -380,6 +394,12 @@ func (h *CarHandler) GetCar(w http.ResponseWriter, r *http.Request) {
 	// GetCar 403s above unless the caller is the owner — VIN is safe here.
 	resp := car.ToResponse(photos, documents, owner, true)
 	resp.RecurringAvailable = h.recurringFor(userID, car.OwnerID, car.RentPricePeriod)
+	// GetCar is owner-only, so this would ask "would the owner rent their own
+	// car" and answer with driver-facing copy. The real answer there is
+	// CANNOT_LEASE_OWN_CAR; leave the field empty.
+	if userID != car.OwnerID {
+		resp.RentUnavailableReason = h.refusalFor(userID, car.OwnerID, car.RentPricePeriod)
+	}
 	h.applyOwnerRating(ctx, resp)
 	// active_rental carries driver name/earnings; the ownership 403 above
 	// already guarantees the requester is the owner, so it is safe to attach.
@@ -1585,6 +1605,9 @@ func (h *CarHandler) ListAvailableListings(w http.ResponseWriter, r *http.Reques
 		}
 		resp := car.ToResponse(photos, nil, owner, false)
 		resp.RecurringAvailable = isAuthenticated && h.recurringFor(viewerID, car.OwnerID, car.RentPricePeriod)
+		if isAuthenticated {
+			resp.RentUnavailableReason = h.refusalFor(viewerID, car.OwnerID, car.RentPricePeriod)
+		}
 		responses = append(responses, resp)
 		// First name straight from the users column — never split the joined
 		// display name (an empty first name would leak the surname).

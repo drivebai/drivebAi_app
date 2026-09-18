@@ -292,6 +292,7 @@ func main() {
 	leaseHandler.SetRecurringOnly(recurringOnly)
 	leaseHandler.SetMonthlyEnabled(cfg.MonthlyRentalsEnabled)
 	carHandler.SetRecurringAvailability(leaseHandler.RecurringAvailableFor)
+	carHandler.SetRentRefusal(leaseHandler.RentRefusalFor)
 	leaseHandler.SetRollingAllowlistClosed(cfg.RollingAllowlistMalformed)
 	if recurringOnly {
 		logger.Info("recurring only: ON — fixed-term creation refused for everyone")

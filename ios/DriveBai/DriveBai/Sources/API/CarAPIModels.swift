@@ -27,6 +27,7 @@ struct CarAPIResponse: Codable {
     let rentPriceAmount: Double?
     let isForSale: Bool
     let recurringAvailable: Bool?
+    let rentUnavailableReason: String?
     let salePrice: Double?
     let currency: String
     let requirements: CarRequirementsResponse
@@ -65,6 +66,7 @@ struct CarAPIResponse: Codable {
         case rentPriceAmount = "rent_price_amount"
         case isForSale = "is_for_sale"
         case recurringAvailable = "recurring_available"
+        case rentUnavailableReason = "rent_unavailable_reason"
         case salePrice = "sale_price"
         case currency, requirements, status
         case isApproved = "is_approved"
@@ -508,6 +510,7 @@ extension CarAPIResponse {
             hasActivePurchase: hasActivePurchase ?? false
         )
         car.recurringAvailable = recurringAvailable
+        car.rentUnavailableReason = rentUnavailableReason
         return car
     }
 }
