@@ -1347,6 +1347,24 @@ final class APIClient: APIClientProtocol {
         return try await execute(request: request, authenticated: authenticated)
     }
 
+    /// The commit this binary was built from.
+    ///
+    /// The build NUMBER does not identify a build: archives have reused 11, 30
+    /// and 39, and the login history is not monotonic, so when a pilot driver
+    /// reports a problem we cannot tell which code they are running. The SHA
+    /// can.
+    ///
+    /// Info.plist declares `GitCommit = $(GIT_COMMIT)`, which Xcode expands
+    /// during ProcessInfoPlistFile, so the value comes from the build setting
+    /// — archives pass `GIT_COMMIT=$(git rev-parse --short HEAD)`. A plain
+    /// Xcode GUI build does not set it, so this is empty there and the header
+    /// is omitted rather than sending a misleading value. It is also only as
+    /// honest as the tree: `rev-parse` reports HEAD on a dirty tree too, so a
+    /// build off uncommitted changes reports the commit it was branched from.
+    static let buildCommit: String = {
+        (Bundle.main.object(forInfoDictionaryKey: "GitCommit") as? String) ?? ""
+    }()
+
     private func makeRequest(path: String, method: String) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw APIError.invalidURL
@@ -1356,6 +1374,12 @@ final class APIClient: APIClientProtocol {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // Sent as a header, NOT appended to the User-Agent: httputil.ClientBuild
+        // parses the UA for the build number and gates the rental flow on it, so
+        // the UA stays byte-identical to what every shipped build sends.
+        if !Self.buildCommit.isEmpty {
+            request.setValue(Self.buildCommit, forHTTPHeaderField: "X-DriveBai-Commit")
+        }
 
         return request
     }

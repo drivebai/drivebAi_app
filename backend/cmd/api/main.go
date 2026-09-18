@@ -446,9 +446,21 @@ func main() {
 			// creation call, so the two can never disagree.
 			r.Get("/config", func(w http.ResponseWriter, r *http.Request) {
 				rolling := false
-				if uid, ok := httputil.GetUserID(r.Context()); ok {
+				uid, ok := httputil.GetUserID(r.Context())
+				if ok {
 					rolling = leaseHandler.RollingOpenFor(uid)
 				}
+				// Which binary is this caller running? The build number in the
+				// User-Agent does not answer that — archives have reused 11, 30
+				// and 39 — so build 42 also sends the commit it was built from.
+				// /config is the first authenticated call the app makes, so one
+				// line here is enough to tell a pilot driver's report apart from
+				// a stale install. Old builds send no header and log as "-".
+				logger.Info("client config",
+					"user_id", uid,
+					"build", httputil.ClientBuild(r),
+					"commit", commitOrDash(r.Header.Get("X-DriveBai-Commit")),
+					"rolling", rolling)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -939,4 +951,19 @@ func init() {
 	// Ensure static directory exists for embed
 	_ = staticFiles
 	fmt.Println("DriveBai API Server")
+}
+
+// commitOrDash keeps an untrusted client header out of the log as-is: it is
+// attacker-controlled, so only a short hex-ish token is echoed and anything
+// else becomes "-". Prevents log injection and unbounded log lines.
+func commitOrDash(v string) string {
+	if v == "" || len(v) > 40 {
+		return "-"
+	}
+	for _, c := range v {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return "-"
+		}
+	}
+	return v
 }
