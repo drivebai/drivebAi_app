@@ -33,12 +33,27 @@ struct RollingConsentSheet: View {
 
     private static let termsURL = URL(string: "https://drivebai-landing-v2.netlify.app/terms")!
 
+    /// The amount, rendered EXACTLY as the server rendered it inside
+    /// `disclosureText` — `$1,234.56`, period as the decimal mark.
+    ///
+    /// A locale formatter is wrong here. On a comma-decimal device it printed
+    /// "Pay $150,00 and start rental" directly beneath a disclosure that read
+    /// "$150.00 will be charged now": one screen, one amount, two spellings,
+    /// at the moment the driver authorizes a recurring charge (observed in the
+    /// build-41 run, 2026-09-18). The disclosure is the evidence, so the
+    /// button matches the disclosure — not the device.
     private var formattedAmount: String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = currencyCode
         let value = Double(amountCents) / 100
-        return formatter.string(from: NSNumber(value: value)) ?? String(format: "$%.2f", value)
+        let symbol = currencyCode.uppercased() == "USD" ? "$" : currencyCode.uppercased() + " "
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        formatter.groupingSeparator = ","
+        formatter.usesGroupingSeparator = true
+        let digits = formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+        return symbol + digits
     }
 
     var body: some View {

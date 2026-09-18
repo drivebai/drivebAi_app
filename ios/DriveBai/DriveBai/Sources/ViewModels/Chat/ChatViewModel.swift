@@ -1199,8 +1199,16 @@ final class ChatViewModel: ObservableObject {
         if let apiError = error as? APIError {
             switch apiError {
             case .serverError(let code, let message):
-                // Show both code and message for actionable debugging
+                // The server's message is written for the person reading it;
+                // the code is for us. Appending it leaked identifiers like
+                // "[OWNER_TERMS_MONTHLY_PENDING]" into an otherwise complete
+                // sentence (observed in the build-41 run, 2026-09-18).
+                #if DEBUG
                 return "\(message) [\(code)]"
+                #else
+                _ = code
+                return message
+                #endif
             default:
                 break
             }

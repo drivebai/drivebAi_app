@@ -174,7 +174,7 @@ func (h *LeaseRequestHandler) applyPaidSideEffectsCtx(ctx context.Context, lr *m
 	}
 	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
 		"Payment received",
-		fmt.Sprintf("%s paid for %d week(s) of %s — coordinate pickup in chat", driverName, lr.Weeks, carTitle),
+		ownerPaidBody(driverName, carTitle, lr),
 		&chatID, &leaseID)
 	go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
 		"Payment confirmed",

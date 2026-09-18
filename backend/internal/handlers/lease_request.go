@@ -1214,7 +1214,7 @@ func (h *LeaseRequestHandler) SyncPaymentStatus(w http.ResponseWriter, r *http.R
 			}
 			go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
 				"Payment received",
-				fmt.Sprintf("%s paid for %d week(s) of %s — coordinate pickup in chat", driverName, lr.Weeks, carTitle),
+				ownerPaidBody(driverName, carTitle, lr),
 				&chatID, &lrID)
 			go h.notifHandler.Notify(lr.DriverID, models.NotificationTypePayment,
 				"Payment confirmed",
@@ -1512,7 +1512,7 @@ func (h *LeaseRequestHandler) handlePaymentSucceeded(r *http.Request, intentID s
 	if carTitle == "" {
 		carTitle = "your listing"
 	}
-	ownerBody := fmt.Sprintf("%s paid for %d week(s) of %s — coordinate pickup in chat", driverName, lr.Weeks, carTitle)
+	ownerBody := ownerPaidBody(driverName, carTitle, lr)
 	go h.notifHandler.Notify(lr.OwnerID, models.NotificationTypePayment,
 		"Payment received", ownerBody, &chatID, &leaseID)
 
@@ -3255,4 +3255,20 @@ func leaseIntervalCents(lr *models.LeaseRequest) int64 {
 		return lr.IntervalAmountCents()
 	}
 	return 0
+}
+
+// ownerPaidBody is what the OWNER reads when a driver's first payment lands.
+//
+// The historical wording — "paid for N week(s)" — describes a bounded rental.
+// On a recurring lease that is false in the way that cost us 2026-09-14: the
+// owner is told a fixed term for a rental that renews until the car comes
+// back. A recurring lease names its cadence and its amount per cycle; a
+// fixed-term lease keeps the old sentence byte for byte.
+func ownerPaidBody(driverName, carTitle string, lr *models.LeaseRequest) string {
+	if lr.BillingMode == models.BillingModeRolling {
+		return fmt.Sprintf("%s paid the first %s of %s — %s %.2f per %s, renewing until they return it. Coordinate pickup in chat.",
+			driverName, models.IntervalUnit(lr.BillingInterval), carTitle,
+			lr.Currency, lr.IntervalPrice(), models.IntervalUnit(lr.BillingInterval))
+	}
+	return fmt.Sprintf("%s paid for %d week(s) of %s — coordinate pickup in chat", driverName, lr.Weeks, carTitle)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/drivebai/backend/internal/httputil"
+	"github.com/drivebai/backend/internal/models"
 	"github.com/drivebai/backend/internal/repository"
 )
 
@@ -345,5 +346,46 @@ func TestRecurringOnlyPayStepRefusesUnprovenClients(t *testing.T) {
 	e.leaseH.CreatePaymentIntent(rr, intentRequest(t, driverID, leaseID, newUA))
 	if code := decodeCreated(t, rr).Error.Code; code == "APP_UPDATE_REQUIRED" {
 		t.Errorf("a build-41 client was refused at the pay step: %s", rr.Body.String())
+	}
+}
+
+// The owner's "payment received" line, from the build-41 run (2026-09-18).
+// The live run showed an owner being told "Driver T paid for 1 week(s)" on a
+// lease that renews weekly forever — fixed-term wording on a recurring
+// rental, the same shape that made 2026-09-14 invisible.
+func TestOwnerPaidBodyNamesTheCadence(t *testing.T) {
+	weekly := &models.LeaseRequest{
+		BillingMode: models.BillingModeRolling, BillingInterval: "weekly",
+		WeeklyPrice: 150, Weeks: 1, Currency: "USD",
+	}
+	monthly := &models.LeaseRequest{
+		BillingMode: models.BillingModeRolling, BillingInterval: "monthly",
+		WeeklyPrice: 150, Weeks: 1, Currency: "USD",
+	}
+	fixed := &models.LeaseRequest{
+		BillingMode: models.BillingModeFixedTerm, BillingInterval: "weekly",
+		WeeklyPrice: 150, Weeks: 2, Currency: "USD",
+	}
+
+	got := ownerPaidBody("Driver T", "2021 Honda CR-V", weekly)
+	for _, want := range []string{"first week", "150.00 per week", "renewing until they return it"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("weekly owner line missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "week(s)") {
+		t.Errorf("weekly recurring lease still uses fixed-term wording: %s", got)
+	}
+
+	got = ownerPaidBody("Driver T", "2022 Toyota Camry", monthly)
+	for _, want := range []string{"first month", "600.00 per month"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("monthly owner line missing %q: %s", want, got)
+		}
+	}
+
+	// Fixed-term keeps the historical sentence byte for byte.
+	if got := ownerPaidBody("Driver T", "2021 Honda CR-V", fixed); got != "Driver T paid for 2 week(s) of 2021 Honda CR-V — coordinate pickup in chat" {
+		t.Errorf("fixed-term wording changed: %s", got)
 	}
 }
