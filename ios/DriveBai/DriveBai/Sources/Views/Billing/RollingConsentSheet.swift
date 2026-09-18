@@ -34,7 +34,9 @@ struct RollingConsentSheet: View {
     private static let termsURL = URL(string: "https://drivebai-landing-v2.netlify.app/terms")!
 
     /// The amount, rendered EXACTLY as the server rendered it inside
-    /// `disclosureText` — `$1,234.56`, period as the decimal mark.
+    /// `disclosureText`. The server uses Go's `$%.2f` (models/terms.go), which
+    /// uses a period as the decimal mark and NEVER groups thousands — so a
+    /// $1,000 first charge reads `$1000.00` in the disclosure, not `$1,000.00`.
     ///
     /// A locale formatter is wrong here. On a comma-decimal device it printed
     /// "Pay $150,00 and start rental" directly beneath a disclosure that read
@@ -45,15 +47,13 @@ struct RollingConsentSheet: View {
     private var formattedAmount: String {
         let value = Double(amountCents) / 100
         let symbol = currencyCode.uppercased() == "USD" ? "$" : currencyCode.uppercased() + " "
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.minimumFractionDigits = 2
-        formatter.maximumFractionDigits = 2
-        formatter.groupingSeparator = ","
-        formatter.usesGroupingSeparator = true
-        let digits = formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
-        return symbol + digits
+        // printf semantics, not locale semantics: `String(format:)` with no
+        // locale argument is unlocalized, so this is the same rendering Go's
+        // `%.2f` performs on the same amount — on every device, at every
+        // magnitude. A NumberFormatter would re-introduce grouping ($1,000.00
+        // against the disclosure's $1000.00), which is the same class of
+        // one-amount-two-spellings defect the comma-decimal bug was.
+        return symbol + String(format: "%.2f", value)
     }
 
     var body: some View {
